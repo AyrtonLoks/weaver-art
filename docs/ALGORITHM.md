@@ -164,8 +164,57 @@ Para refinar o traçado sem violar a condição física de **fio contínuo e sem
 - **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos.
 - **JSON**: `WeaveResult` completo (com `metrics`, `threads`, `steps`) — reabrível no modo tecelagem do app web.
 
-## 11. Próximos passos (v0.3 e v0.4)
+## 11. Seleção automática de paleta personalizada — [`palette.ts`](../packages/core/src/palette.ts)
 
-- **v0.3**: Seleção automática de paleta personalizada ($k$ cores a partir da imagem) e modelo óptico de meio-tom.
-- **v0.4**: Teares retangulares/quadrados, posições arbitrárias de pinos via CSV e gabarito de furação 1:1 em SVG/PDF.
+Para reproduzir fotografias sem restrição aos presets fixos (Vrellis ou CMYK), o Weaver Art extrai uma paleta adaptativa de $k$ cores ($k \in [2, 10]$) diretamente da imagem do usuário:
+
+1. **Amostragem Geométrica do Tear**: Amostra pixels exclusivamente dentro da máscara circular do tear ($(x - c_x)^2 + (y - c_y)^2 \le R^2$), ignorando fundos externos e cantos brancos/transparentes.
+2. **Espaço Perceptual CIELAB**:
+   - Cada pixel RGB linear é convertido para espaço CIE XYZ e em seguida para CIELAB ($L^_, a^_, b^*$).
+   - A métrica de distância utilizada na clusterização é a distância euclidiana CIE76:
+     $$\Delta E_{ab}^* = \sqrt{(\Delta L^*)^2 + (\Delta a^*)^2 + (\Delta b^*)^2}$$
+     que reflete a sensibilidade perceptual do olho humano de forma muito superior ao espaço RGB euclidiano.
+3. **Clusterização K-Means++**:
+   - Inicialização estocástica ponderada pela distância quadrática ($D(x)^2$) para cobrir polos cromáticos distintos (ex: tons de pele, realces e sombras).
+   - Iterações de Lloyd até convergência ($\Delta E < 0.05$) com reatribuição de clusters vazios.
+4. **Ordenação Física por Luminância ($L^\*$)**:
+   - Os centróides são estritamente ordenados de forma decrescente por luminância ($L^_$ alto $\to$ $L^_$ baixo).
+   - O fio mais luminoso inicia a tecelagem e a âncora mais escura (preto, grafite ou marinho profundo) fica por último, respeitando a regra física de que fios escuros não devem ser soterrados por fios claros.
+5. **Alocação de Cotas Ponderadas e Rollover**:
+   - Para $k \ge 4$ cores, a âncora escura recebe cota terminal de $35\%$ a $40\%$ (padrão $38\%$). As $k-1$ cores claras dividem equitativamente os $62\%$ restantes.
+   - Em conjunto com a estratégia `layered`, qualquer saldo não consumido pelas camadas claras é transferido dinamicamente (_rollover_) para a âncora escura, garantindo que a meta de linhas seja cumprida.
+6. **Distribuição Angular dos Pinos Iniciais**:
+   - Os pinos de amaciamento inicial de cada carretel são distribuídos uniformemente na borda do tear: $\text{startPeg}_i = \lfloor i \cdot N / k \rfloor$.
+
+## 12. Modelo óptico de mistura por meio-tom — [`engine.ts`](../packages/core/src/engine.ts)
+
+A mistura de cores em string art à distância de visualização não ocorre pixel a pixel, mas sim pela fusão espacial contínua dos pontos luminosos na retina humana (_optical halftoning_ ou mistura aditiva de cor espacial):
+
+### Formulação Matemática
+
+Em vez de minimizar o erro residual local ponto a ponto $\|C - T\|^2$, minimizamos o erro perceptual após a mistura espacial da visão humana:
+
+$$\mathcal{E}_{\text{halftone}} = \| H * (C - T) \|^2$$
+
+onde $H$ é a função de espalhamento pontual (PSF da retina) e $G = H^T * H = H * H$ é o filtro gaussiano equivalente. Pela propriedade do produto interno:
+
+$$\mathcal{E}_{\text{halftone}} = \langle C - T, G * (C - T) \rangle$$
+
+Ao adicionar uma corda com perturbação $\Delta C$, a redução do erro perceptual (ganho óptico) é:
+
+$$\text{ganho} = \sum_{p \in \text{corda}} w_p \cdot \left[ 2 \cdot \delta_p \cdot R_{\text{halftone}}[p] - \delta_p^2 \right]$$
+
+onde $R_{\text{halftone}} = G * (T - C)$ é o **mapa de resíduo perceptualmente filtrado**.
+
+### Vantagens e Comportamento Cooperativo
+
+- **Cooperação entre Fios Adjacentes**: Fios de cores complementares (por exemplo, Amarelo e Ciano sobre uma área verde) passam a cooperar oticamente mesmo quando correm em paralelo ou com pequenos afastamentos, sem a penalidade artificial do modelo pixel a pixel que exigiria interseções microscópicas perfeitas.
+- **Desempenho em Tempo Real**:
+  - $R_{\text{halftone}}$ é avaliado diretamente em $O(1)$ por amostra rasterizada durante o cálculo do ganho.
+  - Ao aplicar uma corda selecionada, $R_{\text{halftone}}$ é atualizado localmente sobre a caixa delimitadora dilatada da corda com filtro gaussiano separável 1D horizontal + 1D vertical em $O(\text{largura} + \text{altura})$, com ressincronização completa periódica a cada 50 passos.
+- Quando `halftoneMixing: false` (padrão), o motor se reduz estritamente ao resíduo local clássico $R = T - C$ com custo adicional zero.
+
+## 13. Próximos passos (v0.4)
+
+- **v0.4 — Fabricação**: Teares retangulares/quadrados, posições arbitrárias de pinos via CSV e gabarito de furação 1:1 em SVG/PDF.
 - **Desempenho**: Cache de rasterização das cordas mais frequentes e paralelismo em Web Workers.

@@ -106,8 +106,37 @@ export interface WeaveOptions {
   viewingDistanceM?: number;
   /** Global refinement passes (post-greedy optimization preserving thread continuity). Default: 0. */
   refinePasses?: number;
+  /** Modelo óptico de mistura por meio-tom (fusão espacial de cores vizinhas a distância). */
+  halftoneMixing?: boolean;
+  /** Raio de mistura óptica de meio-tom em mm. Padrão: 0.75 mm. */
+  halftoneRadiusMm?: number;
   /** Image preparation. */
   preprocess: PreprocessOptions;
+}
+
+/** Options for automatic palette extraction. */
+export interface PaletteOptions {
+  /** Maximum number of pixels to sample inside the loom circle. Default: 10000. */
+  maxSamples?: number;
+  /** Maximum K-Means iterations. Default: 25. */
+  maxIterations?: number;
+  /** Custom seed for reproducible initialization. */
+  seed?: number;
+  /** Apparent thread width in mm. Default: 0.2. */
+  threadWidthMm?: number;
+  /** Thread opacity in (0, 1]. Default: 1.0. */
+  opacity?: number;
+  /** Quota for the darkest anchor thread [0.2, 0.6]. Default: 0.35 to 0.40. */
+  darkAnchorQuota?: number;
+  /** Peg count of the loom to space out starting pegs. Default: 200. */
+  loomPegCount?: number;
+}
+
+/** Result of automatic palette extraction. */
+export interface CustomPaletteResult {
+  threads: ThreadConfig[];
+  threadLineBudgets: number[];
+  colorsHex: string[];
 }
 
 /** Deep-partial helper used for user-supplied overrides. */

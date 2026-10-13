@@ -70,6 +70,8 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   lengthPenalty: 0,
   viewingDistanceM: 0,
   refinePasses: 0,
+  halftoneMixing: false,
+  halftoneRadiusMm: 0.75,
   preprocess: {
     grayscale: true,
     contrast: 1,
@@ -236,6 +238,12 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (o.preprocess.viewingDistanceM !== undefined && !(o.preprocess.viewingDistanceM >= 0)) {
     errors.push('preprocess.viewingDistanceM deve ser >= 0');
+  }
+  if (o.halftoneMixing !== undefined && typeof o.halftoneMixing !== 'boolean') {
+    errors.push('halftoneMixing deve ser booleano');
+  }
+  if (o.halftoneRadiusMm !== undefined && (!(o.halftoneRadiusMm > 0) || o.halftoneRadiusMm > 20)) {
+    errors.push('halftoneRadiusMm deve ser número em (0, 20]');
   }
   if (errors.length > 0) throw new Error(`Configuração inválida:\n- ${errors.join('\n- ')}`);
 }

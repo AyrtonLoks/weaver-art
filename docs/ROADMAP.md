@@ -27,10 +27,10 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ **Penalidade opcional por comprimento de fio**: penalização ajustável proporcional ao comprimento da corda $L_{norm}$ para otimizar consumo de fio
 - ✅ **Equalização local de contraste (CLAHE)**: algoritmo puro em TypeScript de contraste limitado adaptativo com interpolação bilinear contínua sem artefatos de borda de bloco
 
-## v0.3 — Otimização avançada de cor
+## v0.3 — Otimização avançada de cor (concluído)
 
-- 🔜 Seleção automática de paleta personalizada (k cores a partir da imagem)
-- 💡 Modelo óptico de mistura por meio-tom (cores vizinhas que se fundem a distância)
+- ✅ **Seleção automática de paleta personalizada**: extração perceptual de $k$ cores dominantes a partir da imagem via clusterização K-Means em espaço CIELAB (k-means++), amostragem restrita à máscara circular do tear, ordenação decrescente física por luminância (luz $\to$ sombra), cotas ponderadas com âncora escura e nomes automáticos em português
+- ✅ **Modelo óptico de mistura por meio-tom**: modelagem de ponto óptico da retina humana ($G * (T - C)$), permitindo que cordas adjacentes de cores primárias/secundárias (ex: amarelo e ciano) se combinem oticamente em cores intermediárias (ex: verde) sem penalidades locais artificiais, com atualização local otimizada e validação completa
 
 ## v0.4 — Fabricação
 

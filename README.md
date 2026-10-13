@@ -16,20 +16,20 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 
 ## O que há de diferente
 
-|                     | Implementações clássicas              | Weaver Art                                                                                                                                      |
-| ------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unidades            | pixels                                | **milímetros** (tear de 28″ = 711,2 mm, como o original)                                                                                        |
-| Critério de escolha | “linha mais escura” (média de pixels) | **redução do erro quadrático** entre simulação e alvo (com penalidade de comprimento configurável)                                              |
-| Modelo de tom       | subtrai constante do alvo             | **cobertura física do fio** em luz linear: `T = Π(1 − cᵢ)` — o tom escurece com a densidade **e com as interseções**, como descrito por Vrellis |
-| Espaço de cor       | sRGB (gama)                           | **luz linear** (sRGB ↔ linear correto)                                                                                                          |
-| Rasterização        | Bresenham / Wu                        | **cobertura exata de área** de um fio com largura real (sub-pixel)                                                                              |
-| Pinos               | pontos                                | **cilindros com diâmetro**: segmentos tangentes, sentido de contorno (horário/anti-horário) e arco enrolado no pino                             |
-| Comprimento do fio  | estimado                              | **exato** (segmentos + arcos), com **penalidade ajustável** para economia de linha                                                              |
-| Cor                 | camadas separadas                     | **camadas sequenciais (`layered`) ou intercalado balanceado** com cotas ponderadas (presets `vrellis-color` e `cmyk`)                           |
-| Percepção           | pixel a pixel local                   | **distância de observação** (desfoque retiniano, Birsak et al., 2018), CLAHE e **métricas CIELAB ΔE e SSIM**                                    |
-| Otimização          | apenas gulosa                         | **gulosa + refinamento global pós-processamento** preservando a continuidade física estrita do fio                                              |
-| Calibração          | manual empírica                       | **ferramenta de calibração** de cor e parâmetros físicos a partir de fotos de meadas                                                            |
-| Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada, `.csv`, `.json`, **SVG em escala real**, PNG e **modo tecelagem com voz**                               |
+|                     | Implementações clássicas              | Weaver Art                                                                                                                                                                                               |
+| ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unidades            | pixels                                | **milímetros** (tear de 28″ = 711,2 mm, como o original)                                                                                                                                                 |
+| Critério de escolha | “linha mais escura” (média de pixels) | **redução do erro quadrático** entre simulação e alvo (com penalidade de comprimento configurável)                                                                                                       |
+| Modelo de tom       | subtrai constante do alvo             | **cobertura física do fio** em luz linear: `T = Π(1 − cᵢ)` — o tom escurece com a densidade **e com as interseções**, como descrito por Vrellis                                                          |
+| Espaço de cor       | sRGB (gama)                           | **luz linear** (sRGB ↔ linear correto)                                                                                                                                                                   |
+| Rasterização        | Bresenham / Wu                        | **cobertura exata de área** de um fio com largura real (sub-pixel)                                                                                                                                       |
+| Pinos               | pontos                                | **cilindros com diâmetro**: segmentos tangentes, sentido de contorno (horário/anti-horário) e arco enrolado no pino                                                                                      |
+| Comprimento do fio  | estimado                              | **exato** (segmentos + arcos), com **penalidade ajustável** para economia de linha                                                                                                                       |
+| Cor                 | camadas separadas                     | **paleta automática da foto** (K-Means em CIELAB), **camadas sequenciais (`layered`) ou intercalado balanceado** com cotas ponderadas e âncora escura (presets `vrellis-color`, `cmyk` ou personalizado) |
+| Percepção           | pixel a pixel local                   | **modelo óptico de meio-tom** ($G * (T - C)$), **distância de observação** (desfoque retiniano, Birsak et al., 2018), CLAHE e **métricas CIELAB ΔE e SSIM**                                              |
+| Otimização          | apenas gulosa                         | **gulosa + refinamento global pós-processamento** preservando a continuidade física estrita do fio                                                                                                       |
+| Calibração          | manual empírica                       | **ferramenta de calibração** de cor e parâmetros físicos a partir de fotos de meadas                                                                                                                     |
+| Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada, `.csv`, `.json`, **SVG em escala real**, PNG e **modo tecelagem com voz**                                                                                        |
 
 Detalhes matemáticos em [docs/ALGORITHM.md](docs/ALGORITHM.md).
 
@@ -61,8 +61,10 @@ npm run dev              # estúdio web em http://localhost:5173
 npm run build
 npm run weave -- foto.jpg                                           # preset Vrellis monocromático
 npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2   # preset CMYK em camadas (10.000 cordas)
+npm run weave -- foto.jpg --auto-palette 4 --halftone --lines 6000  # paleta automática da foto + meio-tom óptico
 npm run weave -- foto.jpg --preset vrellis-color --lines 6000 --shadow-lift 0.12 --edge-emphasis 0.5
 npm run weave -- foto.jpg --clahe --length-penalty 0.15 --viewing-distance 2.0 --refine 1
+npm run weave -- extract-palette foto.jpg 4                         # extrai e analisa paleta de cores CIELAB
 npm run weave -- calibrate-color amostra-carretel.jpg               # calibra cor #hex a partir de foto
 npm run weave -- --help
 ```
@@ -86,27 +88,29 @@ Arquivos gerados em `./output/`:
 
 1. Arraste uma foto (retratos funcionam melhor — como na série de Vrellis baseada em El Greco).
 2. Ajuste tear, algoritmo e tom (incluindo **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
-3. Opcionalmente calibre a cor de carretéis reais carregando a foto de uma meada de linha.
-4. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)** e **SSIM**.
-5. Exporte, ou abra o **Modo tecelagem**: o próximo pino aparece em destaque, a corda é
+3. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
+4. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
+5. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)** e **SSIM**.
+6. Exporte, ou abra o **Modo tecelagem**: o próximo pino aparece em destaque, a corda é
    desenhada no tear, e o número pode ser **ditado por voz** (pt-BR), avançando com a barra de
    espaço ou automaticamente. O progresso fica salvo no navegador.
 
 ## Parâmetros padrão (preset `vrellis-mono`)
 
-| Parâmetro               | Valor          | Origem                                                                     |
-| ----------------------- | -------------- | -------------------------------------------------------------------------- |
-| Diâmetro do tear        | 711,2 mm (28″) | publicado por Vrellis                                                      |
-| Pinos                   | 200            | publicado por Vrellis                                                      |
-| Linhas                  | até 4 000      | Vrellis: 3 000 – 4 000 cordas, 1 – 2 km de fio                             |
-| Diâmetro do pino        | 2 mm           | estimativa — calibre com o seu tear                                        |
-| Largura aparente do fio | 0,2 mm         | estimativa — calibre com o seu fio                                         |
-| Gap mínimo              | 12 pinos       | evita cordas inúteis rente ao aro                                          |
-| Repetições por par      | 1              | uma passada por par de pinos                                               |
-| Resolução da grade      | 400 px         | resolução de simulação física (ver ALGORITHM.md)                           |
-| Penalidade comp. fio    | 0.0            | deságio de cordas longas (use 0.1 a 0.25 para economizar fio)              |
-| Distância de observação | 0.0 m          | desfoque retiniano à distância real (ex: 1.5 a 3.0 m, Birsak et al., 2018) |
-| Refinamento global      | 0 passes       | passes pós-gulosos para redução de erro mantendo continuidade              |
+| Parâmetro               | Valor                | Origem                                                                     |
+| ----------------------- | -------------------- | -------------------------------------------------------------------------- |
+| Diâmetro do tear        | 711,2 mm (28″)       | publicado por Vrellis                                                      |
+| Pinos                   | 200                  | publicado por Vrellis                                                      |
+| Linhas                  | até 4 000            | Vrellis: 3 000 – 4 000 cordas, 1 – 2 km de fio                             |
+| Diâmetro do pino        | 2 mm                 | estimativa — calibre com o seu tear                                        |
+| Largura aparente do fio | 0,2 mm               | estimativa — calibre com o seu fio                                         |
+| Gap mínimo              | 12 pinos             | evita cordas inúteis rente ao aro                                          |
+| Repetições por par      | 1                    | uma passada por par de pinos                                               |
+| Resolução da grade      | 400 px               | resolução de simulação física (ver ALGORITHM.md)                           |
+| Penalidade comp. fio    | 0.0                  | deságio de cordas longas (use 0.1 a 0.25 para economizar fio)              |
+| Distância de observação | 0.0 m                | desfoque retiniano à distância real (ex: 1.5 a 3.0 m, Birsak et al., 2018) |
+| Meio-tom óptico         | desativado (0.75 mm) | fusão espacial retiniana de cores adjacentes à distância                   |
+| Refinamento global      | 0 passes             | passes pós-gulosos para redução de erro mantendo continuidade              |
 
 > [!TIP]
 >
@@ -114,6 +118,8 @@ Arquivos gerados em `./output/`:
 > - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
 > - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
 > - **Iluminação irregular e retratos**: ative **CLAHE** (`--clahe --clahe-clip 2.0`) para equalizar contraste local adaptativo sem estourar ruído.
+> - **Paleta personalizada da foto**: extraia $k$ cores dominantes da imagem (`--auto-palette <k>`) com amostragem restrita ao aro circular, ordenação decrescente por luminância e cota reservada de 35%–40% para a âncora escura final.
+> - **Fusão de cores e meio-tom**: ative **Meio-tom óptico** (`--halftone --halftone-radius 0.75`) para modelar como os olhos combinam cores primárias vizinhas à distância (ex: amarelo + ciano gerando verde sem exigir interseção local exata).
 > - **Metas altas de cordas (ex: 10.000 cordas)**: aumente **Repetições** para `2` ou `3`. Um tear de 200 pinos possui limite combinatório de cordas que cruzam a figura; permitir repetições viabiliza atingir 10.000 cordas mantendo o fundo limpo.
 > - **Máxima precisão**: ative **Refinamento global** (`--refine 1`) para executar passes pós-gulosos que trocam pinos intermediários mantendo estritamente o fio contínuo e sem emaranhados.
 

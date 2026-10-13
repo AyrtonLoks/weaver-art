@@ -83,6 +83,12 @@ export class WeaveEngine {
   private currentLayer = 0;
   private lastStopReason: StopReason = 'no-improvement';
 
+  private readonly halftoneMixing: boolean;
+  private readonly halftoneKernelRadius: number;
+  private readonly halftoneKernel: Float32Array | null;
+  private readonly halftoneResidual: Float32Array | null;
+  private readonly halftoneScratch: Float32Array | null;
+
   constructor(image: RasterImage | TargetImage, options: WeaveOptions, importance?: RasterImage) {
     this.options = options;
     this.loom = createLoom(options.loom);
@@ -142,6 +148,31 @@ export class WeaveEngine {
     this.layerBudgets = computeThreadBudgets(options);
     this.threadLineCounts = new Array(options.threads.length).fill(0);
     this.currentLayer = 0;
+
+    this.halftoneMixing = Boolean(options.halftoneMixing);
+    if (this.halftoneMixing) {
+      const radiusMm = options.halftoneRadiusMm ?? 0.75;
+      const sigmaPx = Math.max(0.2, radiusMm * this.pxPerMm);
+      const kRad = Math.max(1, Math.min(8, Math.ceil(2.5 * sigmaPx)));
+      this.halftoneKernelRadius = kRad;
+      const kSize = kRad * 2 + 1;
+      this.halftoneKernel = new Float32Array(kSize);
+      let kSum = 0;
+      for (let i = -kRad; i <= kRad; i++) {
+        const v = Math.exp(-(i * i) / (2 * sigmaPx * sigmaPx));
+        this.halftoneKernel[i + kRad] = v;
+        kSum += v;
+      }
+      for (let i = 0; i < kSize; i++) this.halftoneKernel[i] /= kSum;
+      this.halftoneResidual = new Float32Array(this.size * this.size * C);
+      this.halftoneScratch = new Float32Array(this.size * this.size * C);
+      this.refreshHalftoneResidualFull();
+    } else {
+      this.halftoneKernelRadius = 0;
+      this.halftoneKernel = null;
+      this.halftoneResidual = null;
+      this.halftoneScratch = null;
+    }
   }
 
   /** Convenience factory: merge overrides onto the defaults, validate and build. */
@@ -503,6 +534,118 @@ export class WeaveEngine {
       state.lines++;
       state.pegs.push(step.to);
     }
+
+    if (this.halftoneMixing) {
+      this.refreshHalftoneResidualFull();
+    }
+  }
+
+  /** Full 2D separable Gaussian filter refresh of the halftone effective residual G * (T - C). */
+  private refreshHalftoneResidualFull(): void {
+    if (!this.halftoneResidual || !this.halftoneKernel || !this.halftoneScratch) return;
+    const size = this.size;
+    const C = this.channels;
+    const kRad = this.halftoneKernelRadius;
+    const kernel = this.halftoneKernel;
+    const scratch = this.halftoneScratch;
+    const out = this.halftoneResidual;
+    const target = this.target.data;
+    const canvas = this.canvas;
+
+    // Horizontal pass: compute residual (target - canvas) and blur along x
+    for (let y = 0; y < size; y++) {
+      const row = y * size;
+      for (let x = 0; x < size; x++) {
+        for (let c = 0; c < C; c++) {
+          let sum = 0;
+          for (let k = -kRad; k <= kRad; k++) {
+            const sx = Math.min(Math.max(x + k, 0), size - 1);
+            const p = (row + sx) * C + c;
+            sum += (target[p] - canvas[p]) * kernel[k + kRad];
+          }
+          scratch[(row + x) * C + c] = sum;
+        }
+      }
+    }
+
+    // Vertical pass: blur scratch along y into out
+    for (let y = 0; y < size; y++) {
+      const row = y * size;
+      for (let x = 0; x < size; x++) {
+        for (let c = 0; c < C; c++) {
+          let sum = 0;
+          for (let k = -kRad; k <= kRad; k++) {
+            const sy = Math.min(Math.max(y + k, 0), size - 1);
+            sum += scratch[(sy * size + x) * C + c] * kernel[k + kRad];
+          }
+          out[(row + x) * C + c] = sum;
+        }
+      }
+    }
+  }
+
+  /** Local 2D separable Gaussian filter update on the chord segment dilated bounding box. */
+  private updateHalftoneResidualLocal(seg: Segment, threadIdx: number): void {
+    if (!this.halftoneResidual || !this.halftoneKernel || !this.halftoneScratch) return;
+    const size = this.size;
+    const C = this.channels;
+    const scale = this.pxPerMm;
+    const kRad = this.halftoneKernelRadius;
+    const kernel = this.halftoneKernel;
+    const scratch = this.halftoneScratch;
+    const out = this.halftoneResidual;
+    const target = this.target.data;
+    const canvas = this.canvas;
+
+    const wPx = this.threadWidthPx[threadIdx];
+    const x0 = seg.x0 * scale;
+    const y0 = seg.y0 * scale;
+    const x1 = seg.x1 * scale;
+    const y1 = seg.y1 * scale;
+
+    const minX = Math.max(0, Math.floor(Math.min(x0, x1) - wPx - 1));
+    const maxX = Math.min(size - 1, Math.ceil(Math.max(x0, x1) + wPx + 1));
+    const minY = Math.max(0, Math.floor(Math.min(y0, y1) - wPx - 1));
+    const maxY = Math.min(size - 1, Math.ceil(Math.max(y0, y1) + wPx + 1));
+
+    const outMinX = Math.max(0, minX - kRad);
+    const outMaxX = Math.min(size - 1, maxX + kRad);
+    const outMinY = Math.max(0, minY - kRad);
+    const outMaxY = Math.min(size - 1, maxY + kRad);
+
+    const inMinY = Math.max(0, outMinY - kRad);
+    const inMaxY = Math.min(size - 1, outMaxY + kRad);
+
+    // Horizontal blur pass on the dilated box
+    for (let y = inMinY; y <= inMaxY; y++) {
+      const row = y * size;
+      for (let x = outMinX; x <= outMaxX; x++) {
+        for (let c = 0; c < C; c++) {
+          let sum = 0;
+          for (let k = -kRad; k <= kRad; k++) {
+            const sx = Math.min(Math.max(x + k, 0), size - 1);
+            const p = (row + sx) * C + c;
+            sum += (target[p] - canvas[p]) * kernel[k + kRad];
+          }
+          scratch[(row + x) * C + c] = sum;
+        }
+      }
+    }
+
+    // Vertical blur pass
+    for (let y = outMinY; y <= outMaxY; y++) {
+      const row = y * size;
+      for (let x = outMinX; x <= outMaxX; x++) {
+        for (let c = 0; c < C; c++) {
+          let sum = 0;
+          for (let k = -kRad; k <= kRad; k++) {
+            const sy = Math.min(Math.max(y + k, 0), size - 1);
+            sum += scratch[(sy * size + x) * C + c] * kernel[k + kRad];
+          }
+          out[(row + x) * C + c] = sum;
+        }
+      }
+    }
   }
 
   /** Simulation as 8-bit sRGB RGBA (alpha = loom mask). */
@@ -568,6 +711,7 @@ export class WeaveEngine {
     const { data: target, weight } = this.target;
     const canvas = this.canvas;
     const op = this.threadOpacity[t];
+    const halftone = this.halftoneResidual;
     let gain = 0;
     if (this.channels === 1) {
       const K = this.threadColors[t];
@@ -577,7 +721,8 @@ export class WeaveEngine {
         if (w === 0) continue;
         const R = canvas[p];
         const d = cov[i] * op * (K - R);
-        gain += w * d * (2 * (target[p] - R) - d);
+        const err = halftone ? halftone[p] : target[p] - R;
+        gain += w * d * (2 * err - d);
       }
     } else {
       const o = t * 3;
@@ -596,11 +741,10 @@ export class WeaveEngine {
         const d0 = c * (K0 - R0);
         const d1 = c * (K1 - R1);
         const d2 = c * (K2 - R2);
-        gain +=
-          w *
-          (d0 * (2 * (target[q] - R0) - d0) +
-            d1 * (2 * (target[q + 1] - R1) - d1) +
-            d2 * (2 * (target[q + 2] - R2) - d2));
+        const err0 = halftone ? halftone[q] : target[q] - R0;
+        const err1 = halftone ? halftone[q + 1] : target[q + 1] - R1;
+        const err2 = halftone ? halftone[q + 2] : target[q + 2] - R2;
+        gain += w * (d0 * (2 * err0 - d0) + d1 * (2 * err1 - d1) + d2 * (2 * err2 - d2));
       }
     }
     return gain;
@@ -661,6 +805,15 @@ export class WeaveEngine {
     state.hasDir = true;
     state.lines++;
     state.pegs.push(to);
+
+    if (this.halftoneMixing) {
+      if (this.steps.length % 50 === 0) {
+        this.refreshHalftoneResidualFull();
+      } else {
+        this.updateHalftoneResidualLocal(seg, t);
+      }
+    }
+
     return step;
   }
 }

@@ -14,5 +14,6 @@ export * from './metrics.js';
 export * from './clahe.js';
 export * from './refine.js';
 export * from './calibration.js';
+export * from './palette.js';
 export * from './engine.js';
 export * from './export.js';

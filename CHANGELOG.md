@@ -3,6 +3,32 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] — 2026-10-13
+
+### Adicionado
+
+- **Seleção automática de paleta personalizada (`palette.ts`)**:
+  - Extração perceptual de $k$ cores dominantes ($k \in [2, 10]$, padrão 4) via clusterização K-Means em espaço CIELAB com inicialização k-means++.
+  - Amostragem geométrica restrita à máscara circular do tear, ignorando bordas externas e fundos transparentes.
+  - Ordenação decrescente física obrigatória por luminância ($L^_$ alto $\to$ $L^_$ baixo: cores luminosas primeiro, âncora escura por último).
+  - Alocação de cotas ponderadas com 35% a 40% reservados para a âncora escura e divisão uniforme das claras, com rollover dinâmico.
+  - Distribuição uniforme dos pinos de partida de cada carretel ao longo da circunferência do tear.
+  - Nomenclatura automática amigável em português (Amarelo, Magenta, Ciano, Vermelho, Azul, Verde, etc.) com IDs estáveis e desambiguação de tons repetidos.
+- **Modelo óptico de mistura por meio-tom (`engine.ts`)**:
+  - Minimização do erro perceptual após mistura espacial retiniana $\mathcal{E} = \| H * (C - T) \|^2$.
+  - Avaliação do ganho guloso orientada pelo mapa de resíduo espacialmente fundido $R_{\text{halftone}} = G * (T - C)$.
+  - Cooperação óptica entre fios adjacentes (ex: amarelo e ciano gerando verde à distância sem exigir interseções microscópicas pixel a pixel).
+  - Atualização local ultra-rápida via filtro gaussiano separável 1D horizontal + 1D vertical na caixa delimitadora dilatada de cada corda aplicada, com sincronização global periódica a cada 50 passos.
+  - Novas opções `halftoneMixing: boolean` e `halftoneRadiusMm: number` (padrão 0.75 mm) com validação de limites físicos.
+- **CLI (`@weaver-art/cli`)**:
+  - Subcomando `weaver-art extract-palette <imagem> [k]` que imprime tabela formatada (hex, cota %, pino inicial, nome) e snippet JSON pronto para uso.
+  - Novas flags `--auto-palette <k>`, `--halftone` e `--halftone-radius <mm>`.
+- **Estúdio Web (`@weaver-art/web`)**:
+  - Controles para extrair paleta personalizada da imagem ($k$ cores) com botão "Extrair cores", pré-visualização das amostras e inclusão no seletor de preset.
+  - Controles de meio-tom óptico (checkbox e slider de raio em mm) transmitidos ao Web Worker.
+- **Testes e Validação**:
+  - Novas suítes unitárias `palette.test.ts` e `halftone.test.ts` elevando a cobertura para 62 testes automatizados com 100% de sucesso.
+
 ## [0.2.0] — 2026-10-13
 
 ### Adicionado

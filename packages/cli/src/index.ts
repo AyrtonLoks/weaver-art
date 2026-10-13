@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import sharp from 'sharp';
 import {
   calibrateThreadColor,
+  extractPalette,
   PRESETS,
   resolveOptions,
   toCSV,
@@ -14,6 +15,7 @@ import {
   type DeepPartial,
   type PresetName,
   type RasterImage,
+  type ThreadConfig,
   type WeaveOptions,
 } from '@weaver-art/core';
 
@@ -23,9 +25,13 @@ weaver-art — converte uma imagem em um padrão de tecelagem em tear circular.
 Uso:
   weaver-art <imagem> [opções]
   weaver-art calibrate-color <imagem>
+  weaver-art extract-palette <imagem> [k]
 
 Opções:
   -p, --preset <nome>        vrellis-mono (padrão) | vrellis-color | cmyk
+      --auto-palette <k>     extrai paleta de k cores da imagem automaticamente (padrão 4)
+      --halftone             ativa modelo óptico de mistura por meio-tom
+      --halftone-radius <mm> raio de mistura por meio-tom em mm (padrão 0.75)
       --color-strategy <s>   layered (padrão) | interleaved-balanced | free
       --pegs <n>             número de pinos (padrão 200)
       --diameter <mm>        diâmetro do círculo dos pinos (padrão 711.2 = 28″)
@@ -90,6 +96,9 @@ async function main(): Promise<void> {
     allowNegative: true,
     options: {
       preset: { type: 'string', short: 'p', default: 'vrellis-mono' },
+      'auto-palette': { type: 'string' },
+      halftone: { type: 'boolean' },
+      'halftone-radius': { type: 'string' },
       'color-strategy': { type: 'string' },
       pegs: { type: 'string' },
       diameter: { type: 'string' },
@@ -123,6 +132,40 @@ async function main(): Promise<void> {
   if (values.help || positionals.length === 0) {
     process.stdout.write(HELP);
     process.exit(values.help ? 0 : 1);
+  }
+
+  if (positionals[0] === 'extract-palette') {
+    const palFile = positionals[1];
+    if (!palFile) {
+      process.stderr.write('Erro: especifique a imagem. Uso: weaver-art extract-palette <imagem> [k]\n');
+      process.exit(1);
+    }
+    const k = positionals[2] ? Number(positionals[2]) : values['auto-palette'] ? Number(values['auto-palette']) : 4;
+    const palImg = await loadRaster(palFile);
+    const result = extractPalette(palImg, k);
+    process.stdout.write(`\nPaleta extraída da imagem (${result.threads.length} cores):\n`);
+    process.stdout.write(
+      `${'#'.padEnd(3)} ${'Hex'.padEnd(9)} ${'Cota (%)'.padEnd(10)} ${'Pino Inicial'.padEnd(14)} Nome\n`,
+    );
+    process.stdout.write(`${'-'.repeat(55)}\n`);
+    result.threads.forEach((t: ThreadConfig, i: number) => {
+      const quotaPct = ((result.threadLineBudgets[i] ?? 0) * 100).toFixed(1) + '%';
+      process.stdout.write(
+        `${String(i + 1).padEnd(3)} ${t.color.padEnd(9)} ${quotaPct.padEnd(10)} ${String(t.startPeg).padEnd(14)} ${t.name}\n`,
+      );
+    });
+    process.stdout.write('\nConfiguração JSON sugerida:\n');
+    process.stdout.write(
+      JSON.stringify(
+        {
+          threads: result.threads,
+          threadLineBudgets: result.threadLineBudgets,
+        },
+        null,
+        2,
+      ) + '\n\n',
+    );
+    return;
   }
 
   if (positionals[0] === 'calibrate-color') {
@@ -167,6 +210,8 @@ async function main(): Promise<void> {
       lengthPenalty: num(values['length-penalty'], 'length-penalty'),
       viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),
       refinePasses: num(values.refine, 'refine'),
+      halftoneMixing: values.halftone ? true : undefined,
+      halftoneRadiusMm: num(values['halftone-radius'], 'halftone-radius'),
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
       preprocess: {
         contrast: num(values.contrast, 'contrast'),
@@ -184,6 +229,16 @@ async function main(): Promise<void> {
   );
 
   const image = await loadRaster(input);
+  if (values['auto-palette'] !== undefined) {
+    const k = Number(values['auto-palette']) || 4;
+    const autoPal = extractPalette(image, k, {
+      loomPegCount: options.loom.pegCount,
+      threadWidthMm: threadWidth,
+    });
+    options.threads = autoPal.threads;
+    options.threadLineBudgets = autoPal.threadLineBudgets;
+    options.preprocess.grayscale = false;
+  }
   const importance = values.importance ? await loadRaster(values.importance) : undefined;
   const engine = new WeaveEngine(image, options, importance);
 

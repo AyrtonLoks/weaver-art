@@ -1,11 +1,13 @@
 import './style.css';
 import {
   calibrateThreadColor,
+  extractPalette,
   PRESETS,
   resolveOptions,
   toCSV,
   toInstructions,
   toSVG,
+  type CustomPaletteResult,
   type PresetName,
   type WeaveOptions,
   type WeaveResult,
@@ -26,6 +28,7 @@ let image: ImageData | null = null;
 let imageName = 'weave';
 let result: WeaveResult | null = null;
 let running = false;
+let customPalette: CustomPaletteResult | null = null;
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
 // --------------------------------------------------------------- elements
@@ -33,6 +36,10 @@ const fileInput = $<HTMLInputElement>('file');
 const drop = $('drop');
 const dropLabel = $('drop-label');
 const preset = $<HTMLSelectElement>('preset');
+const optCustom = $<HTMLOptionElement>('opt-custom');
+const paletteKInput = $<HTMLInputElement>('paletteK');
+const btnExtractPalette = $<HTMLButtonElement>('btnExtractPalette');
+const palettePreview = $('palettePreview');
 const runBtn = $<HTMLButtonElement>('run');
 const stopBtn = $<HTMLButtonElement>('stop');
 const simCanvas = $<HTMLCanvasElement>('sim');
@@ -44,6 +51,7 @@ const num = (id: string): HTMLInputElement => $<HTMLInputElement>(id);
 const colorStrategy = $<HTMLSelectElement>('colorStrategy');
 const stopImprovement = $<HTMLInputElement>('stopImprovement');
 const repeatsHint = $('repeats-hint');
+const halftoneControls = $('halftone-controls');
 
 const fields = {
   pegs: num('pegs'),
@@ -65,6 +73,8 @@ const fields = {
   clahe: $<HTMLInputElement>('clahe'),
   claheClip: num('claheClip'),
   invert: num('invert'),
+  halftoneMixing: $<HTMLInputElement>('halftoneMixing'),
+  halftoneRadius: num('halftoneRadius'),
 };
 
 const calibrateFileInput = $<HTMLInputElement>('calibrateFile');
@@ -104,6 +114,52 @@ calibrateFileInput.addEventListener('change', async () => {
 fields.clahe.addEventListener('change', () => {
   $('clahe-controls').hidden = !fields.clahe.checked;
 });
+
+fields.halftoneMixing.addEventListener('change', () => {
+  halftoneControls.hidden = !fields.halftoneMixing.checked;
+});
+
+function renderPalettePreview(res: CustomPaletteResult): void {
+  palettePreview.innerHTML = '';
+  res.threads.forEach((t, i) => {
+    const quotaPct = ((res.threadLineBudgets[i] ?? 0) * 100).toFixed(0);
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '0.5rem';
+    row.innerHTML =
+      `<span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${t.color};border:1px solid #fff"></span>` +
+      `<span><strong>${escapeHtml(t.name)}</strong> (${t.color}) · ${quotaPct}%</span>`;
+    palettePreview.appendChild(row);
+  });
+  palettePreview.hidden = false;
+}
+
+btnExtractPalette.addEventListener('click', () => {
+  if (!image) return;
+  const k = Math.max(2, Math.min(8, Number(paletteKInput.value) || 4));
+  try {
+    customPalette = extractPalette({ width: image.width, height: image.height, data: image.data }, k);
+    renderPalettePreview(customPalette);
+    optCustom.disabled = false;
+    preset.value = 'custom';
+    fillForm(getCustomPresetOptions());
+  } catch (err) {
+    showError(err);
+  }
+});
+
+function getCustomPresetOptions(): WeaveOptions {
+  if (!customPalette) return PRESETS['vrellis-mono'];
+  return {
+    ...PRESETS['vrellis-mono'],
+    threads: customPalette.threads,
+    threadLineBudgets: customPalette.threadLineBudgets,
+    colorStrategy: 'layered',
+    maxLines: 6000,
+    preprocess: { ...PRESETS['vrellis-mono'].preprocess, grayscale: false },
+  };
+}
 
 const player = new KnitPlayer({
   canvas: $<HTMLCanvasElement>('loom'),
@@ -152,6 +208,9 @@ function fillForm(o: WeaveOptions): void {
   fields.clahe.checked = Boolean(o.preprocess.clahe);
   fields.claheClip.value = String(o.preprocess.claheClipLimit ?? 2);
   $('clahe-controls').hidden = !fields.clahe.checked;
+  fields.halftoneMixing.checked = Boolean(o.halftoneMixing);
+  fields.halftoneRadius.value = String(o.halftoneRadiusMm ?? 0.75);
+  halftoneControls.hidden = !fields.halftoneMixing.checked;
   fields.invert.checked = o.preprocess.invert;
   colorStrategy.value = o.colorStrategy ?? 'layered';
   stopImprovement.checked = o.stopWhenNoImprovement;
@@ -169,6 +228,7 @@ function updateOutputs(): void {
     'lengthPenalty',
     'viewingDistance',
     'claheClip',
+    'halftoneRadius',
   ] as const) {
     const el = document.getElementById(`${id}-out`);
     if (el) el.textContent = Number(fields[id].value).toFixed(2);
@@ -176,7 +236,7 @@ function updateOutputs(): void {
 }
 
 function readOptions(): WeaveOptions {
-  const base = PRESETS[preset.value as PresetName];
+  const base = preset.value === 'custom' ? getCustomPresetOptions() : PRESETS[preset.value as PresetName];
   const pegCount = Number(fields.pegs.value);
   const width = Number(fields.threadWidth.value);
   return resolveOptions(
@@ -192,6 +252,7 @@ function readOptions(): WeaveOptions {
         widthMm: width,
         startPeg: Math.floor((i * pegCount) / base.threads.length),
       })),
+      threadLineBudgets: base.threadLineBudgets,
       maxLines: Number(fields.lines.value),
       minPegGap: Number(fields.gap.value),
       maxChordRepeats: Number(fields.repeats.value),
@@ -201,6 +262,8 @@ function readOptions(): WeaveOptions {
       lengthPenalty: Number(fields.lengthPenalty.value),
       viewingDistanceM: Number(fields.viewingDistance.value),
       refinePasses: Number(fields.refinePasses.value),
+      halftoneMixing: fields.halftoneMixing.checked,
+      halftoneRadiusMm: Number(fields.halftoneRadius.value),
       preprocess: {
         contrast: Number(fields.contrast.value),
         brightness: Number(fields.brightness.value),
@@ -217,7 +280,13 @@ function readOptions(): WeaveOptions {
   );
 }
 
-preset.addEventListener('change', () => fillForm(PRESETS[preset.value as PresetName]));
+preset.addEventListener('change', () => {
+  if (preset.value === 'custom') {
+    fillForm(getCustomPresetOptions());
+  } else {
+    fillForm(PRESETS[preset.value as PresetName]);
+  }
+});
 for (const id of [
   'contrast',
   'brightness',
@@ -227,6 +296,7 @@ for (const id of [
   'lengthPenalty',
   'viewingDistance',
   'claheClip',
+  'halftoneRadius',
 ] as const) {
   fields[id].addEventListener('input', updateOutputs);
 }
@@ -252,6 +322,7 @@ async function loadFile(file: File): Promise<void> {
   drop.style.backgroundImage = `url(${URL.createObjectURL(file)})`;
   drop.classList.add('has-image');
   runBtn.disabled = running;
+  btnExtractPalette.disabled = false;
 }
 
 fileInput.addEventListener('change', () => {

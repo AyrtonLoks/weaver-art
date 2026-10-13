@@ -42,8 +42,22 @@
                 <option value="vrellis-mono">Vrellis · monocromático (preto)</option>
                 <option value="vrellis-color">Vrellis · 5 cores (amarelo, magenta, azul, verde, preto)</option>
                 <option value="cmyk">CMYK · clássico (ciano, magenta, amarelo, preto)</option>
+                <option value="custom" disabled id="opt-custom">Personalizado (extraído da imagem)</option>
               </select>
             </label>
+            <div id="paletteExtractor" style="margin-top: 0.5rem">
+              <div class="grid2">
+                <label>Cores da paleta <input type="number" id="paletteK" min="2" max="8" step="1" value="4" /></label>
+                <button type="button" id="btnExtractPalette" class="button" style="margin-top: 1.25rem" disabled>
+                  Extrair cores
+                </button>
+              </div>
+              <div
+                id="palettePreview"
+                hidden
+                style="margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem"
+              ></div>
+            </div>
             <div class="grid2">
               <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" /></label>
               <label>Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" /></label>
@@ -95,6 +109,15 @@
             <label class="check"
               ><input type="checkbox" id="stopImprovement" checked /> Parar se não houver melhoria</label
             >
+            <label class="check" title="Modela a fusão óptica de cores vizinhas a distância (Birsak et al., 2018)">
+              <input type="checkbox" id="halftoneMixing" /> Mistura óptica por meio-tom
+            </label>
+            <div id="halftone-controls" hidden>
+              <label title="Raio de dispersão óptica em milímetros (padrão 0.75 mm)">
+                Raio de meio-tom (mm) <output id="halftoneRadius-out">0.75</output>
+                <input type="range" id="halftoneRadius" min="0.2" max="2.5" step="0.05" value="0.75" />
+              </label>
+            </div>
             <p class="hint" id="repeats-hint" hidden style="margin-top: 0.5rem; font-size: 0.8rem; color: #ff8c42">
               Dica: Para mais de 5.000 linhas, use Repetições = 2 ou 3 para atingir a meta sem esgotar cordas.
             </p>
