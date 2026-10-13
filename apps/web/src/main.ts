@@ -1,13 +1,26 @@
 import './style.css';
 import {
   calibrateThreadColor,
+  createLoom,
+  describeLoom,
+  estimateWeave,
   extractPalette,
+  formatDuration,
+  loomPegCount,
+  parsePegsCSV,
   PRESETS,
   resolveOptions,
   toCSV,
+  toGcode,
   toInstructions,
+  toPegsCSV,
   toSVG,
+  toTemplatePDF,
+  toTemplateSVG,
   type CustomPaletteResult,
+  type GcodeOptions,
+  type LoomConfig,
+  type PaperSize,
   type PresetName,
   type WeaveOptions,
   type WeaveResult,
@@ -29,6 +42,7 @@ let imageName = 'weave';
 let result: WeaveResult | null = null;
 let running = false;
 let customPalette: CustomPaletteResult | null = null;
+let customPegsList: { x: number; y: number }[] | null = null;
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
 // --------------------------------------------------------------- elements
@@ -52,6 +66,39 @@ const colorStrategy = $<HTMLSelectElement>('colorStrategy');
 const stopImprovement = $<HTMLInputElement>('stopImprovement');
 const repeatsHint = $('repeats-hint');
 const halftoneControls = $('halftone-controls');
+
+// Loom shape controls
+const loomShape = $<HTMLSelectElement>('loomShape');
+const loomCircleControls = $('loomCircleControls');
+const loomSquareControls = $('loomSquareControls');
+const loomRectControls = $('loomRectControls');
+const loomCustomControls = $('loomCustomControls');
+const squareSide = num('squareSide');
+const squarePegsPerSide = num('squarePegsPerSide');
+const rectWidth = num('rectWidth');
+const rectHeight = num('rectHeight');
+const rectPegsX = num('rectPegsX');
+const rectPegsY = num('rectPegsY');
+const customPegsFile = $<HTMLInputElement>('customPegsFile');
+const customPegsSummary = $('customPegsSummary');
+const miniLoomCanvas = $<HTMLCanvasElement>('miniLoom');
+const miniLoomSummary = $('miniLoomSummary');
+
+// Fabrication elements
+const paperSize = $<HTMLSelectElement>('paperSize');
+const drillDiameter = num('drillDiameter');
+const btnTemplateSVG = $<HTMLButtonElement>('btnTemplateSVG');
+const btnTemplatePDF = $<HTMLButtonElement>('btnTemplatePDF');
+const btnPegsCSV = $<HTMLButtonElement>('btnPegsCSV');
+const btnExportGcode = $<HTMLButtonElement>('btnExportGcode');
+const gcodeClearance = num('gcodeClearance');
+const gcodeFeed = num('gcodeFeed');
+const gcodeOrigin = $<HTMLSelectElement>('gcodeOrigin');
+
+// Stats & spool
+const sEstTime = $('s-est-time');
+const spoolBreakdown = $('spoolBreakdown');
+const spoolTableContainer = $('spoolTableContainer');
 
 const fields = {
   pegs: num('pegs'),
@@ -179,9 +226,156 @@ const player = new KnitPlayer({
   interval: $<HTMLInputElement>('k-interval'),
   goto: $<HTMLInputElement>('k-goto'),
   bar: $('k-bar'),
+  remaining: $('k-remaining'),
+  code: $<HTMLInputElement>('k-code'),
+  copyCodeBtn: $<HTMLButtonElement>('k-copy-code'),
+  pasteCodeBtn: $<HTMLButtonElement>('k-paste-code'),
+  exportResumeBtn: $<HTMLButtonElement>('k-export-resume'),
 });
 
-// ------------------------------------------------------------------- form
+// ------------------------------------------------------------------- loom & form
+function getCurrentLoomConfig(): LoomConfig {
+  const shape = loomShape.value;
+  const pegDiameterMm = Number(fields.pegDiameter.value) || 2;
+
+  if (shape === 'square') {
+    const side = Number(squareSide.value) || 500;
+    const n = Math.max(2, Math.round(Number(squarePegsPerSide.value) || 41));
+    return {
+      shape: 'rectangle',
+      widthMm: side,
+      heightMm: side,
+      pegsX: n,
+      pegsY: n,
+      pegDiameterMm,
+    };
+  }
+
+  if (shape === 'rectangle') {
+    const w = Number(rectWidth.value) || 600;
+    const h = Number(rectHeight.value) || 400;
+    const px = Math.max(2, Math.round(Number(rectPegsX.value) || 61));
+    const py = Math.max(2, Math.round(Number(rectPegsY.value) || 41));
+    return {
+      shape: 'rectangle',
+      widthMm: w,
+      heightMm: h,
+      pegsX: px,
+      pegsY: py,
+      pegDiameterMm,
+    };
+  }
+
+  if (shape === 'custom') {
+    if (!customPegsList || customPegsList.length < 3) {
+      throw new Error('Carregue um arquivo CSV com pelo menos 3 pinos para usar o formato personalizado.');
+    }
+    return {
+      shape: 'custom',
+      pegs: customPegsList,
+      pegDiameterMm,
+    };
+  }
+
+  // Padrão: círculo
+  return {
+    shape: 'circle',
+    diameterMm: Number(fields.diameter.value) || 711.2,
+    pegCount: Math.max(3, Math.round(Number(fields.pegs.value) || 200)),
+    pegDiameterMm,
+    startAngleDeg: -90,
+  };
+}
+
+function updateLoomPreview(): void {
+  try {
+    const cfg = getCurrentLoomConfig();
+    const loom = createLoom(cfg);
+    miniLoomSummary.textContent = describeLoom(cfg);
+
+    const ctx = miniLoomCanvas.getContext('2d');
+    if (!ctx) return;
+    const W = miniLoomCanvas.width;
+    const margin = 5;
+    const extent = loom.extentMm;
+    const k = (W - 2 * margin) / extent;
+    const X = (mm: number): number => margin + mm * k;
+
+    ctx.clearRect(0, 0, W, W);
+
+    // Borda do tear
+    ctx.fillStyle = '#1e1e1e';
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 1;
+
+    if (loom.config.shape === 'circle') {
+      const cx = loom.extentMm / 2;
+      const cy = loom.extentMm / 2;
+      ctx.beginPath();
+      ctx.arc(X(cx), X(cy), loom.radiusMm * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (loom.outline && loom.outline.length > 2) {
+      ctx.beginPath();
+      loom.outline.forEach((pt, i) => {
+        if (i === 0) ctx.moveTo(X(pt.x), X(pt.y));
+        else ctx.lineTo(X(pt.x), X(pt.y));
+      });
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Pinos
+    ctx.fillStyle = '#ff5a36';
+    for (const p of loom.pegs) {
+      ctx.fillRect(X(p.x) - 0.75, X(p.y) - 0.75, 1.5, 1.5);
+    }
+  } catch {
+    miniLoomSummary.textContent = 'Configuração incompleta ou carregue um arquivo CSV.';
+  }
+}
+
+customPegsFile.addEventListener('change', async () => {
+  const f = customPegsFile.files?.[0];
+  if (!f) return;
+  try {
+    const text = await f.text();
+    const parsed = parsePegsCSV(text);
+    if (parsed.length < 3) throw new Error('O CSV deve conter ao menos 3 pinos.');
+    customPegsList = parsed;
+    customPegsSummary.textContent = `✔ ${parsed.length} pinos carregados (${f.name})`;
+    customPegsSummary.style.color = 'var(--accent-2)';
+    updateLoomPreview();
+  } catch (err) {
+    showError(err);
+  }
+});
+
+loomShape.addEventListener('change', () => {
+  const s = loomShape.value;
+  document.body.dataset.loomShape = s;
+  loomCircleControls.hidden = s !== 'circle';
+  loomSquareControls.hidden = s !== 'square';
+  loomRectControls.hidden = s !== 'rectangle';
+  loomCustomControls.hidden = s !== 'custom';
+  updateLoomPreview();
+});
+
+for (const el of [
+  fields.pegs,
+  fields.diameter,
+  fields.pegDiameter,
+  squareSide,
+  squarePegsPerSide,
+  rectWidth,
+  rectHeight,
+  rectPegsX,
+  rectPegsY,
+]) {
+  el.addEventListener('input', updateLoomPreview);
+}
+
 function checkRepeatsHint(): void {
   const lines = Number(fields.lines.value);
   const repeats = Number(fields.repeats.value);
@@ -189,8 +383,36 @@ function checkRepeatsHint(): void {
 }
 
 function fillForm(o: WeaveOptions): void {
-  fields.pegs.value = String(o.loom.pegCount);
-  fields.diameter.value = o.loom.diameterMm.toFixed(1);
+  const { loom } = o;
+  if (loom.shape === 'circle') {
+    loomShape.value = 'circle';
+    fields.pegs.value = String(loom.pegCount);
+    fields.diameter.value = loom.diameterMm.toFixed(1);
+  } else if (loom.shape === 'rectangle') {
+    if (loom.widthMm === loom.heightMm && loom.pegsX === loom.pegsY) {
+      loomShape.value = 'square';
+      squareSide.value = loom.widthMm.toFixed(1);
+      squarePegsPerSide.value = String(loom.pegsX);
+    } else {
+      loomShape.value = 'rectangle';
+      rectWidth.value = loom.widthMm.toFixed(1);
+      rectHeight.value = loom.heightMm.toFixed(1);
+      rectPegsX.value = String(loom.pegsX);
+      rectPegsY.value = String(loom.pegsY);
+    }
+  } else if (loom.shape === 'custom') {
+    loomShape.value = 'custom';
+    customPegsList = loom.pegs.slice();
+    customPegsSummary.textContent = `✔ ${loom.pegs.length} pinos definidos`;
+  }
+
+  const s = loomShape.value;
+  document.body.dataset.loomShape = s;
+  loomCircleControls.hidden = s !== 'circle';
+  loomSquareControls.hidden = s !== 'square';
+  loomRectControls.hidden = s !== 'rectangle';
+  loomCustomControls.hidden = s !== 'custom';
+
   fields.pegDiameter.value = String(o.loom.pegDiameterMm);
   fields.threadWidth.value = String(o.threads[0].widthMm);
   fields.lines.value = String(o.maxLines);
@@ -216,6 +438,7 @@ function fillForm(o: WeaveOptions): void {
   stopImprovement.checked = o.stopWhenNoImprovement;
   updateOutputs();
   checkRepeatsHint();
+  updateLoomPreview();
 }
 
 function updateOutputs(): void {
@@ -237,20 +460,17 @@ function updateOutputs(): void {
 
 function readOptions(): WeaveOptions {
   const base = preset.value === 'custom' ? getCustomPresetOptions() : PRESETS[preset.value as PresetName];
-  const pegCount = Number(fields.pegs.value);
+  const loom = getCurrentLoomConfig();
+  const totalPegs = loomPegCount(loom);
   const width = Number(fields.threadWidth.value);
+
   return resolveOptions(
     {
-      loom: {
-        pegCount,
-        diameterMm: Number(fields.diameter.value),
-        pegDiameterMm: Number(fields.pegDiameter.value),
-      },
-      // Spread thread tie-on pegs evenly when the peg count changes.
+      loom,
       threads: base.threads.map((t, i) => ({
         ...t,
         widthMm: width,
-        startPeg: Math.floor((i * pegCount) / base.threads.length),
+        startPeg: Math.floor((i * totalPegs) / base.threads.length),
       })),
       threadLineBudgets: base.threadLineBudgets,
       maxLines: Number(fields.lines.value),
@@ -375,6 +595,55 @@ function setStats(
   $('s-time').textContent = `${(ms / 1000).toFixed(1)} s`;
 }
 
+function renderSpoolTable(res: WeaveResult): void {
+  const est = estimateWeave(res);
+  sEstTime.textContent = formatDuration(est.totalSeconds);
+
+  let html = `
+    <table class="spool-table" style="width: 100%; border-collapse: collapse; font-size: 0.82rem">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--line); color: var(--muted)">
+          <th style="padding: 6px 8px; text-align: left">Cor</th>
+          <th style="padding: 6px 8px; text-align: right">Linhas</th>
+          <th style="padding: 6px 8px; text-align: right">Fio</th>
+          <th style="padding: 6px 8px; text-align: right">Com margem</th>
+          <th style="padding: 6px 8px; text-align: right">Carretéis</th>
+          <th style="padding: 6px 8px; text-align: right">Uso</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  for (const t of est.threads) {
+    const lenM = (t.lengthMm / 1000).toFixed(1) + ' m';
+    const reqM = (t.requiredMm / 1000).toFixed(1) + ' m';
+    html += `
+      <tr style="border-bottom: 1px solid #232321">
+        <td style="padding: 6px 8px; display: flex; align-items: center; gap: 0.5rem">
+          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 2px; background: ${t.color}; border: 1px solid #fff"></span>
+          <span>${escapeHtml(t.name)}</span>
+        </td>
+        <td style="padding: 6px 8px; text-align: right">${t.lines.toLocaleString('pt-BR')}</td>
+        <td style="padding: 6px 8px; text-align: right">${lenM}</td>
+        <td style="padding: 6px 8px; text-align: right">${reqM}</td>
+        <td style="padding: 6px 8px; text-align: right"><strong>${t.spools}</strong></td>
+        <td style="padding: 6px 8px; text-align: right">${t.spoolUsagePct.toFixed(1)}%</td>
+      </tr>
+    `;
+  }
+
+  html += `
+      </tbody>
+    </table>
+    <p style="margin: 0.5rem 0 0; font-size: 0.78rem; color: var(--muted)">
+      Tempo tecendo: ${formatDuration(est.weavingSeconds)} · Nós e trocas: ${formatDuration(est.overheadSeconds)} (${est.tieOns} nós, ${est.switches} trocas)
+    </p>
+  `;
+
+  spoolTableContainer.innerHTML = html;
+  spoolBreakdown.hidden = false;
+}
+
 function setRunning(on: boolean): void {
   running = on;
   runBtn.disabled = on || !image;
@@ -395,6 +664,9 @@ runBtn.addEventListener('click', () => {
   currentMaxLines = options.maxLines;
   result = null;
   exportButtons.forEach((b) => (b.disabled = true));
+  btnExportGcode.disabled = true;
+  spoolBreakdown.hidden = true;
+  sEstTime.textContent = '…';
   setRunning(true);
   const data = image.data.slice().buffer;
   const msg: ToWorker = { type: 'start', image: { width: image.width, height: image.height, data }, options };
@@ -428,6 +700,8 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
         result.metrics?.deltaELab,
         result.metrics?.ssim,
       );
+      renderSpoolTable(result);
+      btnExportGcode.disabled = false;
       exportButtons.forEach((b) => (b.disabled = false));
       setRunning(false);
       player.load(result);
@@ -439,15 +713,65 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
   }
 };
 
-// ---------------------------------------------------------------- export
-function download(name: string, data: BlobPart, type: string): void {
-  const url = URL.createObjectURL(new Blob([data], { type }));
+// ---------------------------------------------------------------- export & fabrication
+function download(name: string, data: BlobPart | Uint8Array, type: string): void {
+  const blob = data instanceof Blob ? data : new Blob([data as unknown as BlobPart], { type });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+btnTemplateSVG.addEventListener('click', () => {
+  try {
+    const cfg = getCurrentLoomConfig();
+    const svg = toTemplateSVG(cfg, {
+      drillDiameterMm: Number(drillDiameter.value) || 2,
+    });
+    download(`gabarito-${cfg.shape}.svg`, svg, 'image/svg+xml');
+  } catch (err) {
+    showError(err);
+  }
+});
+
+btnTemplatePDF.addEventListener('click', () => {
+  try {
+    const cfg = getCurrentLoomConfig();
+    const pdf = toTemplatePDF(cfg, {
+      paper: paperSize.value as PaperSize,
+      drillDiameterMm: Number(drillDiameter.value) || 2,
+    });
+    download(`gabarito-${cfg.shape}.pdf`, pdf, 'application/pdf');
+  } catch (err) {
+    showError(err);
+  }
+});
+
+btnPegsCSV.addEventListener('click', () => {
+  try {
+    const cfg = getCurrentLoomConfig();
+    const csv = toPegsCSV(cfg);
+    download(`pinos-${cfg.shape}.csv`, csv, 'text/csv;charset=utf-8');
+  } catch (err) {
+    showError(err);
+  }
+});
+
+btnExportGcode.addEventListener('click', () => {
+  if (!result) return;
+  try {
+    const gcode = toGcode(result, {
+      clearanceMm: Number(gcodeClearance.value) || 1.5,
+      feedMmPerMin: Number(gcodeFeed.value) || 3000,
+      origin: gcodeOrigin.value as GcodeOptions['origin'],
+    });
+    download(`${imageName}.weave.gcode`, gcode, 'text/plain;charset=utf-8');
+  } catch (err) {
+    showError(err);
+  }
+});
 
 for (const btn of exportButtons) {
   btn.addEventListener('click', () => {

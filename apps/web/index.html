@@ -17,7 +17,7 @@
     <header class="topbar">
       <div class="brand">
         <h1>Weaver Art</h1>
-        <p>string art computacional · um único fio, cordas de um círculo</p>
+        <p>string art computacional · um único fio, tecelagem algorítmica</p>
       </div>
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="studio" role="tab">Estúdio</button>
@@ -58,20 +58,102 @@
                 style="margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem"
               ></div>
             </div>
+
+            <label style="margin-top: 0.5rem"
+              >Formato do tear
+              <select id="loomShape">
+                <option value="circle">Circular (Petros Vrellis)</option>
+                <option value="square">Quadrado</option>
+                <option value="rectangle">Retangular</option>
+                <option value="custom">Personalizado (CSV)</option>
+              </select>
+            </label>
+
+            <div id="loomCircleControls">
+              <div class="grid2">
+                <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" /></label>
+                <label>Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" /></label>
+              </div>
+            </div>
+
+            <div id="loomSquareControls" hidden>
+              <div class="grid2">
+                <label
+                  >Lado (mm) <input type="number" id="squareSide" min="50" max="3000" step="0.1" value="500"
+                /></label>
+                <label
+                  >Pinos / lado <input type="number" id="squarePegsPerSide" min="3" max="250" step="1" value="41"
+                /></label>
+              </div>
+            </div>
+
+            <div id="loomRectControls" hidden>
+              <div class="grid2">
+                <label
+                  >Largura (mm) <input type="number" id="rectWidth" min="50" max="3000" step="0.1" value="600"
+                /></label>
+                <label
+                  >Altura (mm) <input type="number" id="rectHeight" min="50" max="3000" step="0.1" value="400"
+                /></label>
+                <label>Pinos X <input type="number" id="rectPegsX" min="2" max="250" step="1" value="61" /></label>
+                <label>Pinos Y <input type="number" id="rectPegsY" min="2" max="250" step="1" value="41" /></label>
+              </div>
+            </div>
+
+            <div id="loomCustomControls" hidden>
+              <label class="button" style="text-align: center; margin-top: 0.25rem">
+                Carregar CSV de pinos (.csv)
+                <input type="file" id="customPegsFile" accept=".csv,text/csv,text/plain" hidden />
+              </label>
+              <p id="customPegsSummary" class="hint" style="margin-top: 0.25rem; font-size: 0.8rem">
+                Nenhum CSV carregado. Esperado: colunas x_mm, y_mm.
+              </p>
+            </div>
+
             <div class="grid2">
-              <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" /></label>
-              <label>Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" /></label>
               <label>Ø pino (mm) <input type="number" id="pegDiameter" min="0" max="10" step="0.1" /></label>
               <label>Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" /></label>
             </div>
-            <label class="button" style="text-align: center; margin-top: 0.25rem">
+
+            <div
+              class="mini-loom-container"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                margin-top: 0.5rem;
+                padding: 0.5rem;
+                background: #181817;
+                border-radius: 6px;
+                border: 1px solid var(--line);
+              "
+            >
+              <canvas
+                id="miniLoom"
+                width="60"
+                height="60"
+                style="background: #101010; border-radius: 4px; flex-shrink: 0"
+              ></canvas>
+              <span id="miniLoomSummary" style="font-size: 0.8rem; color: var(--muted); line-height: 1.3"
+                >Tear: 200 pinos</span
+              >
+            </div>
+
+            <label class="button" style="text-align: center; margin-top: 0.5rem">
               Calibrar cor de meada
               <input type="file" id="calibrateFile" accept="image/*" hidden />
             </label>
             <div
               id="calibrateOutput"
               hidden
-              style="font-size: 0.8rem; color: var(--accent-2); display: flex; align-items: center; gap: 0.5rem"
+              style="
+                font-size: 0.8rem;
+                color: var(--accent-2);
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                margin-top: 0.25rem;
+              "
             >
               <span
                 id="calibrateSwatch"
@@ -79,6 +161,58 @@
               ></span>
               <span id="calibrateText"></span>
             </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Fabricação e Gabarito</legend>
+            <div class="grid2">
+              <label
+                >Papel
+                <select id="paperSize">
+                  <option value="A4">A4 (210×297 mm)</option>
+                  <option value="A3">A3 (297×420 mm)</option>
+                  <option value="Letter">Carta (Letter)</option>
+                </select>
+              </label>
+              <label
+                >Broca (mm) <input type="number" id="drillDiameter" min="0.5" max="10" step="0.5" value="2"
+              /></label>
+            </div>
+            <div class="grid2" style="margin-top: 0.25rem">
+              <button type="button" id="btnTemplateSVG" class="button">Gabarito SVG (1:1)</button>
+              <button type="button" id="btnTemplatePDF" class="button">Gabarito PDF</button>
+            </div>
+            <div class="grid2" style="margin-top: 0.25rem">
+              <button type="button" id="btnPegsCSV" class="button">Pinos (.csv)</button>
+              <button
+                type="button"
+                id="btnExportGcode"
+                class="button"
+                disabled
+                title="Gera G-code após calcular o padrão"
+              >
+                G-code CNC
+              </button>
+            </div>
+            <details style="margin-top: 0.5rem; font-size: 0.82rem">
+              <summary style="cursor: pointer; color: var(--muted)">Opções CNC / G-code</summary>
+              <div class="grid2" style="margin-top: 0.5rem">
+                <label
+                  >Folga pino (mm) <input type="number" id="gcodeClearance" min="0" max="10" step="0.5" value="1.5"
+                /></label>
+                <label
+                  >Avanço (mm/min) <input type="number" id="gcodeFeed" min="100" max="20000" step="500" value="3000"
+                /></label>
+                <label style="grid-column: span 2"
+                  >Origem CNC
+                  <select id="gcodeOrigin">
+                    <option value="bottom-left">Inferior esquerdo (0,0)</option>
+                    <option value="top-left">Superior esquerdo</option>
+                    <option value="center">Centro do tear</option>
+                  </select>
+                </label>
+              </div>
+            </details>
           </fieldset>
 
           <fieldset>
@@ -203,7 +337,36 @@
               <dt>Tempo</dt>
               <dd id="s-time">—</dd>
             </div>
+            <div>
+              <dt>Tempo manual est.</dt>
+              <dd id="s-est-time">—</dd>
+            </div>
           </dl>
+
+          <div
+            id="spoolBreakdown"
+            hidden
+            style="
+              margin-top: 1rem;
+              padding: 0.75rem;
+              background: var(--panel);
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+            "
+          >
+            <h4
+              style="
+                margin: 0 0 0.5rem 0;
+                font-size: 0.85rem;
+                color: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+              "
+            >
+              Estimativa de Carretéis (1.000 m por carretel + 10% margem)
+            </h4>
+            <div id="spoolTableContainer"></div>
+          </div>
 
           <div class="exports">
             <button data-export="json" disabled>Projeto .json</button>
@@ -234,6 +397,9 @@
               <p class="knit-from">do pino <span id="k-from">—</span></p>
               <p class="knit-to" id="k-to">—</p>
               <p class="knit-side" id="k-side"></p>
+              <p class="knit-remaining" style="font-size: 0.9rem; color: var(--accent-2); margin: 0.35rem 0 0.75rem">
+                Tempo restante: <strong id="k-remaining">—</strong>
+              </p>
               <div class="knit-controls">
                 <button id="k-prev" title="Seta esquerda">◀ Anterior</button>
                 <button id="k-next" class="primary" title="Espaço / seta direita">Próximo ▶</button>
@@ -248,6 +414,48 @@
               </div>
               <div class="progress"><div id="k-bar"></div></div>
               <p class="hint">Espaço/→ avança · ← volta · o progresso fica salvo neste navegador.</p>
+
+              <div
+                class="knit-sync"
+                style="
+                  margin-top: 1rem;
+                  padding: 0.75rem;
+                  background: #20201e;
+                  border-radius: 6px;
+                  border: 1px solid var(--line);
+                "
+              >
+                <label
+                  style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem; color: var(--muted)"
+                >
+                  Código de retomada entre dispositivos:
+                  <input
+                    type="text"
+                    id="k-code"
+                    readonly
+                    style="
+                      font-family: monospace;
+                      font-size: 0.85rem;
+                      padding: 0.3rem 0.5rem;
+                      background: #151515;
+                      border: 1px solid var(--line);
+                      border-radius: 4px;
+                      color: var(--text);
+                    "
+                  />
+                </label>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem">
+                  <button type="button" id="k-copy-code" class="button" style="flex: 1; font-size: 0.8rem">
+                    Copiar código
+                  </button>
+                  <button type="button" id="k-paste-code" class="button" style="flex: 1; font-size: 0.8rem">
+                    Colar código
+                  </button>
+                  <button type="button" id="k-export-resume" class="button" style="flex: 1; font-size: 0.8rem">
+                    Salvar retomada
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

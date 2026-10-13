@@ -1,5 +1,6 @@
 import { applyClahe } from './clahe.js';
 import { LUMA_B, LUMA_G, LUMA_R, SRGB8_TO_LINEAR, linearToSrgb, srgbToLinear } from './color.js';
+import type { Loom } from './geometry.js';
 import type { PreprocessOptions, RasterImage } from './types.js';
 
 /** The optimisation target: a square image in linear light plus per-pixel weights. */
@@ -8,7 +9,7 @@ export interface TargetImage {
   channels: 1 | 3;
   /** Linear-light values, `size * size * channels`. */
   data: Float32Array;
-  /** Loom mask: 1 inside the circle, 0 outside, anti-aliased at the rim. */
+  /** Loom mask: 1 inside the loom frame, 0 outside, anti-aliased at the rim. */
   mask: Float32Array;
   /** Error weight per pixel (`mask` × optional importance map). */
   weight: Float32Array;
@@ -18,6 +19,46 @@ export interface TargetImage {
 export function centeredSquareCrop(width: number, height: number): { x: number; y: number; size: number } {
   const size = Math.min(width, height);
   return { x: (width - size) / 2, y: (height - size) / 2, size };
+}
+
+/**
+ * Compute the square simulation crop in image pixels for a given loom.
+ * The loom frame itself is framed as the largest centered rectangle with its aspect ratio,
+ * then mapped back to the square enclosing the simulation frame.
+ */
+export function loomFrameCrop(imgW: number, imgH: number, loom: Loom): { x: number; y: number; size: number } {
+  if (loom.config.shape === 'circle') {
+    return centeredSquareCrop(imgW, imgH);
+  }
+
+  const loomW = loom.widthMm;
+  const loomH = loom.heightMm;
+  const aspect = loomW / loomH;
+  const imgAspect = imgW / imgH;
+
+  let cropLoomW: number;
+  let cropLoomX: number;
+  let cropLoomY: number;
+
+  if (imgAspect > aspect) {
+    cropLoomW = imgH * aspect;
+    cropLoomX = (imgW - cropLoomW) / 2;
+    cropLoomY = 0;
+  } else {
+    const cropLoomH = imgW / aspect;
+    cropLoomW = imgW;
+    cropLoomX = 0;
+    cropLoomY = (imgH - cropLoomH) / 2;
+  }
+
+  const scale = cropLoomW / loomW;
+  const cropSize = loom.extentMm * scale;
+  const ox = (loom.extentMm - loomW) / 2;
+  const oy = (loom.extentMm - loomH) / 2;
+  const cropX = cropLoomX - ox * scale;
+  const cropY = cropLoomY - oy * scale;
+
+  return { x: cropX, y: cropY, size: cropSize };
 }
 
 /**
@@ -115,6 +156,58 @@ export function circleMask(size: number): Float32Array {
       mask[y * size + x] = Math.min(1, Math.max(0, r - d + 0.5));
     }
   }
+  return mask;
+}
+
+/**
+ * Anti-aliased mask for any loom geometry inscribed in a `size × size` simulation grid.
+ * For circles, returns the analytical circular mask.
+ * For convex polygon frames, returns anti-aliased coverage via signed edge distances:
+ * m = clamp(min_e d_e + 0.5, 0, 1).
+ */
+export function loomMask(loom: Loom, size: number): Float32Array {
+  if (loom.config.shape === 'circle' || !loom.outline) {
+    return circleMask(size);
+  }
+
+  const mask = new Float32Array(size * size);
+  const scale = size / loom.extentMm;
+  const poly = loom.outline.map((pt) => ({ x: pt.x * scale, y: pt.y * scale }));
+  const numEdges = poly.length;
+
+  // Precompute line coefficients a * px + b * py + c for each directed edge
+  // In screen coords (Y down, clockwise poly), inward normal has:
+  // dx = B.x - A.x, dy = B.y - A.y
+  // distance = (dx * (py - A.y) - dy * (px - A.x)) / L = (-dy/L)*px + (dx/L)*py + (dy*A.x - dx*A.y)/L
+  const a = new Float64Array(numEdges);
+  const b = new Float64Array(numEdges);
+  const c = new Float64Array(numEdges);
+
+  for (let i = 0; i < numEdges; i++) {
+    const p0 = poly[i];
+    const p1 = poly[(i + 1) % numEdges];
+    const dx = p1.x - p0.x;
+    const dy = p1.y - p0.y;
+    const len = Math.hypot(dx, dy) || 1;
+    a[i] = -dy / len;
+    b[i] = dx / len;
+    c[i] = (dy * p0.x - dx * p0.y) / len;
+  }
+
+  for (let y = 0; y < size; y++) {
+    const py = y + 0.5;
+    const rowOffset = y * size;
+    for (let x = 0; x < size; x++) {
+      const px = x + 0.5;
+      let minD = Infinity;
+      for (let e = 0; e < numEdges; e++) {
+        const d = a[e] * px + b[e] * py + c[e];
+        if (d < minD) minD = d;
+      }
+      mask[rowOffset + x] = Math.min(1, Math.max(0, minD + 0.5));
+    }
+  }
+
   return mask;
 }
 
@@ -220,12 +313,12 @@ export function gaussianBlur(
 /**
  * Turn a photograph into the optimisation target.
  *
- * @param img            Source RGBA image.
- * @param size           Simulation grid size in pixels.
- * @param opts           Tone / crop options.
- * @param channels       1 = luminance only, 3 = linear RGB.
- * @param importance     Optional importance map (white = important, black = ignored), same framing as `img`.
- * @param loomDiameterMm Loom physical diameter in mm (default: 711.2).
+ * @param img        Source RGBA image.
+ * @param size       Simulation grid size in pixels.
+ * @param opts       Tone / crop options.
+ * @param channels   1 = luminance only, 3 = linear RGB.
+ * @param importance Optional importance map (white = important, black = ignored), same framing as `img`.
+ * @param frame      Loom physical geometry or legacy diameter in mm (default: 711.2).
  */
 export function prepareTarget(
   img: RasterImage,
@@ -233,9 +326,12 @@ export function prepareTarget(
   opts: PreprocessOptions,
   channels: 1 | 3,
   importance?: RasterImage,
-  loomDiameterMm = 711.2,
+  frame: number | Loom = 711.2,
 ): TargetImage {
-  const crop = opts.crop ?? centeredSquareCrop(img.width, img.height);
+  const isLoom = typeof frame !== 'number';
+  const loomDiameterMm = isLoom ? frame.extentMm : frame;
+  const crop =
+    opts.crop ?? (isLoom ? loomFrameCrop(img.width, img.height, frame) : centeredSquareCrop(img.width, img.height));
   const rgb = resampleLinear(img, size, crop);
   const n = size * size;
   const data = new Float32Array(n * channels);
@@ -313,10 +409,14 @@ export function prepareTarget(
     data.set(blurred);
   }
 
-  const mask = circleMask(size);
+  const mask = isLoom ? loomMask(frame, size) : circleMask(size);
   const weight = new Float32Array(mask);
   if (importance) {
-    const impCrop = opts.crop ?? centeredSquareCrop(importance.width, importance.height);
+    const impCrop =
+      opts.crop ??
+      (isLoom
+        ? loomFrameCrop(importance.width, importance.height, frame)
+        : centeredSquareCrop(importance.width, importance.height));
     const imp = resampleLinear(importance, size, impCrop);
     for (let p = 0; p < n; p++) {
       const lum = LUMA_R * imp[p * 3] + LUMA_G * imp[p * 3 + 1] + LUMA_B * imp[p * 3 + 2];

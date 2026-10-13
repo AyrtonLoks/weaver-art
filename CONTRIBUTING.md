@@ -20,15 +20,20 @@ Obrigado pelo interesse! Este guia resume o fluxo de trabalho.
 
 ## Onde mexer
 
-| Quero…                             | Arquivo                         |
-| ---------------------------------- | ------------------------------- |
-| mudar a geometria do tear / pinos  | `packages/core/src/geometry.ts` |
-| mudar como o fio cobre os pixels   | `packages/core/src/raster.ts`   |
-| mudar a função objetivo ou a busca | `packages/core/src/engine.ts`   |
-| mudar o preparo da foto            | `packages/core/src/image.ts`    |
-| adicionar um formato de saída      | `packages/core/src/export.ts`   |
-| adicionar opção na CLI             | `packages/cli/src/index.ts`     |
-| mexer na interface                 | `apps/web/src/*`                |
+| Quero…                                     | Arquivo                                   |
+| ------------------------------------------ | ----------------------------------------- |
+| mudar a geometria do tear / pinos          | `packages/core/src/geometry.ts`           |
+| importar/exportar coordenadas de pinos CSV | `packages/core/src/pegs-csv.ts`           |
+| mudar como o fio cobre os pixels           | `packages/core/src/raster.ts`             |
+| mudar a função objetivo ou a busca         | `packages/core/src/engine.ts`             |
+| mudar o preparo da foto                    | `packages/core/src/image.ts`              |
+| mexer no gabarito de furação ou PDF puro   | `packages/core/src/template.ts`, `pdf.ts` |
+| ajustar estimativas de tempo e carretéis   | `packages/core/src/estimate.ts`           |
+| ajustar emissão de percursos G-code CNC    | `packages/core/src/gcode.ts`              |
+| mexer na persistência ou código de sync    | `packages/core/src/progress.ts`           |
+| adicionar um formato de saída              | `packages/core/src/export.ts`             |
+| adicionar opção na CLI                     | `packages/cli/src/index.ts`               |
+| mexer na interface                         | `apps/web/src/*`                          |
 
 ## Princípios
 

@@ -74,3 +74,6 @@ Ver a tabela “O que há de diferente” no [README](../README.md) e a discuss�
 - **CIE (1976) / ISO/CIE 11664-4** — Espaço de cor uniforme $L^_a^*b^*$ e cálculo da diferença euclidiana de cor $\Delta E\_{ab}^_$.
 - **IEC 61966-2-1** — Espaço de cor sRGB (funções de transferência usadas em `color.ts`).
 - **ITU-R BT.709** — Coeficientes de luminância para conversão fotométrica.
+- **Andrew, A. M.** _Another efficient algorithm for convex hulls in two dimensions._ Information Processing Letters, 9(5):216–219, 1979. DOI [10.1016/0020-0190(79)90072-3](<https://doi.org/10.1016/0020-0190(79)90072-3>). Base matemática da envoltória convexa de pinos em `geometry.ts`.
+- **EIA RS-274-D / ISO 6983-1** — _Numerical control of machines — Program format and definition of address words._ Padrão industrial para comandos G-code de máquinas CNC implementado em `gcode.ts`.
+- **Adobe Systems Incorporated** — _PDF Reference, third edition: Adobe Portable Document Format Version 1.4._ Addison-Wesley, 2001. Especificação de objetos, operadores vetoriais e tabela `xref` implementada em `pdf.ts`.

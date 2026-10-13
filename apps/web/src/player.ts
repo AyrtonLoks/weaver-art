@@ -1,4 +1,18 @@
-import { createLoom, sideLabel, tangentSegment, type Loom, type WeaveResult } from '@weaver-art/core';
+import {
+  createLoom,
+  decodeProgressCode,
+  encodeProgressCode,
+  estimateWeave,
+  formatDuration,
+  mergeProgress,
+  sideLabel,
+  tangentSegment,
+  weaveFingerprint,
+  withProgress,
+  type Loom,
+  type WeaveProgress,
+  type WeaveResult,
+} from '@weaver-art/core';
 
 interface PlayerElements {
   canvas: HTMLCanvasElement;
@@ -18,6 +32,11 @@ interface PlayerElements {
   interval: HTMLInputElement;
   goto: HTMLInputElement;
   bar: HTMLElement;
+  remaining?: HTMLElement;
+  code?: HTMLInputElement;
+  copyCodeBtn?: HTMLButtonElement;
+  pasteCodeBtn?: HTMLButtonElement;
+  exportResumeBtn?: HTMLButtonElement;
 }
 
 const PEG_BASE = 1;
@@ -41,6 +60,52 @@ export class KnitPlayer {
     el.goto.addEventListener('change', () => this.go(Number(el.goto.value) - 1));
     el.auto.addEventListener('change', () => this.updateTimer());
     el.interval.addEventListener('change', () => this.updateTimer());
+
+    if (el.copyCodeBtn) {
+      el.copyCodeBtn.addEventListener('click', () => {
+        if (!this.result) return;
+        const code = encodeProgressCode(this.result, this.index);
+        navigator.clipboard?.writeText(code).then(() => {
+          const original = el.copyCodeBtn!.textContent;
+          el.copyCodeBtn!.textContent = 'Copiado!';
+          setTimeout(() => {
+            el.copyCodeBtn!.textContent = original;
+          }, 1500);
+        });
+      });
+    }
+
+    if (el.pasteCodeBtn) {
+      el.pasteCodeBtn.addEventListener('click', () => {
+        if (!this.result) return;
+        const input = window.prompt('Cole o código de retomada (ex: WA1-abc-12-xy):');
+        if (!input) return;
+        const decoded = decodeProgressCode(input);
+        if (!decoded) {
+          alert('Código inválido ou corrompido.');
+          return;
+        }
+        if (decoded.fingerprint !== weaveFingerprint(this.result)) {
+          alert('Este código pertence a outro padrão ou configuração de tear!');
+          return;
+        }
+        this.go(decoded.index);
+      });
+    }
+
+    if (el.exportResumeBtn) {
+      el.exportResumeBtn.addEventListener('click', () => {
+        if (!this.result) return;
+        const updated = withProgress(this.result, this.index);
+        const blob = new Blob([JSON.stringify(updated)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `retomada-passo-${this.index + 1}.weave.json`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+    }
   }
 
   /** Keyboard shortcuts — only active while the knitting tab is visible. */
@@ -58,7 +123,7 @@ export class KnitPlayer {
   load(result: WeaveResult): void {
     this.result = result;
     this.loom = createLoom(result.options.loom);
-    this.storageKey = `weaver-art:progress:${fingerprint(result)}`;
+    this.storageKey = `weaver-art:progress:${weaveFingerprint(result)}`;
 
     // Precompute layer progress for each step
     const layerTotals = new Map<number, number>();
@@ -80,12 +145,40 @@ export class KnitPlayer {
       };
     });
 
-    const saved = Number(localStorage.getItem(this.storageKey) ?? 0);
+    // Determine initial resume position: URL hash > mergeProgress(localStorage, result.progress)
+    let resumeStep: number | null = null;
+    if (window.location.hash.startsWith('#progress=')) {
+      const code = decodeURIComponent(window.location.hash.slice('#progress='.length));
+      const decoded = decodeProgressCode(code);
+      if (decoded && decoded.fingerprint === weaveFingerprint(result)) {
+        resumeStep = decoded.index;
+      }
+    }
+    if (resumeStep === null) {
+      const localRaw = localStorage.getItem(this.storageKey);
+      let localProgress: WeaveProgress | undefined;
+      if (localRaw) {
+        try {
+          const parsed = JSON.parse(localRaw) as WeaveProgress;
+          if (parsed && typeof parsed.index === 'number') {
+            localProgress = parsed;
+          }
+        } catch {
+          const numVal = Number(localRaw);
+          if (Number.isFinite(numVal)) {
+            localProgress = { index: numVal, updatedAt: new Date(0).toISOString() };
+          }
+        }
+      }
+      const merged = mergeProgress(localProgress, result.progress);
+      resumeStep = merged?.index ?? 0;
+    }
+
     this.el.empty.hidden = true;
     this.el.live.hidden = false;
     this.el.total.textContent = String(result.steps.length);
     this.el.goto.max = String(result.steps.length);
-    this.go(Number.isFinite(saved) ? saved : 0);
+    this.go(resumeStep);
   }
 
   /** Re-render (e.g. when the tab becomes visible and the canvas gets its size). */
@@ -97,12 +190,31 @@ export class KnitPlayer {
     const r = this.result;
     if (!r) return;
     this.index = Math.min(Math.max(index, 0), r.steps.length);
-    localStorage.setItem(this.storageKey, String(this.index));
+    const progressData: WeaveProgress = {
+      index: this.index,
+      updatedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(this.storageKey, JSON.stringify(progressData));
     const done = this.index >= r.steps.length;
     const s = done ? null : r.steps[this.index];
     const thread = s ? r.options.threads[s.thread] : null;
     const withSides = r.options.loom.pegDiameterMm > 0;
     const layerInfo = s ? this.stepLayerInfo[this.index] : null;
+
+    if (this.el.remaining) {
+      const remainingEst = estimateWeave(r, {}, this.index);
+      this.el.remaining.textContent = done ? 'Concluído!' : formatDuration(remainingEst.totalSeconds);
+    }
+
+    if (this.el.code) {
+      const code = encodeProgressCode(r, this.index);
+      this.el.code.value = code;
+      try {
+        window.history.replaceState(null, '', `#progress=${encodeURIComponent(code)}`);
+      } catch {
+        // ignore history restriction in iframe or local contexts
+      }
+    }
 
     this.el.step.textContent = String(Math.min(this.index + 1, r.steps.length));
     const isLayered = (r.options.colorStrategy ?? 'layered') === 'layered';
@@ -170,18 +282,41 @@ export class KnitPlayer {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const W = canvas.width;
-    const margin = 40;
-    const k = (W - 2 * margin) / r.options.loom.diameterMm;
+    const margin = 45;
+    const extent = loom.extentMm;
+    const k = (W - 2 * margin) / extent;
     const X = (mm: number): number => margin + mm * k;
-    const rad = loom.radiusMm;
 
     ctx.clearRect(0, 0, W, W);
-    ctx.fillStyle = r.options.background;
-    ctx.beginPath();
-    ctx.arc(X(rad), X(rad), rad * k, 0, Math.PI * 2);
-    ctx.fill();
 
-    // Thread laid so far.
+    // Frame/background
+    ctx.fillStyle = r.options.background;
+    if (loom.config.shape === 'circle') {
+      const cx = loom.extentMm / 2;
+      const cy = loom.extentMm / 2;
+      ctx.beginPath();
+      ctx.arc(X(cx), X(cy), loom.radiusMm * k, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#3a3835';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (loom.outline && loom.outline.length > 2) {
+      ctx.beginPath();
+      for (let i = 0; i < loom.outline.length; i++) {
+        const pt = loom.outline[i];
+        if (i === 0) ctx.moveTo(X(pt.x), X(pt.y));
+        else ctx.lineTo(X(pt.x), X(pt.y));
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#3a3835';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillRect(margin, margin, W - 2 * margin, W - 2 * margin);
+    }
+
+    // Thread laid so far
     ctx.lineWidth = Math.max(0.35, r.options.threads[0].widthMm * k);
     ctx.globalAlpha = 0.55;
     for (let i = 0; i < this.index && i < r.steps.length; i++) {
@@ -195,23 +330,25 @@ export class KnitPlayer {
     }
     ctx.globalAlpha = 1;
 
-    // Pegs + labels.
+    // Pegs + labels
     ctx.fillStyle = '#9a958c';
     ctx.font = '11px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const totalPegs = loom.pegs.length;
+    const labelStep = totalPegs > 100 ? 10 : 5;
     for (const p of loom.pegs) {
       ctx.beginPath();
-      ctx.arc(X(p.x), X(p.y), 2, 0, Math.PI * 2);
+      ctx.arc(X(p.x), X(p.y), 2.5, 0, Math.PI * 2);
       ctx.fill();
-      if ((p.index + PEG_BASE) % 10 === 0 || p.index === 0) {
-        const lx = rad + (rad + 22 / k) * Math.cos(p.angle);
-        const ly = rad + (rad + 22 / k) * Math.sin(p.angle);
+      if ((p.index + PEG_BASE) % labelStep === 0 || p.index === 0) {
+        const lx = p.x + p.nx * (18 / k);
+        const ly = p.y + p.ny * (18 / k);
         ctx.fillText(String(p.index + PEG_BASE), X(lx), X(ly));
       }
     }
 
-    // Current chord.
+    // Current chord
     const s = r.steps[this.index];
     if (s) {
       const a = loom.pegs[s.from];
@@ -242,21 +379,4 @@ function sayAloud(text: string): void {
   u.lang = 'pt-BR';
   u.rate = 1;
   window.speechSynthesis.speak(u);
-}
-
-/** Cheap stable id for a result, used to persist knitting progress. */
-function fingerprint(r: WeaveResult): string {
-  let h = 2166136261;
-  const feed = (n: number): void => {
-    h ^= n;
-    h = Math.imul(h, 16777619);
-  };
-  feed(r.steps.length);
-  feed(r.options.loom.pegCount);
-  for (const s of r.steps) {
-    feed(s.from);
-    feed(s.to);
-    feed(s.thread);
-  }
-  return (h >>> 0).toString(36);
 }

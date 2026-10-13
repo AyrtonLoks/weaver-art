@@ -14,21 +14,54 @@ export interface RasterImage {
   data: Uint8ClampedArray | Uint8Array;
 }
 
-/** Physical description of the loom (the frame with anchor pegs). */
-export interface LoomConfig {
-  /** Only circular looms for now (Vrellis' original rim). */
-  shape: 'circle';
-  /** Diameter of the circle that passes through the peg centres, in mm. */
-  diameterMm: number;
-  /** Number of anchor pegs, equally spaced. */
-  pegCount: number;
+/** Base configuration shared across all loom shapes. */
+export interface LoomBase {
   /**
    * Peg diameter in mm. When > 0 the thread is modelled as wrapping around
    * real cylinders (tangent segments + wrap arcs). When 0, pegs are ideal points.
    */
   pegDiameterMm: number;
+}
+
+/** Circular loom (Petros Vrellis' original design). */
+export interface CircleLoomConfig extends LoomBase {
+  shape: 'circle';
+  /** Diameter of the circle that passes through the peg centres, in mm. */
+  diameterMm: number;
+  /** Number of anchor pegs, equally spaced. */
+  pegCount: number;
   /** Angle of peg #0 in degrees (0 = right, 90 = bottom, -90 = top; screen coordinates). */
   startAngleDeg: number;
+}
+
+/** Rectangular (or square) frame. Pegs numbered clockwise from the top-left corner. */
+export interface RectangleLoomConfig extends LoomBase {
+  shape: 'rectangle';
+  /** Frame width in mm (X axis). */
+  widthMm: number;
+  /** Frame height in mm (Y axis). */
+  heightMm: number;
+  /** Pegs along the top and bottom edges (corners included, >= 2). */
+  pegsX: number;
+  /** Pegs along the left and right edges (corners included, >= 2). */
+  pegsY: number;
+}
+
+/** Arbitrary peg positions (e.g. imported CSV), in mm, listed in perimeter order. */
+export interface CustomLoomConfig extends LoomBase {
+  shape: 'custom';
+  pegs: { x: number; y: number }[];
+}
+
+/** Physical description of the loom (the frame with anchor pegs). */
+export type LoomConfig = CircleLoomConfig | RectangleLoomConfig | CustomLoomConfig;
+
+/** Knitting progress saved for cross-device resume. */
+export interface WeaveProgress {
+  /** 0-based step index reached in knitting. */
+  index: number;
+  /** ISO timestamp of last update. */
+  updatedAt: string;
 }
 
 /** A single continuous thread. */
@@ -128,6 +161,8 @@ export interface PaletteOptions {
   opacity?: number;
   /** Quota for the darkest anchor thread [0.2, 0.6]. Default: 0.35 to 0.40. */
   darkAnchorQuota?: number;
+  /** Loom configuration to sample within. */
+  loom?: LoomConfig;
   /** Peg count of the loom to space out starting pegs. Default: 200. */
   loomPegCount?: number;
 }
@@ -205,6 +240,8 @@ export interface WeaveResult {
   /** Why the run stopped. */
   stopReason: StopReason;
   durationMs: number;
+  /** Saved progress for resume. */
+  progress?: WeaveProgress;
 }
 
 export type StopReason = 'max-lines' | 'no-improvement' | 'no-candidates' | 'aborted';

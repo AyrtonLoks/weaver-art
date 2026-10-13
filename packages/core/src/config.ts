@@ -1,4 +1,11 @@
-import type { DeepPartial, LoomConfig, ThreadConfig, WeaveOptions } from './types.js';
+import type {
+  CircleLoomConfig,
+  DeepPartial,
+  LoomConfig,
+  RectangleLoomConfig,
+  ThreadConfig,
+  WeaveOptions,
+} from './types.js';
 
 /** 1 inch in millimetres. */
 export const INCH_MM = 25.4;
@@ -10,12 +17,22 @@ export const INCH_MM = 25.4;
  * The peg diameter is not published; 2 mm is an engineering estimate and should be
  * calibrated against the physical loom being used.
  */
-export const VRELLIS_LOOM: LoomConfig = {
+export const VRELLIS_LOOM: CircleLoomConfig = {
   shape: 'circle',
   diameterMm: 28 * INCH_MM,
   pegCount: 200,
   pegDiameterMm: 2,
   startAngleDeg: -90,
+};
+
+/** Example square loom: 500 × 500 mm frame, 50 pegs per side (196 total pegs). */
+export const SQUARE_LOOM: RectangleLoomConfig = {
+  shape: 'rectangle',
+  widthMm: 500,
+  heightMm: 500,
+  pegsX: 50,
+  pegsY: 50,
+  pegDiameterMm: 2,
 };
 
 /** Single black thread — the grayscale works ("Knit 1: Christ Saviour", etc.). */
@@ -156,7 +173,11 @@ export function resolveOptions(
   overrides: DeepPartial<WeaveOptions> = {},
   base: WeaveOptions = DEFAULT_OPTIONS,
 ): WeaveOptions {
-  const merged = deepMerge(JSON.parse(JSON.stringify(base)) as WeaveOptions, overrides);
+  const baseCopy = JSON.parse(JSON.stringify(base)) as WeaveOptions;
+  if (overrides.loom?.shape && overrides.loom.shape !== base.loom.shape) {
+    baseCopy.loom = overrides.loom as LoomConfig;
+  }
+  const merged = deepMerge(baseCopy, overrides);
   if (merged.viewingDistanceM !== undefined && overrides.preprocess?.viewingDistanceM === undefined) {
     merged.preprocess.viewingDistanceM = merged.viewingDistanceM;
   }
@@ -168,23 +189,90 @@ export function resolveOptions(
 export function validateOptions(o: WeaveOptions): void {
   const errors: string[] = [];
   const { loom } = o;
-  if (loom.shape !== 'circle') errors.push(`loom.shape "${String(loom.shape)}" não suportado`);
-  if (!(loom.diameterMm > 0)) errors.push('loom.diameterMm deve ser > 0');
-  if (!Number.isInteger(loom.pegCount) || loom.pegCount < 3) errors.push('loom.pegCount deve ser inteiro >= 3');
+  let pegSpacing = Infinity;
+  let totalPegs = 0;
+
+  if (loom.shape === 'circle') {
+    if (!(loom.diameterMm > 0)) errors.push('loom.diameterMm deve ser > 0');
+    if (!Number.isInteger(loom.pegCount) || loom.pegCount < 3) errors.push('loom.pegCount deve ser inteiro >= 3');
+    totalPegs = loom.pegCount;
+    if (loom.diameterMm > 0 && loom.pegCount >= 3) {
+      pegSpacing = (Math.PI * loom.diameterMm) / loom.pegCount;
+    }
+  } else if (loom.shape === 'rectangle') {
+    if (!(loom.widthMm > 0)) errors.push('loom.widthMm deve ser > 0');
+    if (!(loom.heightMm > 0)) errors.push('loom.heightMm deve ser > 0');
+    if (!Number.isInteger(loom.pegsX) || loom.pegsX < 2) errors.push('loom.pegsX deve ser inteiro >= 2');
+    if (!Number.isInteger(loom.pegsY) || loom.pegsY < 2) errors.push('loom.pegsY deve ser inteiro >= 2');
+    totalPegs = 2 * (loom.pegsX + loom.pegsY) - 4;
+    if (loom.widthMm > 0 && loom.heightMm > 0 && loom.pegsX >= 2 && loom.pegsY >= 2) {
+      pegSpacing = Math.min(loom.widthMm / (loom.pegsX - 1), loom.heightMm / (loom.pegsY - 1));
+    }
+  } else if (loom.shape === 'custom') {
+    if (!Array.isArray(loom.pegs) || loom.pegs.length < 3) {
+      errors.push('loom.pegs deve ser um array com ao menos 3 pinos');
+    } else {
+      totalPegs = loom.pegs.length;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let hasInvalidCoord = false;
+
+      for (let i = 0; i < loom.pegs.length; i++) {
+        const p = loom.pegs[i];
+        if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+          errors.push(`loom.pegs[${i}] deve conter coordenadas numéricas finitas x e y`);
+          hasInvalidCoord = true;
+          break;
+        }
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      if (!hasInvalidCoord) {
+        if (maxX - minX < 0.01 || maxY - minY < 0.01) {
+          errors.push('loom.pegs deve cobrir um plano 2D com largura e altura > 0');
+        }
+
+        let signedArea = 0;
+        for (let i = 0; i < loom.pegs.length; i++) {
+          const next = loom.pegs[(i + 1) % loom.pegs.length];
+          signedArea += loom.pegs[i].x * next.y - next.x * loom.pegs[i].y;
+          const dist = Math.hypot(next.x - loom.pegs[i].x, next.y - loom.pegs[i].y);
+          if (dist < 1e-4) {
+            errors.push(`loom.pegs possui pinos consecutivos duplicados ou com distância nula no índice ${i}`);
+          }
+          if (dist < pegSpacing) pegSpacing = dist;
+        }
+
+        if (Math.abs(signedArea) < 0.01) {
+          errors.push('loom.pegs formam uma área nula ou pinos colineares');
+        }
+      }
+    }
+  } else {
+    errors.push(`loom.shape "${String((loom as { shape?: unknown }).shape)}" não suportado`);
+  }
+
   if (!(loom.pegDiameterMm >= 0)) errors.push('loom.pegDiameterMm deve ser >= 0');
-  const pegSpacing = (Math.PI * loom.diameterMm) / loom.pegCount;
-  if (loom.pegDiameterMm >= pegSpacing) {
+  if (Number.isFinite(pegSpacing) && loom.pegDiameterMm >= pegSpacing) {
     errors.push(
       `loom.pegDiameterMm (${loom.pegDiameterMm}) deve ser menor que o espaçamento entre pinos (${pegSpacing.toFixed(2)} mm)`,
     );
   }
+
   if (o.threads.length === 0) errors.push('ao menos um fio é necessário');
   o.threads.forEach((t, i) => {
     if (!/^#[0-9a-f]{6}$/i.test(t.color)) errors.push(`threads[${i}].color deve ser #rrggbb`);
     if (!(t.widthMm > 0)) errors.push(`threads[${i}].widthMm deve ser > 0`);
     if (!(t.opacity > 0 && t.opacity <= 1)) errors.push(`threads[${i}].opacity deve estar em (0, 1]`);
-    if (!Number.isInteger(t.startPeg) || t.startPeg < 0 || t.startPeg >= loom.pegCount) {
-      errors.push(`threads[${i}].startPeg deve estar em [0, ${loom.pegCount - 1}]`);
+    if (totalPegs > 0) {
+      if (!Number.isInteger(t.startPeg) || t.startPeg < 0 || t.startPeg >= totalPegs) {
+        errors.push(`threads[${i}].startPeg deve estar em [0, ${totalPegs - 1}]`);
+      }
     }
   });
   if (!/^#[0-9a-f]{6}$/i.test(o.background)) errors.push('background deve ser #rrggbb');
@@ -192,8 +280,10 @@ export function validateOptions(o: WeaveOptions): void {
     errors.push('resolutionPx deve ser inteiro em [64, 4096]');
   }
   if (!Number.isInteger(o.maxLines) || o.maxLines < 1) errors.push('maxLines deve ser inteiro >= 1');
-  if (!Number.isInteger(o.minPegGap) || o.minPegGap < 1 || o.minPegGap >= loom.pegCount / 2) {
-    errors.push(`minPegGap deve ser inteiro em [1, ${Math.floor(loom.pegCount / 2) - 1}]`);
+  if (totalPegs > 0) {
+    if (!Number.isInteger(o.minPegGap) || o.minPegGap < 1 || o.minPegGap >= totalPegs / 2) {
+      errors.push(`minPegGap deve ser inteiro em [1, ${Math.floor(totalPegs / 2) - 1}]`);
+    }
   }
   if (!Number.isInteger(o.maxChordRepeats) || o.maxChordRepeats < 1)
     errors.push('maxChordRepeats deve ser inteiro >= 1');

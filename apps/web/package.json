@@ -1,6 +1,6 @@
 {
   "name": "@weaver-art/web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Estúdio web do Weaver Art: gera o padrão no navegador e guia a tecelagem passo a passo.",
   "license": "MIT",

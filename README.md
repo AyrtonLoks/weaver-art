@@ -18,7 +18,10 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 
 |                     | Implementações clássicas              | Weaver Art                                                                                                                                                                                               |
 | ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unidades            | pixels                                | **milímetros** (tear de 28″ = 711,2 mm, como o original)                                                                                                                                                 |
+|                     | Implementações clássicas              | Weaver Art                                                                                                                                                                                               |
+| ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unidades            | pixels                                | **milímetros** (tear circular de 28″ = 711,2 mm, ou retangular/personalizado com dimensões reais)                                                                                                        |
+| Formato do tear     | apenas círculo fixo                   | **circular, quadrado, retangular ou pinos arbitrários via CSV** com detecção de envoltória convexa e máscara analítica antisserrilhada                                                                   |
 | Critério de escolha | “linha mais escura” (média de pixels) | **redução do erro quadrático** entre simulação e alvo (com penalidade de comprimento configurável)                                                                                                       |
 | Modelo de tom       | subtrai constante do alvo             | **cobertura física do fio** em luz linear: `T = Π(1 − cᵢ)` — o tom escurece com a densidade **e com as interseções**, como descrito por Vrellis                                                          |
 | Espaço de cor       | sRGB (gama)                           | **luz linear** (sRGB ↔ linear correto)                                                                                                                                                                   |
@@ -29,7 +32,8 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 | Percepção           | pixel a pixel local                   | **modelo óptico de meio-tom** ($G * (T - C)$), **distância de observação** (desfoque retiniano, Birsak et al., 2018), CLAHE e **métricas CIELAB ΔE e SSIM**                                              |
 | Otimização          | apenas gulosa                         | **gulosa + refinamento global pós-processamento** preservando a continuidade física estrita do fio                                                                                                       |
 | Calibração          | manual empírica                       | **ferramenta de calibração** de cor e parâmetros físicos a partir de fotos de meadas                                                                                                                     |
-| Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada, `.csv`, `.json`, **SVG em escala real**, PNG e **modo tecelagem com voz**                                                                                        |
+| Fabricação          | nenhuma                               | **gabaritos de furação 1:1** (SVG e PDF multi-folhas com régua de conferência), **estimativa de tempo/carretéis**, **exportação G-code (XY)** e **retomada entre dispositivos**                          |
+| Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada com estimativa, `.csv`, `.json`, **SVG 1:1**, PNG, G-code e **modo tecelagem com voz e sincronização**                                                            |
 
 Detalhes matemáticos em [docs/ALGORITHM.md](docs/ALGORITHM.md).
 
@@ -38,10 +42,10 @@ Detalhes matemáticos em [docs/ALGORITHM.md](docs/ALGORITHM.md).
 ```
 weaver-art/
 ├── packages/
-│   ├── core/   @weaver-art/core — motor (TypeScript puro, sem dependências; roda no navegador e no Node)
-│   └── cli/    @weaver-art/cli  — linha de comando (foto → JSON/TXT/CSV/SVG/PNG)
+│   ├── core/   @weaver-art/core — motor e fabricação (TypeScript puro, sem dependências; roda no navegador e no Node)
+│   └── cli/    @weaver-art/cli  — linha de comando (foto → JSON/TXT/CSV/SVG/PNG/GCODE/PDF)
 ├── apps/
-│   └── web/    @weaver-art/web  — estúdio no navegador (Vite + Web Worker) e modo tecelagem
+│   └── web/    @weaver-art/web  — estúdio no navegador (Vite + Web Worker) e modo tecelagem com sincronização
 └── docs/       arquitetura, algoritmo, referências e roadmap
 ```
 
@@ -59,13 +63,17 @@ npm run dev              # estúdio web em http://localhost:5173
 
 ```bash
 npm run build
-npm run weave -- foto.jpg                                           # preset Vrellis monocromático
-npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2   # preset CMYK em camadas (10.000 cordas)
-npm run weave -- foto.jpg --auto-palette 4 --halftone --lines 6000  # paleta automática da foto + meio-tom óptico
-npm run weave -- foto.jpg --preset vrellis-color --lines 6000 --shadow-lift 0.12 --edge-emphasis 0.5
-npm run weave -- foto.jpg --clahe --length-penalty 0.15 --viewing-distance 2.0 --refine 1
-npm run weave -- extract-palette foto.jpg 4                         # extrai e analisa paleta de cores CIELAB
-npm run weave -- calibrate-color amostra-carretel.jpg               # calibra cor #hex a partir de foto
+npm run weave -- foto.jpg                                                    # preset Vrellis monocromático
+npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2            # preset CMYK em camadas (10.000 cordas)
+npm run weave -- foto.jpg --auto-palette 4 --halftone --lines 6000           # paleta automática da foto + meio-tom óptico
+npm run weave -- foto.jpg --shape square --width 500 --pegs 50 --gcode       # tear quadrado 500 mm + geração de G-code CNC
+npm run weave -- foto.jpg --shape rectangle --width 600 --height 400 --pegs-x 60 --pegs-y 40
+npm run weave -- foto.jpg --pegs-csv pinos.csv                               # pinos personalizados via CSV
+npm run weave -- template --shape rectangle --width 600 --height 400 --paper A4 -o gabarito  # apenas gabarito de furação
+npm run weave -- estimate output/foto.weave.json --spool 1000                # estimativa de tempo e consumo de carretéis
+npm run weave -- gcode output/foto.weave.json --clearance 1.5                # gera G-code a partir de projeto existente
+npm run weave -- extract-palette foto.jpg 4                                  # extrai e analisa paleta de cores CIELAB
+npm run weave -- calibrate-color amostra-carretel.jpg                        # calibra cor #hex a partir de foto
 npm run weave -- --help
 ```
 
@@ -75,25 +83,33 @@ npm run weave -- --help
 
 Arquivos gerados em `./output/`:
 
-| Arquivo           | Conteúdo                                                          |
-| ----------------- | ----------------------------------------------------------------- |
-| `foto.weave.txt`  | instruções numeradas para tecer à mão (`0001   1 → 87 (horário)`) |
-| `foto.weave.csv`  | uma linha por corda (pinos, lado, comprimento)                    |
-| `foto.weave.json` | projeto completo (reabrível no modo tecelagem)                    |
-| `foto.weave.svg`  | desenho vetorial em escala 1:1 (mm), com arcos nos pinos          |
-| `foto.weave.png`  | simulação física do resultado                                     |
-| `foto.target.png` | imagem-alvo após o preparo                                        |
+| Arquivo             | Conteúdo                                                                      |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `foto.weave.txt`    | instruções numeradas para tecer à mão com bloco de estimativa de fabricação   |
+| `foto.weave.csv`    | uma linha por corda (passo, fio, pinos, lados, comprimentos, ganho)           |
+| `foto.weave.json`   | projeto completo com metadados de progresso (reabrível no modo tecelagem)     |
+| `foto.weave.svg`    | desenho vetorial em escala real 1:1 (mm), com arcos nos pinos e camadas       |
+| `foto.weave.png`    | simulação física do resultado                                                 |
+| `foto.target.png`   | imagem-alvo após o preparo                                                    |
+| `foto.template.svg` | gabarito de furação vetorial 1:1 com cruzes de centro e régua de 100 mm       |
+| `foto.template.pdf` | gabarito de furação ladrilhado em escala 1:1 para impressão (A4, A3 ou Carta) |
+| `foto.pegs.csv`     | coordenadas físicas de furação de todos os pinos em mm                        |
+| `foto.weave.gcode`  | código CNC RS-274 para robôs e plotters de tecelagem (quando ativado)         |
 
 ### Estúdio web
 
 1. Arraste uma foto (retratos funcionam melhor — como na série de Vrellis baseada em El Greco).
-2. Ajuste tear, algoritmo e tom (incluindo **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
-3. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
-4. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
-5. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)** e **SSIM**.
-6. Exporte, ou abra o **Modo tecelagem**: o próximo pino aparece em destaque, a corda é
-   desenhada no tear, e o número pode ser **ditado por voz** (pt-BR), avançando com a barra de
-   espaço ou automaticamente. O progresso fica salvo no navegador.
+2. Configure a geometria do tear: **Circular**, **Quadrado**, **Retangular** ou importe um **CSV de pinos**.
+3. Baixe antecipadamente o **Gabarito de furação** (PDF multi-folhas em escala real 1:1 com marcas de registro e régua de conferência, ou SVG) e o **CSV de pinos** para fabricar sua moldura física.
+4. Ajuste algoritmo e tom (incluindo **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
+5. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
+6. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
+7. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)**, **SSIM** e a tabela detalhada de **estimativa de carretéis**.
+8. Exporte arquivos completos (incluindo **G-code** para robôs de tecelagem), ou abra o **Modo tecelagem**:
+   - O próximo pino aparece em destaque com o sentido correto de contorno;
+   - O número pode ser **ditado por voz** (pt-BR);
+   - Acompanhe o **tempo restante estimado** dinamicamente;
+   - **Sincronize com outro dispositivo sem servidor**: copie o código compacto (`WA1-...`), compartilhe o link direto (`#progress=...`) ou baixe o arquivo de retomada.
 
 ## Parâmetros padrão (preset `vrellis-mono`)
 
@@ -118,10 +134,11 @@ Arquivos gerados em `./output/`:
 > - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
 > - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
 > - **Iluminação irregular e retratos**: ative **CLAHE** (`--clahe --clahe-clip 2.0`) para equalizar contraste local adaptativo sem estourar ruído.
-> - **Paleta personalizada da foto**: extraia $k$ cores dominantes da imagem (`--auto-palette <k>`) com amostragem restrita ao aro circular, ordenação decrescente por luminância e cota reservada de 35%–40% para a âncora escura final.
+> - **Paleta personalizada da foto**: extraia $k$ cores dominantes da imagem (`--auto-palette <k>`) com amostragem restrita à máscara do tear, ordenação decrescente por luminância e cota reservada de 35%–40% para a âncora escura final.
 > - **Fusão de cores e meio-tom**: ative **Meio-tom óptico** (`--halftone --halftone-radius 0.75`) para modelar como os olhos combinam cores primárias vizinhas à distância (ex: amarelo + ciano gerando verde sem exigir interseção local exata).
 > - **Metas altas de cordas (ex: 10.000 cordas)**: aumente **Repetições** para `2` ou `3`. Um tear de 200 pinos possui limite combinatório de cordas que cruzam a figura; permitir repetições viabiliza atingir 10.000 cordas mantendo o fundo limpo.
 > - **Máxima precisão**: ative **Refinamento global** (`--refine 1`) para executar passes pós-gulosos que trocam pinos intermediários mantendo estritamente o fio contínuo e sem emaranhados.
+> - **Fabricação física**: gere o gabarito PDF multi-folhas com `weaver-art template` e imprima em 100% (sem ajuste de página). Confira com uma régua se os 50 mm marcados em cada folha batem exatamente antes de furar.
 
 ## Scripts
 

@@ -3,6 +3,47 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.0] — 2026-10-13
+
+### Adicionado
+
+- **Teares genéricos e pinos arbitrários (`geometry.ts`, `pegs-csv.ts`, `types.ts`)**:
+  - Nova união discriminada `LoomConfig = CircleLoomConfig | RectangleLoomConfig | CustomLoomConfig`.
+  - Suporte completo a teares quadrados e retangulares (`RectangleLoomConfig`) com pinos ao longo das bordas e teares com pinos arbitrários (`CustomLoomConfig`).
+  - Convex hull automático via algoritmo da cadeia monótona de Andrew para polígonos delimitadores convexos e cálculo de normais outward para posicionamento legível de etiquetas de pinos.
+  - Funções `toPegsCSV` e `parsePegsCSV` com suporte a delimitadores múltiplos (vírgula, ponto-e-vírgula, tabulação), comentários, vírgula decimal e cabeçalhos flexíveis (`x_mm`, `y_mm`).
+  - Máscara analítica poligonal e recorte de enquadramento exato (`loomFrameCrop`, `loomMask`) que preservam a proporção e centralizam o tear no quadro de simulação sem distorções de escala.
+- **Gabarito de furação em escala real 1:1 (`template.ts`, `pdf.ts`)**:
+  - `toTemplateSVG`: gera gabarito vetorial 1:1 com furos de broca precisos, marcação em cruz central e régua de verificação milimétrica de 100 mm.
+  - `toTemplatePDF`: gerador PDF 1.4 puro zero-dependências em TypeScript com folha de capa e ladrilhamento multi-folhas em escala real 1:1 para A4, A3 e Carta.
+  - Marcas de registro em cruz nos cantos das folhas, identificadores de coluna/linha (ex: `Folha (2, 1)`), margens de sobreposição e réguas de verificação de 50 mm em cada página.
+- **Estimativa de tecelagem e consumo de carretéis (`estimate.ts`)**:
+  - Função `estimateWeave` que projeta tempo manual ativo de tecelagem, preparo e amarração de novos fios, e trocas de meada.
+  - Cálculo exato de consumo de fio por cor com margem de segurança configurável (padrão 10%), folgas de nós e contagem de carretéis (ex: 1.000 m).
+  - Função `formatDuration` para formatação em português amigável (ex: `3h 24min`).
+- **G-code para plotters e robôs de tecelagem XY (`gcode.ts`)**:
+  - Função `toGcode` que gera código RS-274 para mesas CNC / plotters de tecelagem.
+  - Traçado com segmentos retos tangentes (G1) e arcos circulares com raio de folga de ferramenta em torno dos pinos (G2/G3), com divisão automática de arcos >180° para evitar ambiguidades de I/J.
+  - Pausas M0 com comentários explicativos para troca de carretel/cor e função `gcodePathLengthMm` para medição exata do percurso da ferramenta.
+- **Sincronização de progresso entre dispositivos (`progress.ts`)**:
+  - Função `weaveFingerprint` baseada em FNV-1a, retrocompatível com v0.3.
+  - Códigos de progresso compactos com checksum de proteção contra erros de digitação: `WA1-<fingerprint>-<idx36>-<checksum>` (ex: `WA1-k3x9q2-1f4-7a`).
+  - Funções `encodeProgressCode`, `decodeProgressCode`, `withProgress` e `mergeProgress`.
+  - Sincronização automática via hash de URL (`#progress=...`), botões de cópia/cola na UI e retomada automática ao abrir arquivos `.weave.json` com metadados de progresso.
+- **CLI (`@weaver-art/cli`)**:
+  - Novos subcomandos:
+    - `weaver-art template [opções de tear] [--paper A4|A3|Letter] [--drill <mm>] -o <pasta>`
+    - `weaver-art gcode <projeto.weave.json> [--clearance <mm>] [--feed <mm/min>] [--origin <...>] -o <pasta>`
+    - `weaver-art estimate <projeto.weave.json> [--sec-per-chord <n>] [--spool <m>] [--margin <pct>]`
+  - Novas flags de formato de tear: `--shape`, `--width`, `--height`, `--pegs-x`, `--pegs-y`, `--pegs-csv`.
+  - Flags de fabricação e CNC: `--paper`, `--drill`, `--margin`, `--gcode`, `--clearance`, `--feed`, `--origin`.
+  - Geração automática de `.template.svg`, `.template.pdf` e `.pegs.csv` no fluxo principal de tecelagem.
+- **Estúdio Web (`@weaver-art/web`)**:
+  - Seletor de forma de tear (Círculo, Quadrado, Retângulo, Personalizado via CSV) com mini-canvas interativo de pré-visualização.
+  - Painel de fabricação com botões para download de gabarito SVG, PDF multi-folhas e CSV de pinos antes ou depois da tecelagem, além de exportação de G-code.
+  - Tabela detalhada de estimativa de carretéis por cor na aba Estúdio.
+  - No Modo Tecelagem: exibição do tempo restante estimado em tempo real e painel de retomada entre dispositivos (código compartilhável com copiar/colar e exportação de JSON de retomada).
+
 ## [0.3.0] — 2026-10-13
 
 ### Adicionado

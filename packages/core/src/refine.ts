@@ -1,4 +1,4 @@
-import { pegDistance, tangentSegment } from './geometry.js';
+import { tangentSegment } from './geometry.js';
 import type { PegSide } from './types.js';
 import type { WeaveEngine } from './engine.js';
 import { ChordRasterizer } from './raster.js';
@@ -125,8 +125,8 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
       for (const delta of deltaOffsets) {
         const candMid = (pegMid + delta + N) % N;
         if (candMid === pegMid) continue;
-        if (pegDistance(pegFrom, candMid, N) < options.minPegGap) continue;
-        if (pegDistance(candMid, pegTo, N) < options.minPegGap) continue;
+        if (engine.chordMask[pegFrom * N + candMid] === 0) continue;
+        if (engine.chordMask[candMid * N + pegTo] === 0) continue;
 
         const neededUse = pegFrom === pegTo ? 2 : 1;
         if (engine.getChordUse(pegFrom, candMid) + neededUse > options.maxChordRepeats) continue;
@@ -219,7 +219,7 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
           if (options.lengthPenalty && options.lengthPenalty > 0) {
             const oldLen = oldSegA.length + oldSegB.length;
             const newLen = candSegA.length + candSegB.length;
-            const dLenNorm = (newLen - oldLen) / loom.config.diameterMm;
+            const dLenNorm = (newLen - oldLen) / loom.extentMm;
             deltaError += options.lengthPenalty * dLenNorm;
           }
 

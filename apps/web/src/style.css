@@ -257,9 +257,14 @@ figure canvas {
   width: 100%;
   aspect-ratio: 1;
   display: block;
-  border-radius: 50%;
+  border-radius: var(--radius);
   background: #fff;
   box-shadow: 0 10px 40px rgb(0 0 0 / 0.45);
+  transition: border-radius 0.2s ease;
+}
+
+body[data-loom-shape='circle'] figure canvas {
+  border-radius: 50%;
 }
 
 .main-figure canvas {
@@ -431,6 +436,23 @@ figcaption {
   color: var(--muted);
   font-size: 0.78rem;
   margin-top: 0.75rem !important;
+}
+
+.spool-table th,
+.spool-table td {
+  padding: 6px 8px;
+}
+
+.spool-table th {
+  font-weight: 500;
+}
+
+.spool-table td:nth-child(2),
+.spool-table td:nth-child(3),
+.spool-table td:nth-child(4),
+.spool-table td:nth-child(5),
+.spool-table td:nth-child(6) {
+  font-variant-numeric: tabular-nums;
 }
 
 footer {

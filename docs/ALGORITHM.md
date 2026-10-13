@@ -21,34 +21,50 @@ Tudo o que segue tenta respeitar essas restrições físicas.
 
 ## 2. Geometria do tear — [`geometry.ts`](../packages/core/src/geometry.ts)
 
-Unidades em **mm**, origem no canto superior esquerdo do quadrado que circunscreve o tear, eixo _y_
-para baixo. O pino _i_ fica no ângulo `θᵢ = θ₀ + 2πi/N` sobre o círculo de raio `R = D/2`.
-O pino 0 fica no topo (`θ₀ = −90°`) e a numeração cresce no sentido horário.
+Unidades em **mm**, com origem no canto superior esquerdo do quadro de simulação delimitador e eixo _y_ apontando para baixo. O motor suporta três geometrias físicas (`LoomConfig`):
 
-### Pinos com diâmetro
+### 2.1 Formatos de tear
 
-Pinos reais têm raio `r > 0`. O fio não passa pelo centro do pino: ele **tangencia** o pino e o
-**contorna** antes de seguir para o próximo. Cada passagem tem um **lado** `s ∈ {+1, −1}`:
+1. **Circular (`CircleLoomConfig`)**:
+   - Pinos dispostos sobre a circunferência de diâmetro $D$ ($R = D/2$): $\theta_i = \theta_0 + 2\pi i / N$.
+   - O pino 0 fica no topo por padrão ($\theta_0 = -90^\circ$) e a numeração segue o sentido horário.
+2. **Retangular ou Quadrado (`RectangleLoomConfig`)**:
+   - Dimensões físicas $W \times H$ em mm, com contagem de pinos $p_x \ge 2$ nas bordas horizontais e $p_y \ge 2$ nas bordas verticais.
+   - Pinos nos 4 cantos físicos, com contagem total exata $N = 2(p_x + p_y) - 4$ e espaçamento uniforme ao longo de cada aresta.
+   - Numeração horária contínua a partir do canto superior esquerdo.
+3. **Personalizado / Pinos Arbitrários (`CustomLoomConfig`)**:
+   - Coordenadas arbitrárias $(x_i, y_i)$ em mm (ex: importadas via arquivo CSV).
+   - O perímetro e o polígono interno são computados automaticamente através do algoritmo da **Cadeia Monótona de Andrew** para envoltória convexa (_convex hull_) em $O(N \log N)$, assegurando orientação horária estrita.
 
-- `s = +1`: o pino fica à esquerda do fio → contorno **anti-horário** (visto de frente);
-- `s = −1`: o pino fica à direita do fio → contorno **horário**.
+### 2.2 Normais externas e matriz de cordas admissíveis (`chordMask`)
+
+- Para posicionamento de etiquetas numéricas e desenho de gabarito sem sobreposição, cada pino calcula sua **normal externa** $(n_x, n_y)$ apontando para fora do tear.
+- Em teares poligonais ou retangulares, cordas cujos pinos pertençam à mesma aresta reta física (ex: topo com topo) não cruzam a área útil da obra e apenas cobririam a moldura. A matriz `chordMask` proíbe preventivamente essas cordas inválidas, além de respeitar o espaçamento mínimo circular `minPegGap`.
+
+### 2.3 Pinos com diâmetro real
+
+Pinos reais têm raio $r > 0$. O fio não passa pelo centro do pino: ele **tangencia** o pino e o
+**contorna** antes de seguir para o próximo. Cada passagem tem um **lado** $s \in \{+1, -1\}$:
+
+- $s = +1$: o pino fica à esquerda do fio $\to$ contorno **anti-horário** (visto de frente);
+- $s = -1$: o pino fica à direita do fio $\to$ contorno **horário**.
 
 O lado é preservado durante o contorno (o fio chega e sai do pino pelo mesmo lado).
-Entre os pinos `A` e `B` com lados `sa`, `sb`, sendo `d` a direção do segmento e `n = (−d_y, d_x)`:
+Entre os pinos $A$ e $B$ com lados $s_a, s_b$, sendo $d$ a direção do segmento e $n = (-d_y, d_x)$:
 
 ```
 P_A = A + sa·r·n        P_B = B + sb·r·n
 ```
 
-- `sa = sb` → tangente externa: `d = (B − A)/|B − A|`, comprimento `|AB|`;
-- `sa ≠ sb` → tangente interna (cruzada): `d` é `(B − A)/|AB|` girado de `φ`, com
-  `sin φ = 2·sb·r/|AB|`, comprimento `√(|AB|² − 4r²)`.
+- $s_a = s_b \to$ tangente externa: $d = (B - A)/|B - A|$, comprimento $|AB|$;
+- $s_a \ne s_b \to$ tangente interna (cruzada): $d$ é $(B - A)/|AB|$ girado de $\phi$, com
+  $\sin \phi = 2 \cdot s_b \cdot r / |AB|$, comprimento $\sqrt{|AB|^2 - 4r^2}$.
 
-O arco enrolado no pino ao passar da direção `d₁` para `d₂` é `r·τ`, onde `τ ∈ [0, 2π)` é o ângulo
-girado _em direção ao pino_ (sentido fixado por `s`). Assim o **comprimento total do fio** é
+O arco enrolado no pino ao passar da direção $d_1$ para $d_2$ é $r \cdot \tau$, onde $\tau \in [0, 2\pi)$ é o ângulo
+girado _em direção ao pino_ (sentido fixado por $s$). Assim o **comprimento total do fio** é
 exato: soma dos segmentos + soma dos arcos.
 
-Com `r = 0` (pinos ideais) há um único lado e o modelo se reduz ao clássico centro-a-centro.
+Com $r = 0$ (pinos ideais) há um único lado e o modelo se reduz ao clássico centro-a-centro.
 
 ## 3. Rasterização com largura real — [`raster.ts`](../packages/core/src/raster.ts)
 
@@ -74,14 +90,16 @@ Para fio preto (`K = 0`) sobre fundo branco isso é `R ← R·(1 − α c)`, ou 
 
 ## 5. Preparação da imagem — [`image.ts`](../packages/core/src/image.ts) e [`clahe.ts`](../packages/core/src/clahe.ts)
 
-1. Recorte quadrado (padrão: maior quadrado centralizado).
+1. **Enquadramento de aspecto (`loomFrameCrop`)**: recorta o maior retângulo centralizado mantendo a proporção exata do tear e o centraliza dentro do quadro quadrado de simulação de tamanho $S \times S$ px ($S / \text{extentMm}$ px por mm). Em teares circulares ou quadrados, reduz-se ao clássico maior quadrado centralizado.
 2. Reamostragem para `S × S` com **filtro de área** (k×k amostras bilineares por pixel) em luz linear.
 3. **Equalização local adaptativa (CLAHE)** (`clahe.ts`): divide a imagem em uma grade de $8 \times 8$ blocos, constrói histogramas locais de 256 bins e redistribui uniformemente os pixels que ultrapassam o limiar de corte (`claheClipLimit`, padrão 2.0). Em imagens coloridas, o CLAHE opera sobre a luminância perceptual e escala canais proporcionalmente, mantendo integridade de cor e tons de pele. As funções CDF são interpoladas bilinearmente por pixel, eliminando artefatos de borda.
 4. Ajustes perceptuais (em sRGB): contraste, brilho, gama, inversão.
 5. **Elevação de sombras** (`shadowLift`): eleva suavemente o piso de pretos profundos, impedindo que roupas pretas ou fundos noturnos absorvam desproporcionalmente as cordas e causem borrões sobre o rosto.
 6. **Modelo de distância de observação e desfoque retiniano** (`viewingDistanceM`): baseado na acuidade visual humana de ~1 minuto de arco (Birsak et al., 2018), aplica um filtro gaussiano separável $O(N)$ sobre o alvo para que detalhes imperceptíveis à distância física configurada não desviem o algoritmo de tons médios e feições principais.
 7. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
-8. Máscara circular anti-serrilhada.
+8. **Máscara do tear antisserrilhada (`loomMask`)**:
+   - Em teares circulares: máscara analítica circular $m = \text{clamp}(R - d + 0.5)$.
+   - Em teares retangulares e poligonais convexos: cálculo contínuo de distância com sinal a todas as arestas do polígono orientadas em sentido horário, $m = \text{clamp}(\min_e d_e + 0.5)$, garantindo antisserrilhamento e bordas nítidas sem denteamento.
 9. **Realce de bordas e detalhes** (`edgeEmphasis`): filtro Sobel aplicado sobre a luminância para gerar um mapa de saliência automático, multiplicando os pesos `weight` nos olhos, nariz, boca, óculos e contornos faciais. Opcionalmente combinado com um mapa de importância externo.
 
 ## 6. Otimização e estratégias de cor — [`engine.ts`](../packages/core/src/engine.ts)
@@ -159,16 +177,16 @@ Para refinar o traçado sem violar a condição física de **fio contínuo e sem
 
 ## 10. Saídas — [`export.ts`](../packages/core/src/export.ts)
 
-- **Instruções** (`.txt`): numeradas a partir do pino 1, com sentido de contorno e cabeçalhos organizados por camada (`=== CAMADA X: Cor (amarrar no pino Y) ===`) quando tecidas por camadas.
+- **Instruções** (`.txt`): numeradas a partir do pino 1, com sentido de contorno e cabeçalhos organizados por camada (`=== CAMADA X: Cor (amarrar no pino Y) ===`), acompanhadas do bloco detalhado de **ESTIMATIVA DE FABRICAÇÃO** (tempo estimado ativo e overhead, amarrações e carretéis por cor).
 - **CSV**: passo, fio, pinos, lados, comprimentos e ganho.
-- **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos.
-- **JSON**: `WeaveResult` completo (com `metrics`, `threads`, `steps`) — reabrível no modo tecelagem do app web.
+- **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos e contorno físico do tear.
+- **JSON**: `WeaveResult` completo (com `metrics`, `threads`, `steps` e metadados de `progress`) — reabrível no modo tecelagem do app web.
 
 ## 11. Seleção automática de paleta personalizada — [`palette.ts`](../packages/core/src/palette.ts)
 
 Para reproduzir fotografias sem restrição aos presets fixos (Vrellis ou CMYK), o Weaver Art extrai uma paleta adaptativa de $k$ cores ($k \in [2, 10]$) diretamente da imagem do usuário:
 
-1. **Amostragem Geométrica do Tear**: Amostra pixels exclusivamente dentro da máscara circular do tear ($(x - c_x)^2 + (y - c_y)^2 \le R^2$), ignorando fundos externos e cantos brancos/transparentes.
+1. **Amostragem Geométrica do Tear**: Amostra pixels exclusivamente dentro da máscara do tear (circular ou poligonal convexa), ignorando fundos externos e cantos brancos/transparentes.
 2. **Espaço Perceptual CIELAB**:
    - Cada pixel RGB linear é convertido para espaço CIE XYZ e em seguida para CIELAB ($L^_, a^_, b^*$).
    - A métrica de distância utilizada na clusterização é a distância euclidiana CIE76:
@@ -214,7 +232,61 @@ onde $R_{\text{halftone}} = G * (T - C)$ é o **mapa de resíduo perceptualmente
   - Ao aplicar uma corda selecionada, $R_{\text{halftone}}$ é atualizado localmente sobre a caixa delimitadora dilatada da corda com filtro gaussiano separável 1D horizontal + 1D vertical em $O(\text{largura} + \text{altura})$, com ressincronização completa periódica a cada 50 passos.
 - Quando `halftoneMixing: false` (padrão), o motor se reduz estritamente ao resíduo local clássico $R = T - C$ com custo adicional zero.
 
-## 13. Próximos passos (v0.4)
+## 13. Gabarito de furação 1:1 e gerador PDF vetorial puro — [`template.ts`](../packages/core/src/template.ts), [`pdf.ts`](../packages/core/src/pdf.ts)
 
-- **v0.4 — Fabricação**: Teares retangulares/quadrados, posições arbitrárias de pinos via CSV e gabarito de furação 1:1 em SVG/PDF.
-- **Desempenho**: Cache de rasterização das cordas mais frequentes e paralelismo em Web Workers.
+Para a construção física do tear por marcenaria ou serralheria:
+
+1. **Gabarito Vetorial SVG 1:1**:
+   - Emite desenho vetorial onde 1 unidade = 1 mm físico.
+   - Cada pino contém cruz de centro milimétrica e círculo correspondente ao diâmetro real da broca de furação (`drillDiameterMm`).
+   - Inclui marcadores numéricos a cada 10 pinos, eixos ortogonais principais e **régua de calibração de 100 mm** para aferição direta com paquímetro ou fita métrica após a impressão.
+2. **Ladrilhamento Multi-páginas em PDF Puro (`pdf.ts`)**:
+   - Implementação independente de escritor PDF 1.4 sem dependências de terceiros, com cálculo exato de offsets de tabela `xref` e tipografia `WinAnsiEncoding`.
+   - Gera uma **página de capa (visão geral)** com diagrama da grade de folhas montada e especificações físicas.
+   - Decompõe teares maiores que a folha física (ex: aro de 711 mm em papel A4 de 210 × 297 mm) em uma grade de $L \times C$ blocos com margem de sobreposição de 10 mm.
+   - Cada folha impressa traz: marcas de corte e registro em cruz nos quatro cantos, identificador de coluna/linha (ex: `Folha L2·C3`), e **régua de conferência local de 50 mm** com o aviso explícito de impressão em escala 100% (sem ajuste de página).
+
+## 14. Estimativa física de tecelagem e consumo de carretéis — [`estimate.ts`](../packages/core/src/estimate.ts)
+
+Para planejamento prático de tecelagem manual:
+
+- **Tempo Ativo**: $\text{tempo\_cordas} = N_{\text{passos}} \times t_{\text{corda}}$ (padrão: 6 s por corda, calibrado a partir das sessões de tecelagem de Vrellis).
+- **Tempo de Preparo (Overhead)**: $\text{tempo\_overhead} = N_{\text{amarrações}} \times t_{\text{amarração}} + N_{\text{trocas}} \times t_{\text{troca}}$ (padrão: 120 s para amarração e ancoragem inicial de um carretel novo, 10 s para alternância entre fios em estratégias intercaladas).
+- **Consumo de Meadas com Margem de Segurança**:
+  $$\text{fio\_necessário}_t = \text{comprimento\_físico}_t \times (1 + \text{margem}) + \text{sobras\_amarração}$$
+  O número de carretéis/bobinas por cor é calculado por $\lceil \text{fio\_necessário}_t / L_{\text{carretel}} \rceil$ (ex: carretéis de 1.000 m com 10% de margem e 300 mm de ponta para nós).
+- **Tempo Restante Dinâmico**: Permite calcular em tempo real o tempo restante a partir de qualquer passo $k$ no reprodutor web.
+
+## 15. Cinemática e percursos de G-code para robôs/plotters XY — [`gcode.ts`](../packages/core/src/gcode.ts)
+
+Para tecelagem automatizada via máquinas CNC de 2 eixos ou braços cartesianos com dispensador de fio:
+
+1. **Compensação Radial da Ferramenta**:
+   - O bico guia do fio não pode colidir com os pinos. O centro da ferramenta se move em uma órbita dilatada com raio efetivo $r' = r_{\text{pino}} + \text{clearanceMm}$.
+2. **Segmentos Lineares Tangentes (`G1`)**:
+   - Calcula a tangente matemática exata entre as órbitas dos dois pinos através de `tangentSegment(a, fromSide, b, toSide, r')`.
+3. **Contornos em Arco Circular (`G2` / `G3`)**:
+   - No sistema de coordenadas da máquina (Y apontando para o fundo da mesa), arcos anti-horários no tear com $s = +1$ são emitidos como interpolação circular anti-horária `G3`, e $s = -1$ como `G2`.
+   - Arcos com ângulo de contorno $\tau > \pi$ radianos ($180^\circ$) são automaticamente bipartidos em dois arcos consecutivos menores, prevenindo ambiguidades de arco maior/menor com coordenadas relativas de centro `I` e `J`.
+4. **Gerenciamento de Fios e Cores**:
+   - Cabeçalho padronizado RS-274 com unidades em mm (`G21`), coordenadas absolutas (`G90`) e plano XY (`G17`).
+   - Trocas de meada emitem comando de pausa obrigatória `M0` com mensagem legível nos comentários indicando cor, pino de amarração e camada, seguido de avanço rápido em vazio (`G0`) até o próximo pino de ancoragem.
+
+## 16. Sincronização e retomada de progresso sem servidor — [`progress.ts`](../packages/core/src/progress.ts)
+
+Para permitir que o tecelão alterne livremente entre computador de mesa e celular/tablet na bancada sem exigir contas na nuvem ou banco de dados:
+
+1. **Fingerprint Criptográfico Leve (`weaveFingerprint`)**:
+   - Hash FNV-1a de 32 bits determinístico calculado sobre a contagem de pinos, dimensões, lista de passos e ordem de fios. Retrocompatível com projetos circulares da v0.3.
+2. **Códigos Compactos com Checksum (`encodeProgressCode`, `decodeProgressCode`)**:
+   - Formato padronizado: `WA1-<fingerprint>-<passo36>-<checksum>` (ex: `WA1-k3x9q2-1f4-7a`).
+   - O checksum de 2 caracteres em base 36 valida a integridade do código e impede que erros acidentais de digitação desloquem o progresso da obra.
+3. **Sincronização por Link e Reconciliação**:
+   - O progresso pode ser compartilhado diretamente via URL através da âncora `#progress=WA1-...`.
+   - Ao importar ou reabrir arquivos `.weave.json` com campo `progress: { index, updatedAt }`, a função `mergeProgress` compara com o histórico local do navegador e eleva automaticamente o progresso para o timestamp mais recente.
+
+## 17. Próximos passos (v0.5)
+
+- **Desempenho**: Cache de rasterização das cordas mais frequentes e poda antecipada de candidatos inviáveis.
+- **Aceleração de Baixo Nível**: Núcleo computacional em Rust compilado para WebAssembly (com extensões SIMD de 128 bits) ou aceleração de matriz de ganhos via WebGPU para resoluções $> 1000$ px.
+- **Paralelismo**: Avaliação concorrente de candidatos distribuída entre múltiplos Web Workers.

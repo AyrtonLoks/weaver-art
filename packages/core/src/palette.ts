@@ -1,5 +1,7 @@
 import { SRGB8_TO_LINEAR, linearToSrgb8 } from './color.js';
 import { VRELLIS_LOOM } from './config.js';
+import { createLoom, loomPegCount } from './geometry.js';
+import { loomFrameCrop } from './image.js';
 import { deltaE76, linearRgbToLab } from './metrics.js';
 import type { CustomPaletteResult, LoomConfig, PaletteOptions, RasterImage, ThreadConfig } from './types.js';
 
@@ -131,35 +133,62 @@ export function extractPalette(image: RasterImage, k = 4, options: PaletteOption
   const maxIterations = options.maxIterations ?? 25;
   const rng = createRng(options.seed ?? 42);
 
-  // Circular loom sampling
-  const cx = width / 2;
-  const cy = height / 2;
-  const radius = Math.min(width, height) / 2;
-  const radiusSq = radius * radius;
-
-  // Step 1: Collect valid pixels inside the circular loom mask
-  // Step spacing is calculated to sample approximately maxSamples points uniformly
-  // across the entire circular region from top to bottom without premature truncation.
-  const circleArea = Math.PI * radiusSq;
-  const step = Math.max(1, Math.floor(Math.sqrt(circleArea / maxSamples)));
-
   const labSamples: [number, number, number][] = [];
-  for (let y = 0; y < height; y += step) {
-    const dy = y + 0.5 - cy;
-    for (let x = 0; x < width; x += step) {
-      const dx = x + 0.5 - cx;
-      if (dx * dx + dy * dy > radiusSq) continue;
 
-      const offset = (y * width + x) * 4;
-      const alpha = data[offset + 3] / 255;
-      if (alpha <= 0.05) continue; // transparent pixel
+  if (options.loom && options.loom.shape !== 'circle') {
+    const loomInstance = createLoom(options.loom);
+    const crop = loomFrameCrop(width, height, loomInstance);
+    const scale = crop.size / loomInstance.extentMm;
+    const xMin = crop.x + ((loomInstance.extentMm - loomInstance.widthMm) / 2) * scale;
+    const xMax = xMin + loomInstance.widthMm * scale;
+    const yMin = crop.y + ((loomInstance.extentMm - loomInstance.heightMm) / 2) * scale;
+    const yMax = yMin + loomInstance.heightMm * scale;
+    const area = Math.max(1, (xMax - xMin) * (yMax - yMin));
+    const step = Math.max(1, Math.floor(Math.sqrt(area / maxSamples)));
 
-      // Composite over white if alpha < 1
-      const linR = alpha * SRGB8_TO_LINEAR[data[offset]] + (1 - alpha);
-      const linG = alpha * SRGB8_TO_LINEAR[data[offset + 1]] + (1 - alpha);
-      const linB = alpha * SRGB8_TO_LINEAR[data[offset + 2]] + (1 - alpha);
+    const startY = Math.max(0, Math.floor(yMin));
+    const endY = Math.min(height, Math.ceil(yMax));
+    const startX = Math.max(0, Math.floor(xMin));
+    const endX = Math.min(width, Math.ceil(xMax));
 
-      labSamples.push(linearRgbToLab(linR, linG, linB));
+    for (let y = startY; y < endY; y += step) {
+      for (let x = startX; x < endX; x += step) {
+        const offset = (y * width + x) * 4;
+        const alpha = data[offset + 3] / 255;
+        if (alpha <= 0.05) continue;
+        const linR = alpha * SRGB8_TO_LINEAR[data[offset]] + (1 - alpha);
+        const linG = alpha * SRGB8_TO_LINEAR[data[offset + 1]] + (1 - alpha);
+        const linB = alpha * SRGB8_TO_LINEAR[data[offset + 2]] + (1 - alpha);
+        labSamples.push(linearRgbToLab(linR, linG, linB));
+      }
+    }
+  } else {
+    // Circular loom sampling
+    const cx = width / 2;
+    const cy = height / 2;
+    const radius = Math.min(width, height) / 2;
+    const radiusSq = radius * radius;
+
+    // Step 1: Collect valid pixels inside the circular loom mask
+    const circleArea = Math.PI * radiusSq;
+    const step = Math.max(1, Math.floor(Math.sqrt(circleArea / maxSamples)));
+
+    for (let y = 0; y < height; y += step) {
+      const dy = y + 0.5 - cy;
+      for (let x = 0; x < width; x += step) {
+        const dx = x + 0.5 - cx;
+        if (dx * dx + dy * dy > radiusSq) continue;
+
+        const offset = (y * width + x) * 4;
+        const alpha = data[offset + 3] / 255;
+        if (alpha <= 0.05) continue; // transparent pixel
+
+        const linR = alpha * SRGB8_TO_LINEAR[data[offset]] + (1 - alpha);
+        const linG = alpha * SRGB8_TO_LINEAR[data[offset + 1]] + (1 - alpha);
+        const linB = alpha * SRGB8_TO_LINEAR[data[offset + 2]] + (1 - alpha);
+
+        labSamples.push(linearRgbToLab(linR, linG, linB));
+      }
     }
   }
 
@@ -378,5 +407,5 @@ export function generateCustomThreads(
   loom: LoomConfig = VRELLIS_LOOM,
   options: PaletteOptions = {},
 ): CustomPaletteResult {
-  return extractPalette(image, k, { ...options, loomPegCount: loom.pegCount });
+  return extractPalette(image, k, { ...options, loom, loomPegCount: loomPegCount(loom) });
 }

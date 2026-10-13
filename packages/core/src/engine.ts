@@ -1,6 +1,6 @@
 import { hexToLinear, isAchromatic, linearToSrgb8, luminance } from './color.js';
 import { computeThreadBudgets, resolveOptions } from './config.js';
-import { createLoom, pegDistance, tangentSegment, wrapAngle, type Loom, type Segment } from './geometry.js';
+import { buildChordMask, createLoom, tangentSegment, wrapAngle, type Loom, type Segment } from './geometry.js';
 import { prepareTarget, type TargetImage } from './image.js';
 import { calculateMetrics } from './metrics.js';
 import { ChordRasterizer } from './raster.js';
@@ -66,6 +66,7 @@ export class WeaveEngine {
   readonly size: number;
   readonly channels: 1 | 3;
   readonly pxPerMm: number;
+  readonly chordMask: Uint8Array;
   /** Simulated appearance of the artwork, linear light, `size * size * channels`. */
   readonly canvas: Float32Array;
   readonly steps: WeaveStep[] = [];
@@ -93,7 +94,8 @@ export class WeaveEngine {
     this.options = options;
     this.loom = createLoom(options.loom);
     this.size = options.resolutionPx;
-    this.pxPerMm = this.size / options.loom.diameterMm;
+    this.pxPerMm = this.size / this.loom.extentMm;
+    this.chordMask = buildChordMask(this.loom, options.minPegGap);
 
     const achromatic = isAchromatic(options.background) && options.threads.every((t) => isAchromatic(t.color));
     const channels: 1 | 3 = achromatic || options.preprocess.grayscale ? 1 : 3;
@@ -105,7 +107,7 @@ export class WeaveEngine {
         ...options.preprocess,
         viewingDistanceM: options.preprocess.viewingDistanceM || options.viewingDistanceM,
       };
-      this.target = prepareTarget(image, this.size, preprocess, channels, importance, options.loom.diameterMm);
+      this.target = prepareTarget(image, this.size, preprocess, channels, importance, this.loom);
     }
     this.channels = this.target.channels;
     const C = this.channels;
@@ -141,7 +143,7 @@ export class WeaveEngine {
       pegs: [t.startPeg],
     }));
 
-    const N = options.loom.pegCount;
+    const N = this.loom.pegs.length;
     this.chordUse = new Uint16Array(N * N);
     this.raster = new ChordRasterizer(this.size, Math.max(...this.threadWidthPx, 1));
     this.startedAt = now();
@@ -663,7 +665,7 @@ export class WeaveEngine {
   private findBestForThread(t: number): Candidate | null {
     const { pegs, sides, pegRadiusMm } = this.loom;
     const N = pegs.length;
-    const { minPegGap, maxChordRepeats } = this.options;
+    const { maxChordRepeats } = this.options;
     const scale = this.pxPerMm;
     let best: Candidate | null = null;
 
@@ -673,7 +675,7 @@ export class WeaveEngine {
     const widthPx = this.threadWidthPx[t];
 
     for (let to = 0; to < N; to++) {
-      if (pegDistance(state.peg, to, N) < minPegGap) continue;
+      if (this.chordMask[state.peg * N + to] === 0) continue;
       if (this.chordUse[state.peg * N + to] >= maxChordRepeats) continue;
       const b = pegs[to];
       for (const fromSide of fromSides) {
@@ -682,7 +684,7 @@ export class WeaveEngine {
           const count = this.raster.rasterize(seg.x0 * scale, seg.y0 * scale, seg.x1 * scale, seg.y1 * scale, widthPx);
           let gain = this.score(t, count);
           if (this.options.lengthPenalty && this.options.lengthPenalty > 0 && gain > 0) {
-            const normLen = seg.length / this.options.loom.diameterMm;
+            const normLen = seg.length / this.loom.extentMm;
             gain *= Math.max(0, 1 - this.options.lengthPenalty * normLen);
           }
           if (!best || gain > best.gain) {

@@ -3,6 +3,7 @@ import {
   CMYK_THREADS,
   computeThreadBudgets,
   DEFAULT_OPTIONS,
+  loomPegCount,
   pegDistance,
   prepareTarget,
   PRESETS,
@@ -25,8 +26,11 @@ const small: DeepPartial<WeaveOptions> = {
 
 describe('options', () => {
   it('defaults follow the published Vrellis loom', () => {
-    expect(DEFAULT_OPTIONS.loom.pegCount).toBe(200);
-    expect(DEFAULT_OPTIONS.loom.diameterMm).toBeCloseTo(711.2, 6);
+    expect(DEFAULT_OPTIONS.loom.shape).toBe('circle');
+    if (DEFAULT_OPTIONS.loom.shape === 'circle') {
+      expect(DEFAULT_OPTIONS.loom.pegCount).toBe(200);
+      expect(DEFAULT_OPTIONS.loom.diameterMm).toBeCloseTo(711.2, 6);
+    }
     expect(DEFAULT_OPTIONS.maxLines).toBe(4000);
   });
 
@@ -75,7 +79,7 @@ describe('WeaveEngine', () => {
     expect(result.steps.length).toBeGreaterThan(20);
     expect(result.rmse).toBeLessThan(before);
 
-    const N = result.options.loom.pegCount;
+    const N = loomPegCount(result.options.loom);
     const used = new Map<string, number>();
     result.steps.forEach((s, i) => {
       expect(s.gain).toBeGreaterThan(0);
@@ -419,5 +423,66 @@ describe('exports', () => {
     });
 
     expect(engineWithBlur.target.data[32 * 64 + 32]).not.toBe(engineNoBlur.target.data[32 * 64 + 32]);
+  });
+
+  it('weaves successfully on a rectangular loom, respecting chordMask and reducing RMSE', () => {
+    const img = discImage();
+    const rectLoom = {
+      shape: 'rectangle' as const,
+      widthMm: 400,
+      heightMm: 300,
+      pegsX: 12,
+      pegsY: 10,
+      pegDiameterMm: 1.5,
+    };
+    const engine = WeaveEngine.create(img, {
+      ...small,
+      loom: rectLoom,
+      maxLines: 20,
+      minPegGap: 2,
+    });
+
+    const result = engine.run();
+
+    expect(result.steps.length).toBe(20);
+    expect(result.rmse).toBeGreaterThan(0);
+    expect(result.steps.every((s) => s.gain > 0)).toBe(true);
+
+    // Verify no chosen chord lies on the same straight edge
+    for (const step of result.steps) {
+      const pA = engine.loom.pegs[step.from];
+      const pB = engine.loom.pegs[step.to];
+      if (pA.edges !== 0 && pB.edges !== 0) {
+        expect((pA.edges & pB.edges) === 0).toBe(true);
+      }
+    }
+  });
+
+  it('weaves successfully on a custom loom imported from CSV-style coordinates', () => {
+    const img = discImage();
+    const customPegs = [
+      { x: 50, y: 0 },
+      { x: 150, y: 0 },
+      { x: 200, y: 80 },
+      { x: 170, y: 160 },
+      { x: 30, y: 160 },
+      { x: 0, y: 80 },
+    ];
+    const engine = WeaveEngine.create(img, {
+      ...small,
+      loom: {
+        shape: 'custom' as const,
+        pegs: customPegs,
+        pegDiameterMm: 1,
+      },
+      maxLines: 15,
+      minPegGap: 1,
+    });
+
+    const result = engine.run();
+
+    expect(result.steps.length).toBeGreaterThan(0);
+    expect(result.rmse).toBeGreaterThan(0);
+    expect(result.steps.every((s) => s.gain > 0)).toBe(true);
   });
 });

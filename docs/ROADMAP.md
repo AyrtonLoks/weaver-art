@@ -32,13 +32,13 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ **Seleção automática de paleta personalizada**: extração perceptual de $k$ cores dominantes a partir da imagem via clusterização K-Means em espaço CIELAB (k-means++), amostragem restrita à máscara circular do tear, ordenação decrescente física por luminância (luz $\to$ sombra), cotas ponderadas com âncora escura e nomes automáticos em português
 - ✅ **Modelo óptico de mistura por meio-tom**: modelagem de ponto óptico da retina humana ($G * (T - C)$), permitindo que cordas adjacentes de cores primárias/secundárias (ex: amarelo e ciano) se combinem oticamente em cores intermediárias (ex: verde) sem penalidades locais artificiais, com atualização local otimizada e validação completa
 
-## v0.4 — Fabricação
+## v0.4 — Fabricação (concluído)
 
-- 🔜 Teares quadrados/retangulares e pinos em posições arbitrárias (importar CSV)
-- 🔜 Folha de furação/gabarito do tear em SVG/PDF (posição dos pinos em escala real)
-- 🔜 Estimativa de tempo de tecelagem e de consumo de fio por bobina
-- 💡 Exportar G-code para máquinas/robôs de tecelagem
-- 💡 Retomar a tecelagem em outro dispositivo (sincronizar progresso)
+- ✅ **Teares quadrados/retangulares e pinos arbitrários**: suporte a `RectangleLoomConfig` e `CustomLoomConfig` via importação/exportação de CSV de pinos, detecção de convex hull e normais outward para etiquetas e roteamento físico de cordas.
+- ✅ **Gabarito de furação em escala real 1:1**: exportação de SVG e PDF multi-folhas ladrilhadas (A4, A3, Carta) com marcas de registro em cruz, réguas de verificação milimétrica (100 mm e 50 mm) e furos com diâmetro de broca real.
+- ✅ **Estimativa de tempo e carretéis**: cálculo de tempo ativo de tecelagem, preparo e trocas de meada, decomposição de carretéis necessários por cor (com margem de segurança configurável) e tempo restante dinâmico no reprodutor.
+- ✅ **Exportação de G-code para máquinas/plotters XY**: comandos G1 para segmentos tangentes e G2/G3 para arcos ao redor dos pinos com raio de folga da ferramenta, divisão de arcos >180°, pausas M0 para troca de cor e cálculo exato de percurso.
+- ✅ **Retomada e sincronização de progresso sem servidor**: códigos curtos compactos com checksum (`WA1-<fingerprint>-<step>-<checksum>`), sincronização via hash de URL (`#progress=...`), cópia/cola na interface e exportação/retomada em arquivos `.weave.json`.
 
 ## Desempenho
 

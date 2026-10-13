@@ -45,7 +45,31 @@ Ao ajustar parâmetros de tecelagem (resolução, CLAHE, penalidade de comprimen
 2. Avalie o índice de similaridade estrutural **SSIM** (valores > 0.70 a 0.85 indicam excelente preservação facial).
 3. Teste o impacto de `lengthPenalty` (0.1 a 0.25) no consumo total em metros sem degradar o SSIM.
 
-### 5. Pipeline de Verificação Padrão
+### 5. Fabricação Física e Gabaritos de Furação (SVG / PDF)
+
+Para gerar moldes em escala real 1:1 para a oficina/marcenaria:
+
+1. Gerar gabarito multi-folhas em PDF (A4, A3 ou Carta) ou SVG:
+   ```bash
+   node packages/cli/dist/index.js template --shape rectangle --width 600 --height 400 --paper A4 -o gabarito/
+   ```
+2. **Conferência de escala**: sempre meça com paquímetro a régua de 100 mm (SVG) ou a régua de 50 mm impressa no canto de cada folha PDF para garantir que o software de impressão não aplicou redimensionamento "Ajustar à página".
+3. **Pinos customizados**: para teares com geometria personalizada, exporte as coordenadas em CSV (`--pegs-csv`) e faça a leitura com `parsePegsCSV()`.
+
+### 6. Exportação e Validação de G-code para Máquinas CNC
+
+Para automatizar a tecelagem com plotters cartesianos XY:
+
+1. Gerar o arquivo `.weave.gcode` a partir do projeto final ou flag `--gcode`:
+   ```bash
+   node packages/cli/dist/index.js gcode output/obra.weave.json --clearance 1.5 --feed 3000
+   ```
+2. Inspecione visualmente o percurso em um simulador CNC (ex: NC Viewer) para verificar:
+   - Folga radial da cabeça ao redor dos pinos (`toolRadius = pegRadius + clearanceMm`);
+   - Sentido correto dos arcos `G2`/`G3`;
+   - Pausas programadas `M0` nas trocas de carretel/cor.
+
+### 7. Pipeline de Verificação Padrão
 
 Sempre execute:
 
