@@ -1,61 +1,32 @@
-# Weaver Art — Diretrizes para Agentes e Modelos de IA
+# Diretrizes para Agentes de IA — Weaver Art
 
-Este repositório implementa arte computacional com fio contínuo em tear circular baseada na técnica de Petros Vrellis (_A new way to knit_, 2016).
-Ao atuar em qualquer tarefa neste repositório, você DEVE seguir as diretrizes abaixo.
+Este arquivo estabelece os princípios fundamentais, regras físicas, matemáticas e arquiteturais que qualquer modelo de IA deve respeitar ao trabalhar ou estender o código deste projeto.
 
-## 1. Invariantes Físicos e Matemáticos (NÃO VIOLAR)
+## 1. Filosofia e Contexto do Projeto
 
-1. **Unidades físicas em milímetros (mm):**
-   - Todas as medidas do tear, pinos e fios usam mm (`diameterMm`, `pegDiameterMm`, `widthMm`, `segmentMm`, `wrapMm`).
-   - Coordenadas de grade recebem obrigatoriamente o sufixo `Px`.
-2. **Pinos como cilindros reais:**
-   - Pinos possuem diâmetro real. O fio tangencia os pinos e possui lado explícito (`PegSide = 1 | -1`, correspondendo a anti-horário e horário).
-   - O cálculo do comprimento do fio DEVE incluir a soma dos segmentos tangentes e os arcos contornados nos pinos (`wrapAngle`).
-3. **Luz Linear:**
-   - Cálculos de cobertura e erro ocorrem estritamente em luz linear (`sRGB` decodificado). Nunca calcule erro em valores sRGB com gama.
-4. **Função Objetivo (Redução de Erro Quadrático):**
-   - O motor escolhe a corda que maximiza a redução do erro quadrático ponderado $\Delta E = \sum w_p \delta_p (2(t_p - R_p) - \delta_p)$.
-   - Nunca regrida para heurísticas ingênuas como "corda mais escura na média" ou subtração aditiva constante.
-5. **Isolamento de `@weaver-art/core`:**
-   - O pacote `packages/core` é agnóstico de plataforma e DEVE ter ZERO dependências de runtime.
-   - Proibido importar `fs`, `path`, `Buffer`, APIs de DOM ou `sharp` dentro de `packages/core`.
+Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou _algorithmic knitting_) de Petros Vrellis. Diferente de geradores simplistas que apenas traçam linhas em pixels, o Weaver Art modela o **objeto físico real**:
 
-## 2. Padrões de Ambiente e Qualidade
+- Dimensões reais em milímetros (`mm`), diâmetro dos pinos com tangentes e arcos, espessura e opacidade do fio.
+- Modelo físico de transmitância em luz linear: $T = \prod (1 - \alpha c_i)$, onde o tom escurece com densidade E interseções.
 
-- **Node.js:** Versão $\ge 22.12$ obrigatória (conforme `.nvmrc`).
-- **Antes de concluir qualquer tarefa ou commit:**
-  1. `npm run typecheck` (todos os workspaces)
-  2. `npm run lint` (ESLint flat config)
-  3. `npm run format:check` (Prettier)
-  4. `npm test` (Vitest com testes unitários)
-- **Idioma:** Documentação e textos de interface em português (`pt-BR`); código, tipos e identificadores em inglês.
+## 2. Invariantes Matemáticas e de Cor
 
-## 3. Guia de Execução das Próximas Tasks (Roadmap)
+- **Competição Cromática e Ordem de Camadas**:
+  - O fio preto ($K=[0,0,0]$) tem ganho matemático MSE 3× maior sobre fundo branco que fios coloridos. **Nunca deixe fios coloridos competirem livremente contra o preto sem cotas ou camadas**, caso contrário ocorrerá exclusão total de cores (fome de azul/verde).
+  - Em presets coloridos, a estratégia padrão deve ser **Camadas Sequenciais (`layered`)**. A ordem física obrigatória é: cores luminosas primeiro (Amarelo $\rightarrow$ Magenta/Ciano $\rightarrow$ Azul/Verde) e **Preto por último** (para definir sombras e contornos sem apagar as cores de baixo).
+  - Sempre forneça cotas ponderadas com maior peso no preto final (ex: 40% preto no CMYK, 30% no Vrellis 5 cores) e **rollover dinâmico** de saldo para o preto caso cores anteriores atinjam limite de ganho.
+- **Atingimento de Metas de Linhas e Repetições**:
+  - Um tear circular com 200 pinos possui apenas ~16.500 pares de pinos possíveis, dos quais apenas ~7.500 cruzam a figura.
+  - Para metas altas ($\ge 5.000$ cordas, ex: 10.000 cordas), configure `maxChordRepeats >= 2` ou `3`. Se `maxChordRepeats = 1`, o motor ficará sem cordas úteis com ganho positivo e parará prematuramente.
+- **Fidelidade de Retratos e Prevenção do "Buraco Negro"**:
+  - Em retratos com roupas ou fundos pretos, sempre use **`shadowLift`** ($0.10$ a $0.15$) para evitar que o tronco consuma milhares de linhas e suje o rosto com retas transversais.
+  - Use **`edgeEmphasis`** ($0.40$ a $0.60$) com mapa de saliência Sobel para forçar a concentração de cordas nas feições finas (olhos, óculos, nariz, boca e silhueta).
 
-Ao ser solicitado a implementar tarefas do [docs/ROADMAP.md](docs/ROADMAP.md), siga estas especificações:
+## 3. Invariantes de Código e Arquitetura
 
-### Task: Modelo de Distância de Observação (Viewing Distance Filter)
-
-- **Objetivo:** Simular o fio na grade fina (ex.: 800px) e avaliar o erro visual após aplicar filtro passa-baixa (Gaussian blur / downsample) para comparar como o olho humano percebe a 1-2 metros.
-- **Local:** `packages/core/src/image.ts` e `engine.ts`.
-- **Validação:** Manter teste de conservação de energia e redução monótona de erro em `packages/core/test`.
-
-### Task: Refinamento Global (Post-Greedy Optimization)
-
-- **Objetivo:** Após a fase gulosa, iterar removendo cordas com menor contribuição ou testando swaps de conexões que reduzam o erro total sem quebrar a continuidade do fio.
-- **Local:** `packages/core/src/engine.ts`.
-- **Restrição:** Manter a propriedade de fio único contínuo (cada corda parte de onde a anterior terminou).
-
-### Task: Regularização de Comprimento do Fio
-
-- **Objetivo:** Adicionar penalidade $\lambda \cdot \text{lengthMm}$ na função de ganho para aproximar a extensão total de 1,5 a 2 km para ~4000 cordas.
-- **Local:** `WeaveOptions` e método `score()` em `engine.ts`.
-
-### Task: Gabarito de Furação e Exportação para Fabricação
-
-- **Objetivo:** Gerar SVG/PDF 1:1 com centro de furos, numeração e círculos de guia para marcar fisicamente no aro de alumínio/madeira.
-- **Local:** `packages/core/src/export.ts` e CLI `--template`.
-
-### Task: Calibração de Fio e Pinos
-
-- **Objetivo:** Permitir ajuste fino dos coeficientes de opacidade e largura aparente a partir de fotografias de amostras reais tecidas.
+- **`@weaver-art/core` deve permanecer puro**: Zero dependências de runtime, sem DOM, sem `fs`, sem `Buffer`. Deve rodar perfeitamente em Node, Web Workers e testes.
+- **Convenção de Unidades**:
+  - Grandeza física $\rightarrow$ `mm` (ex: `diameterMm`, `pegRadiusMm`, `widthMm`, `totalLengthMm`).
+  - Grandeza discreta de simulação $\rightarrow$ sufixo `Px` (ex: `resolutionPx`, `widthPx`).
+- **Verificação Obrigatória**:
+  - Antes de concluir qualquer tarefa, execute `npm run check` (typecheck + eslint + prettier + vitest) e `npm run build`. Todos os testes devem passar com 0 erros.
