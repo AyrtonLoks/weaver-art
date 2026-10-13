@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Weaver Art — string art computacional em tear circular, inspirado em Petros Vrellis."
+    />
+    <title>Weaver Art</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='%23e8e4dc' stroke-width='4'/%3E%3Cpath d='M50 4L96 50L50 96L4 50Z M20 18L82 78 M80 20L18 80' stroke='%23e8e4dc' stroke-width='2' fill='none'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1>Weaver Art</h1>
+        <p>string art computacional · um único fio, cordas de um círculo</p>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="studio" role="tab">Estúdio</button>
+        <button class="tab" data-tab="knit" role="tab">Modo tecelagem</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- ============================ ESTÚDIO ============================ -->
+      <section id="studio" class="view active">
+        <aside class="panel">
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept="image/*" hidden />
+            <span id="drop-label">Arraste uma foto aqui<br /><small>ou clique para escolher</small></span>
+          </label>
+
+          <fieldset>
+            <legend>Tear</legend>
+            <label
+              >Preset
+              <select id="preset">
+                <option value="vrellis-mono">Vrellis · monocromático (preto)</option>
+                <option value="vrellis-color">Vrellis · cores (preto, azul, magenta, amarelo, verde)</option>
+              </select>
+            </label>
+            <div class="grid2">
+              <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" /></label>
+              <label>Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" /></label>
+              <label>Ø pino (mm) <input type="number" id="pegDiameter" min="0" max="10" step="0.1" /></label>
+              <label>Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Algoritmo</legend>
+            <div class="grid2">
+              <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" /></label>
+              <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" /></label>
+              <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" /></label>
+              <label>Resolução (px) <input type="number" id="resolution" min="128" max="2048" step="50" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Imagem</legend>
+            <label
+              >Contraste <output id="contrast-out"></output>
+              <input type="range" id="contrast" min="0.5" max="2.5" step="0.05" />
+            </label>
+            <label
+              >Brilho <output id="brightness-out"></output>
+              <input type="range" id="brightness" min="-0.5" max="0.5" step="0.01" />
+            </label>
+            <label
+              >Gama <output id="gamma-out"></output>
+              <input type="range" id="gamma" min="0.4" max="2.5" step="0.05" />
+            </label>
+            <label class="check"><input type="checkbox" id="invert" /> Inverter (fio claro em fundo escuro)</label>
+          </fieldset>
+
+          <div class="actions">
+            <button id="run" class="primary" disabled>Gerar padrão</button>
+            <button id="stop" disabled>Parar</button>
+          </div>
+        </aside>
+
+        <div class="stage">
+          <div class="canvases">
+            <figure class="main-figure">
+              <canvas id="sim" width="700" height="700"></canvas>
+              <figcaption>Simulação física</figcaption>
+            </figure>
+            <figure class="thumb">
+              <canvas id="target" width="700" height="700"></canvas>
+              <figcaption>Alvo (após preparo)</figcaption>
+            </figure>
+          </div>
+
+          <div class="progress"><div id="bar"></div></div>
+          <dl class="stats">
+            <div>
+              <dt>Linhas</dt>
+              <dd id="s-lines">—</dd>
+            </div>
+            <div>
+              <dt>Fio</dt>
+              <dd id="s-length">—</dd>
+            </div>
+            <div>
+              <dt>RMSE</dt>
+              <dd id="s-rmse">—</dd>
+            </div>
+            <div>
+              <dt>Tempo</dt>
+              <dd id="s-time">—</dd>
+            </div>
+          </dl>
+
+          <div class="exports">
+            <button data-export="json" disabled>Projeto .json</button>
+            <button data-export="txt" disabled>Instruções .txt</button>
+            <button data-export="csv" disabled>Tabela .csv</button>
+            <button data-export="svg" disabled>Vetor .svg</button>
+            <button data-export="png" disabled>Imagem .png</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================= MODO TECELAGEM ========================= -->
+      <section id="knit" class="view">
+        <div class="knit-layout">
+          <div class="knit-loom">
+            <canvas id="loom" width="900" height="900"></canvas>
+          </div>
+          <div class="knit-panel">
+            <div class="knit-empty" id="knit-empty">
+              <p>Gere um padrão no Estúdio ou abra um projeto salvo.</p>
+              <label class="button"
+                >Abrir projeto .json <input type="file" id="open-json" accept="application/json,.json" hidden
+              /></label>
+            </div>
+            <div class="knit-live" id="knit-live" hidden>
+              <p class="knit-step">Passo <strong id="k-step">0</strong> de <span id="k-total">0</span></p>
+              <p class="knit-thread"><span class="swatch" id="k-swatch"></span><span id="k-thread"></span></p>
+              <p class="knit-from">do pino <span id="k-from">—</span></p>
+              <p class="knit-to" id="k-to">—</p>
+              <p class="knit-side" id="k-side"></p>
+              <div class="knit-controls">
+                <button id="k-prev" title="Seta esquerda">◀ Anterior</button>
+                <button id="k-next" class="primary" title="Espaço / seta direita">Próximo ▶</button>
+              </div>
+              <div class="knit-options">
+                <label class="check"><input type="checkbox" id="k-voice" /> Ditar por voz</label>
+                <label class="check"
+                  ><input type="checkbox" id="k-auto" /> Avançar sozinho a cada
+                  <input type="number" id="k-interval" min="1" max="60" step="0.5" value="4" /> s</label
+                >
+                <label>Ir para o passo <input type="number" id="k-goto" min="1" step="1" /></label>
+              </div>
+              <div class="progress"><div id="k-bar"></div></div>
+              <p class="hint">Espaço/→ avança · ← volta · o progresso fica salvo neste navegador.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      Inspirado em
+      <a href="https://artof01.com/vrellis/works/knit.html" target="_blank" rel="noopener"
+        >“A new way to knit” (2016), Petros Vrellis</a
+      >
+      · <a href="https://github.com/alyyousuf7/Weaver" target="_blank" rel="noopener">alyyousuf7/Weaver</a> ·
+      <a href="https://github.com/MarginallyClever/weaving_algorithm" target="_blank" rel="noopener"
+        >MarginallyClever/weaving_algorithm</a
+      >
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

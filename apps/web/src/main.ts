@@ -1,0 +1,313 @@
+import './style.css';
+import {
+  PRESETS,
+  resolveOptions,
+  toCSV,
+  toInstructions,
+  toSVG,
+  type PresetName,
+  type WeaveOptions,
+  type WeaveResult,
+} from '@weaver-art/core';
+import { KnitPlayer } from './player';
+import type { FromWorker, ToWorker } from './protocol';
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`#${id} não encontrado`);
+  return el as T;
+};
+
+const MAX_SOURCE_SIDE = 2048;
+
+// ----------------------------------------------------------------- state
+let image: ImageData | null = null;
+let imageName = 'weave';
+let result: WeaveResult | null = null;
+let running = false;
+const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+
+// --------------------------------------------------------------- elements
+const fileInput = $<HTMLInputElement>('file');
+const drop = $('drop');
+const dropLabel = $('drop-label');
+const preset = $<HTMLSelectElement>('preset');
+const runBtn = $<HTMLButtonElement>('run');
+const stopBtn = $<HTMLButtonElement>('stop');
+const simCanvas = $<HTMLCanvasElement>('sim');
+const targetCanvas = $<HTMLCanvasElement>('target');
+const bar = $('bar');
+const exportButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-export]')];
+
+const num = (id: string): HTMLInputElement => $<HTMLInputElement>(id);
+const fields = {
+  pegs: num('pegs'),
+  diameter: num('diameter'),
+  pegDiameter: num('pegDiameter'),
+  threadWidth: num('threadWidth'),
+  lines: num('lines'),
+  gap: num('gap'),
+  repeats: num('repeats'),
+  resolution: num('resolution'),
+  contrast: num('contrast'),
+  brightness: num('brightness'),
+  gamma: num('gamma'),
+  invert: num('invert'),
+};
+
+const player = new KnitPlayer({
+  canvas: $<HTMLCanvasElement>('loom'),
+  empty: $('knit-empty'),
+  live: $('knit-live'),
+  step: $('k-step'),
+  total: $('k-total'),
+  swatch: $('k-swatch'),
+  thread: $('k-thread'),
+  from: $('k-from'),
+  to: $('k-to'),
+  side: $('k-side'),
+  prev: $<HTMLButtonElement>('k-prev'),
+  next: $<HTMLButtonElement>('k-next'),
+  voice: $<HTMLInputElement>('k-voice'),
+  auto: $<HTMLInputElement>('k-auto'),
+  interval: $<HTMLInputElement>('k-interval'),
+  goto: $<HTMLInputElement>('k-goto'),
+  bar: $('k-bar'),
+});
+
+// ------------------------------------------------------------------- form
+function fillForm(o: WeaveOptions): void {
+  fields.pegs.value = String(o.loom.pegCount);
+  fields.diameter.value = o.loom.diameterMm.toFixed(1);
+  fields.pegDiameter.value = String(o.loom.pegDiameterMm);
+  fields.threadWidth.value = String(o.threads[0].widthMm);
+  fields.lines.value = String(o.maxLines);
+  fields.gap.value = String(o.minPegGap);
+  fields.repeats.value = String(o.maxChordRepeats);
+  fields.resolution.value = String(o.resolutionPx);
+  fields.contrast.value = String(o.preprocess.contrast);
+  fields.brightness.value = String(o.preprocess.brightness);
+  fields.gamma.value = String(o.preprocess.gamma);
+  fields.invert.checked = o.preprocess.invert;
+  updateOutputs();
+}
+
+function updateOutputs(): void {
+  for (const id of ['contrast', 'brightness', 'gamma'] as const) {
+    $(`${id}-out`).textContent = Number(fields[id].value).toFixed(2);
+  }
+}
+
+function readOptions(): WeaveOptions {
+  const base = PRESETS[preset.value as PresetName];
+  const pegCount = Number(fields.pegs.value);
+  const width = Number(fields.threadWidth.value);
+  return resolveOptions(
+    {
+      loom: {
+        pegCount,
+        diameterMm: Number(fields.diameter.value),
+        pegDiameterMm: Number(fields.pegDiameter.value),
+      },
+      // Spread thread tie-on pegs evenly when the peg count changes.
+      threads: base.threads.map((t, i) => ({
+        ...t,
+        widthMm: width,
+        startPeg: Math.floor((i * pegCount) / base.threads.length),
+      })),
+      maxLines: Number(fields.lines.value),
+      minPegGap: Number(fields.gap.value),
+      maxChordRepeats: Number(fields.repeats.value),
+      resolutionPx: Number(fields.resolution.value),
+      preprocess: {
+        contrast: Number(fields.contrast.value),
+        brightness: Number(fields.brightness.value),
+        gamma: Number(fields.gamma.value),
+        invert: fields.invert.checked,
+      },
+    },
+    base,
+  );
+}
+
+preset.addEventListener('change', () => fillForm(PRESETS[preset.value as PresetName]));
+for (const id of ['contrast', 'brightness', 'gamma'] as const) fields[id].addEventListener('input', updateOutputs);
+fillForm(PRESETS['vrellis-mono']);
+
+// ------------------------------------------------------------------ image
+async function loadFile(file: File): Promise<void> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const scale = Math.min(1, MAX_SOURCE_SIDE / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D indisponível');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  image = ctx.getImageData(0, 0, w, h);
+  imageName = file.name.replace(/\.[^.]+$/, '') || 'weave';
+  dropLabel.innerHTML = `<strong>${escapeHtml(file.name)}</strong><br /><small>${bitmap.width}×${bitmap.height}px · clique para trocar</small>`;
+  drop.style.backgroundImage = `url(${URL.createObjectURL(file)})`;
+  drop.classList.add('has-image');
+  runBtn.disabled = running;
+}
+
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files?.[0];
+  if (f) loadFile(f).catch(showError);
+});
+drop.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  drop.classList.add('over');
+});
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  const f = e.dataTransfer?.files[0];
+  if (f) loadFile(f).catch(showError);
+});
+
+// ------------------------------------------------------------------- run
+function paint(canvas: HTMLCanvasElement, size: number, rgba: ArrayBuffer): void {
+  if (canvas.width !== size) {
+    canvas.width = size;
+    canvas.height = size;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx?.putImageData(new ImageData(new Uint8ClampedArray(rgba), size, size), 0, 0);
+}
+
+function setStats(lines: number, lengthMm: number, rmse: number | null, ms: number): void {
+  $('s-lines').textContent = lines.toLocaleString('pt-BR');
+  $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
+  $('s-rmse').textContent = rmse === null ? '…' : rmse.toFixed(4);
+  $('s-time').textContent = `${(ms / 1000).toFixed(1)} s`;
+}
+
+function setRunning(on: boolean): void {
+  running = on;
+  runBtn.disabled = on || !image;
+  stopBtn.disabled = !on;
+  document.body.classList.toggle('running', on);
+}
+
+let currentMaxLines = 1;
+runBtn.addEventListener('click', () => {
+  if (!image) return;
+  let options: WeaveOptions;
+  try {
+    options = readOptions();
+  } catch (err) {
+    showError(err);
+    return;
+  }
+  currentMaxLines = options.maxLines;
+  result = null;
+  exportButtons.forEach((b) => (b.disabled = true));
+  setRunning(true);
+  const data = image.data.slice().buffer;
+  const msg: ToWorker = { type: 'start', image: { width: image.width, height: image.height, data }, options };
+  worker.postMessage(msg, [data]);
+});
+
+stopBtn.addEventListener('click', () => worker.postMessage({ type: 'stop' } satisfies ToWorker));
+
+worker.onmessage = (ev: MessageEvent<FromWorker>) => {
+  const msg = ev.data;
+  switch (msg.type) {
+    case 'target':
+      paint(targetCanvas, msg.size, msg.rgba);
+      break;
+    case 'progress':
+      paint(simCanvas, msg.size, msg.rgba);
+      bar.style.width = `${(msg.lines / currentMaxLines) * 100}%`;
+      setStats(msg.lines, msg.lengthMm, null, msg.elapsedMs);
+      break;
+    case 'done':
+      paint(simCanvas, msg.size, msg.rgba);
+      result = msg.result;
+      bar.style.width = '100%';
+      setStats(result.steps.length, result.totalLengthMm, result.rmse, result.durationMs);
+      exportButtons.forEach((b) => (b.disabled = false));
+      setRunning(false);
+      player.load(result);
+      break;
+    case 'error':
+      setRunning(false);
+      showError(new Error(msg.message));
+      break;
+  }
+};
+
+// ---------------------------------------------------------------- export
+function download(name: string, data: BlobPart, type: string): void {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+for (const btn of exportButtons) {
+  btn.addEventListener('click', () => {
+    if (!result) return;
+    const base = `${imageName}.weave`;
+    switch (btn.dataset.export) {
+      case 'json':
+        download(`${base}.json`, JSON.stringify(result), 'application/json');
+        break;
+      case 'txt':
+        download(`${base}.txt`, toInstructions(result), 'text/plain;charset=utf-8');
+        break;
+      case 'csv':
+        download(`${base}.csv`, toCSV(result), 'text/csv;charset=utf-8');
+        break;
+      case 'svg':
+        download(`${base}.svg`, toSVG(result), 'image/svg+xml');
+        break;
+      case 'png':
+        simCanvas.toBlob((blob) => blob && download(`${base}.png`, blob, 'image/png'));
+        break;
+    }
+  });
+}
+
+// ----------------------------------------------------------- knit tab
+$<HTMLInputElement>('open-json').addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  try {
+    const parsed = JSON.parse(await f.text()) as WeaveResult;
+    if (parsed.version !== 1 || !Array.isArray(parsed.steps)) throw new Error('Arquivo não é um projeto Weaver Art');
+    player.load(parsed);
+  } catch (err) {
+    showError(err);
+  }
+});
+
+const tabs = [...document.querySelectorAll<HTMLButtonElement>('.tab')];
+for (const tab of tabs) {
+  tab.addEventListener('click', () => {
+    tabs.forEach((t) => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === tab.dataset.tab));
+    if (tab.dataset.tab === 'knit') player.refresh();
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if ($('knit').classList.contains('active')) player.handleKey(e);
+});
+
+// ----------------------------------------------------------------- utils
+function showError(err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(err);
+  alert(message);
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}

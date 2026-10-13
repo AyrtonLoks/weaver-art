@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+
+# Generated artwork (CLI default output folder)
+output/
+*.weave.json
+*.weave.svg
+*.weave.png
+*.weave.txt
+
+# Local inputs (keep personal photos out of git)
+samples/private/
+
+# Logs
+npm-debug.log*
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Env
+.env
+.env.*

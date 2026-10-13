@@ -1,0 +1,21 @@
+{
+  "name": "@weaver-art/cli",
+  "version": "0.1.0",
+  "description": "CLI do Weaver Art: converte uma foto em padrão de tecelagem (JSON, TXT, CSV, SVG e PNG).",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "weaver-art": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@weaver-art/core": "0.1.0",
+    "sharp": "^0.35.5"
+  }
+}
