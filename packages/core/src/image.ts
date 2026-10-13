@@ -95,6 +95,11 @@ function tone(v: number, p: PreprocessOptions): number {
   s = (s - 0.5) * p.contrast + 0.5 + p.brightness;
   s = Math.min(1, Math.max(0, s));
   if (p.gamma !== 1) s = Math.pow(s, p.gamma);
+  if (p.shadowLift && p.shadowLift > 0) {
+    const lift = Math.min(0.5, Math.max(0, p.shadowLift));
+    s = s + lift * Math.pow(1 - s, 2);
+    s = Math.min(1, Math.max(0, s));
+  }
   if (p.invert) s = 1 - s;
   return srgbToLinear(s);
 }
@@ -110,6 +115,44 @@ export function circleMask(size: number): Float32Array {
     }
   }
   return mask;
+}
+
+/** 3x3 Sobel edge gradient magnitude in [0, 1]. */
+export function computeSobelEdgeMagnitude(luma: Float32Array, size: number): Float32Array {
+  const edges = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(size - 1, y + 1);
+    const row0 = y0 * size;
+    const row1 = y * size;
+    const row2 = y1 * size;
+    for (let x = 0; x < size; x++) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(size - 1, x + 1);
+
+      // Sobel horizontal gradient
+      const gx =
+        -luma[row0 + x0] +
+        luma[row0 + x1] -
+        2 * luma[row1 + x0] +
+        2 * luma[row1 + x1] -
+        luma[row2 + x0] +
+        luma[row2 + x1];
+
+      // Sobel vertical gradient
+      const gy =
+        -luma[row0 + x0] -
+        2 * luma[row0 + x] -
+        luma[row0 + x1] +
+        luma[row2 + x0] +
+        2 * luma[row2 + x] +
+        luma[row2 + x1];
+
+      // Normalized magnitude (Sobel kernel scale factor 4)
+      edges[row1 + x] = Math.min(1, Math.hypot(gx, gy) / 4);
+    }
+  }
+  return edges;
 }
 
 /**
@@ -155,5 +198,21 @@ export function prepareTarget(
       weight[p] *= linearToSrgb(lum);
     }
   }
+
+  if (opts.edgeEmphasis && opts.edgeEmphasis > 0) {
+    const luma = new Float32Array(n);
+    for (let p = 0; p < n; p++) {
+      luma[p] =
+        channels === 1
+          ? linearToSrgb(data[p])
+          : linearToSrgb(LUMA_R * data[p * 3] + LUMA_G * data[p * 3 + 1] + LUMA_B * data[p * 3 + 2]);
+    }
+    const edges = computeSobelEdgeMagnitude(luma, size);
+    const factor = opts.edgeEmphasis * 3;
+    for (let p = 0; p < n; p++) {
+      weight[p] *= 1 + factor * edges[p];
+    }
+  }
+
   return { size, channels, data, mask, weight };
 }

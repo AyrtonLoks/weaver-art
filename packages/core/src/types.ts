@@ -59,9 +59,16 @@ export interface PreprocessOptions {
   gamma: number;
   /** Invert the image (useful for white thread on dark boards). */
   invert: boolean;
+  /** Shadow lift: prevents dark clothing from dominating chords [0, 0.5]. 0 = unchanged. */
+  shadowLift?: number;
+  /** Edge emphasis: Sobel gradient saliency boost on facial features/edges [0, 1]. 0 = unchanged. */
+  edgeEmphasis?: number;
   /** Optional square crop in source pixels. Defaults to the centred largest square. */
   crop?: { x: number; y: number; size: number };
 }
+
+/** Strategy for choosing thread colours during multi-thread weaving. */
+export type ColorStrategy = 'layered' | 'interleaved-balanced' | 'free';
 
 /** Options controlling the optimisation itself. */
 export interface WeaveOptions {
@@ -79,6 +86,10 @@ export interface WeaveOptions {
   maxChordRepeats: number;
   /** Stop early when no chord reduces the error any further. */
   stopWhenNoImprovement: boolean;
+  /** Colour strategy for multi-thread weaving. Default: 'layered'. */
+  colorStrategy?: ColorStrategy;
+  /** Line budgets or proportions per thread (e.g. [0.2, 0.2, 0.2, 0.1, 0.3]). */
+  threadLineBudgets?: number[];
   /** Image preparation. */
   preprocess: PreprocessOptions;
 }
@@ -112,6 +123,8 @@ export interface WeaveStep {
   segmentMm: number;
   /** Length of thread wrapped around the `from` peg before this segment, in mm. */
   wrapMm: number;
+  /** 0-based layer index in layered execution. */
+  layerIndex?: number;
 }
 
 /** Summary of a single thread after weaving. */

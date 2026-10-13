@@ -40,7 +40,8 @@
               >Preset
               <select id="preset">
                 <option value="vrellis-mono">Vrellis · monocromático (preto)</option>
-                <option value="vrellis-color">Vrellis · cores (preto, azul, magenta, amarelo, verde)</option>
+                <option value="vrellis-color">Vrellis · 5 cores (amarelo, magenta, azul, verde, preto)</option>
+                <option value="cmyk">CMYK · clássico (ciano, magenta, amarelo, preto)</option>
               </select>
             </label>
             <div class="grid2">
@@ -53,12 +54,26 @@
 
           <fieldset>
             <legend>Algoritmo</legend>
+            <label
+              >Estratégia de cor
+              <select id="colorStrategy">
+                <option value="layered">Camadas sequenciais (recomendado)</option>
+                <option value="interleaved-balanced">Intercalado balanceado</option>
+                <option value="free">Livre (concorrência total)</option>
+              </select>
+            </label>
             <div class="grid2">
               <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" /></label>
               <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" /></label>
               <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" /></label>
               <label>Resolução (px) <input type="number" id="resolution" min="128" max="2048" step="50" /></label>
             </div>
+            <label class="check"
+              ><input type="checkbox" id="stopImprovement" checked /> Parar se não houver melhoria</label
+            >
+            <p class="hint" id="repeats-hint" hidden style="margin-top: 0.5rem; font-size: 0.8rem; color: #ff8c42">
+              Dica: Para mais de 5.000 linhas, use Repetições = 2 ou 3 para atingir a meta sem esgotar cordas.
+            </p>
           </fieldset>
 
           <fieldset>
@@ -74,6 +89,14 @@
             <label
               >Gama <output id="gamma-out"></output>
               <input type="range" id="gamma" min="0.4" max="2.5" step="0.05" />
+            </label>
+            <label
+              >Elevação de sombras <output id="shadowLift-out"></output>
+              <input type="range" id="shadowLift" min="0" max="0.3" step="0.01" value="0" />
+            </label>
+            <label
+              >Foco em detalhes/feições <output id="edgeEmphasis-out"></output>
+              <input type="range" id="edgeEmphasis" min="0" max="1" step="0.05" value="0" />
             </label>
             <label class="check"><input type="checkbox" id="invert" /> Inverter (fio claro em fundo escuro)</label>
           </fieldset>

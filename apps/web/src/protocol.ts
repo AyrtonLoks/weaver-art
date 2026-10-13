@@ -8,6 +8,15 @@ export type ToWorker =
 /** Messages from the weaving worker to the UI thread. */
 export type FromWorker =
   | { type: 'target'; size: number; rgba: ArrayBuffer }
-  | { type: 'progress'; size: number; rgba: ArrayBuffer; lines: number; lengthMm: number; elapsedMs: number }
+  | {
+      type: 'progress';
+      size: number;
+      rgba: ArrayBuffer;
+      lines: number;
+      lengthMm: number;
+      elapsedMs: number;
+      currentThread?: string;
+      currentLayer?: number;
+    }
   | { type: 'done'; size: number; rgba: ArrayBuffer; result: WeaveResult }
   | { type: 'error'; message: string };

@@ -40,6 +40,10 @@ const bar = $('bar');
 const exportButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-export]')];
 
 const num = (id: string): HTMLInputElement => $<HTMLInputElement>(id);
+const colorStrategy = $<HTMLSelectElement>('colorStrategy');
+const stopImprovement = $<HTMLInputElement>('stopImprovement');
+const repeatsHint = $('repeats-hint');
+
 const fields = {
   pegs: num('pegs'),
   diameter: num('diameter'),
@@ -52,6 +56,8 @@ const fields = {
   contrast: num('contrast'),
   brightness: num('brightness'),
   gamma: num('gamma'),
+  shadowLift: num('shadowLift'),
+  edgeEmphasis: num('edgeEmphasis'),
   invert: num('invert'),
 };
 
@@ -76,6 +82,12 @@ const player = new KnitPlayer({
 });
 
 // ------------------------------------------------------------------- form
+function checkRepeatsHint(): void {
+  const lines = Number(fields.lines.value);
+  const repeats = Number(fields.repeats.value);
+  repeatsHint.hidden = !(lines > 5000 && repeats === 1);
+}
+
 function fillForm(o: WeaveOptions): void {
   fields.pegs.value = String(o.loom.pegCount);
   fields.diameter.value = o.loom.diameterMm.toFixed(1);
@@ -88,13 +100,19 @@ function fillForm(o: WeaveOptions): void {
   fields.contrast.value = String(o.preprocess.contrast);
   fields.brightness.value = String(o.preprocess.brightness);
   fields.gamma.value = String(o.preprocess.gamma);
+  fields.shadowLift.value = String(o.preprocess.shadowLift ?? 0);
+  fields.edgeEmphasis.value = String(o.preprocess.edgeEmphasis ?? 0);
   fields.invert.checked = o.preprocess.invert;
+  colorStrategy.value = o.colorStrategy ?? 'layered';
+  stopImprovement.checked = o.stopWhenNoImprovement;
   updateOutputs();
+  checkRepeatsHint();
 }
 
 function updateOutputs(): void {
-  for (const id of ['contrast', 'brightness', 'gamma'] as const) {
-    $(`${id}-out`).textContent = Number(fields[id].value).toFixed(2);
+  for (const id of ['contrast', 'brightness', 'gamma', 'shadowLift', 'edgeEmphasis'] as const) {
+    const el = document.getElementById(`${id}-out`);
+    if (el) el.textContent = Number(fields[id].value).toFixed(2);
   }
 }
 
@@ -119,10 +137,14 @@ function readOptions(): WeaveOptions {
       minPegGap: Number(fields.gap.value),
       maxChordRepeats: Number(fields.repeats.value),
       resolutionPx: Number(fields.resolution.value),
+      colorStrategy: colorStrategy.value as 'layered' | 'interleaved-balanced' | 'free',
+      stopWhenNoImprovement: stopImprovement.checked,
       preprocess: {
         contrast: Number(fields.contrast.value),
         brightness: Number(fields.brightness.value),
         gamma: Number(fields.gamma.value),
+        shadowLift: Number(fields.shadowLift.value),
+        edgeEmphasis: Number(fields.edgeEmphasis.value),
         invert: fields.invert.checked,
       },
     },
@@ -131,7 +153,11 @@ function readOptions(): WeaveOptions {
 }
 
 preset.addEventListener('change', () => fillForm(PRESETS[preset.value as PresetName]));
-for (const id of ['contrast', 'brightness', 'gamma'] as const) fields[id].addEventListener('input', updateOutputs);
+for (const id of ['contrast', 'brightness', 'gamma', 'shadowLift', 'edgeEmphasis'] as const) {
+  fields[id].addEventListener('input', updateOutputs);
+}
+fields.lines.addEventListener('input', checkRepeatsHint);
+fields.repeats.addEventListener('input', checkRepeatsHint);
 fillForm(PRESETS['vrellis-mono']);
 
 // ------------------------------------------------------------------ image
@@ -180,8 +206,21 @@ function paint(canvas: HTMLCanvasElement, size: number, rgba: ArrayBuffer): void
   ctx?.putImageData(new ImageData(new Uint8ClampedArray(rgba), size, size), 0, 0);
 }
 
-function setStats(lines: number, lengthMm: number, rmse: number | null, ms: number): void {
-  $('s-lines').textContent = lines.toLocaleString('pt-BR');
+function setStats(
+  lines: number,
+  lengthMm: number,
+  rmse: number | null,
+  ms: number,
+  currentThread?: string,
+  currentLayer?: number,
+): void {
+  const isLayered = colorStrategy.value === 'layered';
+  const threadInfo = currentThread
+    ? isLayered
+      ? ` · Camada ${currentLayer ?? 1}: ${currentThread}`
+      : ` · Fio: ${currentThread}`
+    : '';
+  $('s-lines').textContent = `${lines.toLocaleString('pt-BR')}${threadInfo}`;
   $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
   $('s-rmse').textContent = rmse === null ? '…' : rmse.toFixed(4);
   $('s-time').textContent = `${(ms / 1000).toFixed(1)} s`;
@@ -224,7 +263,7 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
     case 'progress':
       paint(simCanvas, msg.size, msg.rgba);
       bar.style.width = `${(msg.lines / currentMaxLines) * 100}%`;
-      setStats(msg.lines, msg.lengthMm, null, msg.elapsedMs);
+      setStats(msg.lines, msg.lengthMm, null, msg.elapsedMs, msg.currentThread, msg.currentLayer);
       break;
     case 'done':
       paint(simCanvas, msg.size, msg.rgba);

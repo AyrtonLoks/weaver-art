@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CMYK_THREADS,
+  computeThreadBudgets,
   DEFAULT_OPTIONS,
   pegDistance,
+  prepareTarget,
+  PRESETS,
   resolveOptions,
   toCSV,
   toInstructions,
@@ -26,10 +30,40 @@ describe('options', () => {
     expect(DEFAULT_OPTIONS.maxLines).toBe(4000);
   });
 
+  it('provides correct CMYK and Vrellis color presets with ordered subtractive layers', () => {
+    expect(PRESETS.cmyk).toBeDefined();
+    expect(PRESETS.cmyk.threads).toHaveLength(4);
+    expect(PRESETS.cmyk.threads.map((t) => t.id)).toEqual(['yellow', 'cyan', 'magenta', 'black']);
+    expect(PRESETS.cmyk.threadLineBudgets).toEqual([0.2, 0.2, 0.2, 0.4]);
+
+    expect(PRESETS['vrellis-color'].threads).toHaveLength(5);
+    expect(PRESETS['vrellis-color'].threads.map((t) => t.id)).toEqual(['yellow', 'magenta', 'blue', 'green', 'black']);
+    expect(PRESETS['vrellis-color'].threadLineBudgets).toEqual([0.2, 0.2, 0.2, 0.1, 0.3]);
+  });
+
+  it('computes thread line budgets accurately', () => {
+    const cmykOptions = resolveOptions({ maxLines: 10000 }, PRESETS.cmyk);
+    const budgets = computeThreadBudgets(cmykOptions);
+    expect(budgets).toEqual([2000, 2000, 2000, 4000]);
+    expect(budgets.reduce((a, b) => a + b, 0)).toBe(10000);
+
+    const vrellisOptions = resolveOptions({ maxLines: 10000 }, PRESETS['vrellis-color']);
+    const vBudgets = computeThreadBudgets(vrellisOptions);
+    expect(vBudgets).toEqual([2000, 2000, 2000, 1000, 3000]);
+    expect(vBudgets.reduce((a, b) => a + b, 0)).toBe(10000);
+  });
+
   it('rejects invalid configurations', () => {
     expect(() => resolveOptions({ loom: { pegCount: 2 } })).toThrow(/pegCount/);
     expect(() => resolveOptions({ loom: { pegDiameterMm: 20 } })).toThrow(/espaçamento/);
     expect(() => resolveOptions({ threads: [] })).toThrow(/fio/);
+    expect(() => resolveOptions({ colorStrategy: 'invalid' as unknown as WeaveOptions['colorStrategy'] })).toThrow(
+      /colorStrategy/,
+    );
+    expect(() => resolveOptions({ threadLineBudgets: [0.5, 0.5] })).toThrow(/threadLineBudgets/);
+    expect(() => resolveOptions({ threadLineBudgets: [-0.5] })).toThrow(/threadLineBudgets/);
+    expect(() => resolveOptions({ preprocess: { shadowLift: -0.1 } })).toThrow(/shadowLift/);
+    expect(() => resolveOptions({ preprocess: { edgeEmphasis: 1.5 } })).toThrow(/edgeEmphasis/);
   });
 });
 
@@ -94,6 +128,179 @@ describe('WeaveEngine', () => {
       steps.slice(1).forEach((s, i) => expect(s.from).toBe(steps[i].to));
     }
   });
+
+  it('weaves layered colors in sequence with each thread fulfilling its quota', () => {
+    const multiColorRaster = {
+      width: 100,
+      height: 100,
+      data: new Uint8ClampedArray(100 * 100 * 4),
+    };
+    for (let y = 0; y < 100; y++) {
+      for (let x = 0; x < 100; x++) {
+        const idx = (y * 100 + x) * 4;
+        multiColorRaster.data[idx] = x < 50 ? 240 : 20;
+        multiColorRaster.data[idx + 1] = y < 50 ? 200 : 30;
+        multiColorRaster.data[idx + 2] = x + y < 100 ? 50 : 220;
+        multiColorRaster.data[idx + 3] = 255;
+      }
+    }
+
+    const cmykConfig: DeepPartial<WeaveOptions> = {
+      resolutionPx: 160,
+      maxLines: 60,
+      minPegGap: 8,
+      colorStrategy: 'layered',
+      preprocess: { grayscale: false },
+      threads: CMYK_THREADS,
+      threadLineBudgets: [0.25, 0.25, 0.25, 0.25],
+    };
+
+    const engine = WeaveEngine.create(multiColorRaster, cmykConfig);
+    const result = engine.run();
+
+    expect(result.steps.length).toBeGreaterThan(20);
+    const threadsUsed = result.threads.filter((t) => t.lines > 0);
+    expect(threadsUsed.length).toBe(4);
+
+    let maxLayerSeen = -1;
+    for (const step of result.steps) {
+      const layer = step.layerIndex ?? step.thread;
+      expect(layer).toBeGreaterThanOrEqual(maxLayerSeen);
+      maxLayerSeen = Math.max(maxLayerSeen, layer);
+    }
+  });
+
+  it('weaves interleaved colors with fair distribution', () => {
+    const multiColorRaster = {
+      width: 100,
+      height: 100,
+      data: new Uint8ClampedArray(100 * 100 * 4),
+    };
+    for (let y = 0; y < 100; y++) {
+      for (let x = 0; x < 100; x++) {
+        const idx = (y * 100 + x) * 4;
+        multiColorRaster.data[idx] = x < 50 ? 200 : 40;
+        multiColorRaster.data[idx + 1] = y < 50 ? 180 : 50;
+        multiColorRaster.data[idx + 2] = x + y > 100 ? 210 : 30;
+        multiColorRaster.data[idx + 3] = 255;
+      }
+    }
+
+    const balancedConfig: DeepPartial<WeaveOptions> = {
+      resolutionPx: 160,
+      maxLines: 60,
+      minPegGap: 8,
+      colorStrategy: 'interleaved-balanced',
+      preprocess: { grayscale: false },
+      threads: CMYK_THREADS,
+      threadLineBudgets: [0.25, 0.25, 0.25, 0.25],
+    };
+
+    const engine = WeaveEngine.create(multiColorRaster, balancedConfig);
+    const result = engine.run();
+
+    expect(result.steps.length).toBeGreaterThan(20);
+    for (const t of result.threads) {
+      expect(t.lines).toBeGreaterThan(0);
+    }
+  });
+
+  it('applies shadow lift and edge emphasis', () => {
+    const highContrastRaster = {
+      width: 64,
+      height: 64,
+      data: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const idx = (y * 64 + x) * 4;
+        const val = x > 20 && x < 44 && y > 20 && y < 44 ? 0 : 255;
+        highContrastRaster.data[idx] = val;
+        highContrastRaster.data[idx + 1] = val;
+        highContrastRaster.data[idx + 2] = val;
+        highContrastRaster.data[idx + 3] = 255;
+      }
+    }
+
+    const baseOpts = {
+      grayscale: true,
+      contrast: 1,
+      brightness: 0,
+      gamma: 1,
+      invert: false,
+      shadowLift: 0,
+      edgeEmphasis: 0,
+    };
+    const targetBase = prepareTarget(highContrastRaster, 64, baseOpts, 1);
+
+    const liftedOpts = { ...baseOpts, shadowLift: 0.15, edgeEmphasis: 0.5 };
+    const targetLifted = prepareTarget(highContrastRaster, 64, liftedOpts, 1);
+
+    const centerIdx = 32 * 64 + 32;
+    expect(targetLifted.data[centerIdx]).toBeGreaterThan(targetBase.data[centerIdx]);
+
+    const edgeIdx = 32 * 64 + 20;
+    expect(targetLifted.weight[edgeIdx]).toBeGreaterThan(targetBase.weight[edgeIdx]);
+  });
+
+  it('accurately tracks currentThreadIndex and currentLayerIndex in both layered and interleaved modes', () => {
+    const multiColorRaster = {
+      width: 60,
+      height: 60,
+      data: new Uint8ClampedArray(60 * 60 * 4),
+    };
+    for (let i = 0; i < 60 * 60; i++) {
+      multiColorRaster.data[i * 4] = 40;
+      multiColorRaster.data[i * 4 + 1] = 40;
+      multiColorRaster.data[i * 4 + 2] = 200;
+      multiColorRaster.data[i * 4 + 3] = 255;
+    }
+
+    const layeredEngine = WeaveEngine.create(multiColorRaster, {
+      ...small,
+      loom: { pegCount: 200 },
+      maxLines: 15,
+      colorStrategy: 'layered',
+      preprocess: { grayscale: false },
+      threads: CMYK_THREADS,
+    });
+    layeredEngine.step();
+    expect(layeredEngine.currentThreadIndex).toBeGreaterThanOrEqual(0);
+    expect(layeredEngine.currentLayerIndex).toBeGreaterThanOrEqual(0);
+
+    const interleavedEngine = WeaveEngine.create(multiColorRaster, {
+      ...small,
+      loom: { pegCount: 200 },
+      maxLines: 15,
+      colorStrategy: 'interleaved-balanced',
+      preprocess: { grayscale: false },
+      threads: CMYK_THREADS,
+    });
+    interleavedEngine.step();
+    expect(interleavedEngine.currentThreadIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  it('transfers stalled thread budget to black in interleaved strategy so total lines are preserved', () => {
+    // Pure dark blue circle: yellow provides no gain over white/blue, but black and cyan do.
+    const darkBlueRaster = syntheticImage(60, 60, () => 30);
+    const engine = WeaveEngine.create(darkBlueRaster, {
+      loom: { pegCount: 80 },
+      resolutionPx: 120,
+      maxLines: 40,
+      minPegGap: 6,
+      colorStrategy: 'interleaved-balanced',
+      preprocess: { grayscale: false },
+      threads: [
+        { id: 'yellow', name: 'Amarelo', color: '#fff100', widthMm: 0.2, opacity: 1, startPeg: 0 },
+        { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 40 },
+      ],
+      threadLineBudgets: [0.5, 0.5],
+    });
+    const result = engine.run();
+    // Yellow cannot make gain on dark grayscale image, so its unused quota rolls over to black
+    expect(result.steps.length).toBe(40);
+    expect(result.threads[1].lines).toBeGreaterThanOrEqual(20);
+  });
 });
 
 describe('exports', () => {
@@ -112,5 +319,40 @@ describe('exports', () => {
     expect(svg.startsWith('<svg')).toBe(true);
     expect(svg).toContain('width="751.2mm"');
     expect(svg).toContain('<path');
+    expect(svg).toContain('<g id="layer-');
+  });
+
+  it('groups instructions with layer headers for layered multi-color', () => {
+    const multiColorRaster = syntheticImage(64, 64, () => 30);
+    const res = WeaveEngine.create(multiColorRaster, {
+      ...small,
+      maxLines: 20,
+      colorStrategy: 'layered',
+      preprocess: { grayscale: false },
+      threads: [
+        { id: 'yellow', name: 'Amarelo', color: '#fff100', widthMm: 0.2, opacity: 1, startPeg: 0 },
+        { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 60 },
+      ],
+    }).run();
+
+    const txt = toInstructions(res);
+    expect(txt).toContain('=== CAMADA');
+  });
+
+  it('does not emit layer headers between alternating chords in interleaved mode', () => {
+    const multiColorRaster = syntheticImage(64, 64, () => 30);
+    const res = WeaveEngine.create(multiColorRaster, {
+      ...small,
+      maxLines: 20,
+      colorStrategy: 'interleaved-balanced',
+      preprocess: { grayscale: false },
+      threads: [
+        { id: 'yellow', name: 'Amarelo', color: '#fff100', widthMm: 0.2, opacity: 1, startPeg: 0 },
+        { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 60 },
+      ],
+    }).run();
+
+    const txt = toInstructions(res);
+    expect(txt).not.toContain('=== CAMADA');
   });
 });

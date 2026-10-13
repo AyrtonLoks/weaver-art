@@ -77,28 +77,48 @@ Para fio preto (`K = 0`) sobre fundo branco isso é `R ← R·(1 − α c)`, ou 
 1. Recorte quadrado (padrão: maior quadrado centralizado).
 2. Reamostragem para `S × S` com **filtro de área** (k×k amostras bilineares por pixel) em luz linear.
 3. Ajustes perceptuais (em sRGB): contraste, brilho, gama, inversão.
-4. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
-5. Máscara circular anti-serrilhada; opcionalmente multiplicada por um **mapa de importância**.
+4. **Elevação de sombras** (`shadowLift`): eleva suavemente o piso de pretos profundos, impedindo que roupas pretas ou fundos noturnos absorvam desproporcionalmente as cordas e causem borrões sobre o rosto.
+5. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
+6. Máscara circular anti-serrilhada.
+7. **Realce de bordas e detalhes** (`edgeEmphasis`): filtro Sobel aplicado sobre a luminância para gerar um mapa de saliência automático, multiplicando os pesos `weight` nos olhos, nariz, boca, óculos e contornos faciais. Opcionalmente combinado com um mapa de importância externo.
 
-## 6. Otimização gulosa — [`engine.ts`](../packages/core/src/engine.ts)
+## 6. Otimização e estratégias de cor — [`engine.ts`](../packages/core/src/engine.ts)
 
 Estado: para cada fio, o pino atual e o lado em que ele está enrolado.
 
-A cada passo, para **cada fio** e **cada corda admissível** a partir do seu pino atual
-(todo pino `b` com distância circular `≥ minPegGap`, par `{a, b}` usado menos de
-`maxChordRepeats` vezes, e os dois lados possíveis de chegada), calcula-se o **ganho**:
+A cada passo, para uma corda admissível a partir do pino atual (distância circular `≥ minPegGap`, par `{a, b}` usado menos de `maxChordRepeats` vezes, e os dois lados possíveis de chegada), calcula-se o **ganho**:
 
 ```
 ganho = Σₚ wₚ · [ (tₚ − Rₚ)² − (tₚ − R'ₚ)² ]  =  Σₚ wₚ · δₚ · (2(tₚ − Rₚ) − δₚ),   δₚ = α cₚ (K − Rₚ)
 ```
 
-isto é, a redução exata do erro quadrático ponderado que aquela corda provocaria. A corda de maior
-ganho (entre todos os fios) é aplicada à simulação. O processo para quando:
+isto é, a redução exata do erro quadrático ponderado provocada pela corda.
 
-- `maxLines` cordas foram tecidas; ou
-- nenhuma corda reduz mais o erro (`stopWhenNoImprovement`) — o algoritmo descobre sozinho
-  quantas linhas a imagem "pede"; ou
-- não há cordas admissíveis.
+### Estratégias de tecelagem multicolorida (`ColorStrategy`)
+
+1. **Camadas sequenciais (`layered` — padrão para cores)**:
+   - Os fios são tecidos em passes independentes e contínuos, seguindo a ordem subtrativa física:
+     - **Preset Vrellis (5 fios)**: Amarelo (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ Azul (20%) $\rightarrow$ Verde (10%) $\rightarrow$ **Preto por último (30%)**.
+     - **Preset CMYK (4 fios)**: Amarelo (20%) $\rightarrow$ Ciano (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ **Preto por último (40%)**.
+   - As cores formam a base cromática luminosa primeiro; o preto entra no final para assentar as sombras profundas e contornos finos.
+   - Fisicamente, o tecelão trabalha com um único carretel por vez até concluir a camada, eliminando o emaranhado de fios.
+   - Se uma camada inicial esgotar ganhos antes de atingir sua cota, o motor realiza **rollover** automático do saldo de linhas para o preto final, garantindo o atingimento da meta global de linhas.
+
+2. **Intercalado balanceado (`interleaved-balanced`)**:
+   - Revezamento dinâmico em turnos, com cotas máximas proporcionais por fio. Garante que nenhuma cor seja monopolizada ou sofra exclusão cromática durante a tecelagem simultânea.
+
+3. **Livre (`free`)**:
+   - Competição gulosa irrestrita tradicional entre todos os fios simultaneamente.
+
+O processo é concluído quando:
+
+- `maxLines` cordas foram tecidas no total; ou
+- nenhuma corda viável reduz mais o erro (quando `stopWhenNoImprovement` estiver ativo); ou
+- não há mais cordas admissíveis sob os limites de repetições configurados.
+
+### Repetições por par de pinos e metas altas de linhas
+
+Em um tear circular de 200 pinos, existem cerca de 16.500 pares de pinos possíveis, dos quais apenas cerca de 7.500 cruzam o interior da figura. Para tecer **10.000 cordas** sem escurecer o fundo branco, o parâmetro `maxChordRepeats` deve ser ajustado para **2 ou 3**, permitindo que múltiplos fios passem pelo mesmo par de pinos com ângulos ligeiramente variados.
 
 ### Por que redução de erro em vez de "linha mais escura"?
 
@@ -124,15 +144,15 @@ padrão é 400 px. Um modelo perceptual explícito (simular fino, comparar gross
 ### Custo
 
 Com 200 pinos, 2 lados e grade de 400 px: ≈ 2 × 2 × 176 candidatos × ~500 amostras ≈ 350 mil
-avaliações de pixel por corda; × 4 000 cordas ≈ **1,4 bilhão de avaliações** (cada uma com vários
-flops) — a mesma ordem de grandeza dos "mais de 2 bilhões de cálculos" citados por Vrellis
-(≈ 13 s num notebook atual).
+avaliações de pixel por corda. No modo por camadas, cada passo avalia apenas o fio ativo (em vez de
+avaliar todos os 4 ou 5 fios concorrentemente), resultando em tecelagem **4 a 5 vezes mais rápida**
+que o modo guloso irrestrito multicolorido.
 
 ## 7. Saídas — [`export.ts`](../packages/core/src/export.ts)
 
-- **Instruções** (`.txt`): numeradas a partir do pino 1, com o sentido de contorno em cada pino.
+- **Instruções** (`.txt`): numeradas a partir do pino 1, com sentido de contorno e cabeçalhos organizados por camada (`=== CAMADA X: Cor (amarrar no pino Y) ===`) quando tecidas por camadas.
 - **CSV**: passo, fio, pinos, lados, comprimentos e ganho.
-- **SVG**: escala real (1 unidade = 1 mm), largura do traço = largura do fio, arcos `A` nos pinos.
+- **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos.
 - **JSON**: `WeaveResult` completo — reabrível no modo tecelagem do app web.
 
 ## 8. Limitações conhecidas e próximos passos

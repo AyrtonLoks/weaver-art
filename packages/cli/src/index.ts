@@ -23,7 +23,8 @@ Uso:
   weaver-art <imagem> [opções]
 
 Opções:
-  -p, --preset <nome>        vrellis-mono (padrão) | vrellis-color
+  -p, --preset <nome>        vrellis-mono (padrão) | vrellis-color | cmyk
+      --color-strategy <s>   layered (padrão) | interleaved-balanced | free
       --pegs <n>             número de pinos (padrão 200)
       --diameter <mm>        diâmetro do círculo dos pinos (padrão 711.2 = 28″)
       --peg-diameter <mm>    diâmetro do pino; 0 = pinos ideais (padrão 2)
@@ -35,6 +36,8 @@ Opções:
       --contrast <x>         contraste (padrão 1)
       --brightness <x>       brilho, -1..1 (padrão 0)
       --gamma <x>            gama (padrão 1)
+      --shadow-lift <x>      elevação de sombras 0..0.3 (padrão 0)
+      --edge-emphasis <x>    realce de bordas/feições 0..1 (padrão 0)
       --invert               inverte a imagem (fio claro em fundo escuro)
       --background <#hex>    cor do fundo (padrão #ffffff)
       --importance <imagem>  mapa de importância (branco = importante)
@@ -80,6 +83,7 @@ async function main(): Promise<void> {
     allowNegative: true,
     options: {
       preset: { type: 'string', short: 'p', default: 'vrellis-mono' },
+      'color-strategy': { type: 'string' },
       pegs: { type: 'string' },
       diameter: { type: 'string' },
       'peg-diameter': { type: 'string' },
@@ -91,6 +95,8 @@ async function main(): Promise<void> {
       contrast: { type: 'string' },
       brightness: { type: 'string' },
       gamma: { type: 'string' },
+      'shadow-lift': { type: 'string' },
+      'edge-emphasis': { type: 'string' },
       invert: { type: 'boolean' },
       background: { type: 'string' },
       importance: { type: 'string' },
@@ -131,11 +137,14 @@ async function main(): Promise<void> {
       resolutionPx: num(values.resolution, 'resolution'),
       background: values.background,
       stopWhenNoImprovement: values.stop,
+      colorStrategy: values['color-strategy'] as WeaveOptions['colorStrategy'],
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
       preprocess: {
         contrast: num(values.contrast, 'contrast'),
         brightness: num(values.brightness, 'brightness'),
         gamma: num(values.gamma, 'gamma'),
+        shadowLift: num(values['shadow-lift'], 'shadow-lift'),
+        edgeEmphasis: num(values['edge-emphasis'], 'edge-emphasis'),
         invert: values.invert,
       },
     },

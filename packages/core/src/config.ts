@@ -29,15 +29,27 @@ export const BLACK_THREAD: ThreadConfig = {
 };
 
 /**
- * Limited palette used by Vrellis in the colour works: black, blue, magenta, yellow and green.
+ * Limited palette used by Vrellis in the colour works: yellow, magenta, blue, green and black.
+ * Ordered by natural subtractive layering: light/warm foundation first, black details last.
  * Hex values are approximations — calibrate with photos of the real threads.
  */
 export const VRELLIS_COLOR_THREADS: ThreadConfig[] = [
-  { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 0 },
-  { id: 'blue', name: 'Azul', color: '#1d3fbb', widthMm: 0.2, opacity: 1, startPeg: 40 },
-  { id: 'magenta', name: 'Magenta', color: '#c2187a', widthMm: 0.2, opacity: 1, startPeg: 80 },
-  { id: 'yellow', name: 'Amarelo', color: '#f2c500', widthMm: 0.2, opacity: 1, startPeg: 120 },
-  { id: 'green', name: 'Verde', color: '#1e8a3c', widthMm: 0.2, opacity: 1, startPeg: 160 },
+  { id: 'yellow', name: 'Amarelo', color: '#f2c500', widthMm: 0.2, opacity: 1, startPeg: 0 },
+  { id: 'magenta', name: 'Magenta', color: '#c2187a', widthMm: 0.2, opacity: 1, startPeg: 40 },
+  { id: 'blue', name: 'Azul', color: '#1d3fbb', widthMm: 0.2, opacity: 1, startPeg: 80 },
+  { id: 'green', name: 'Verde', color: '#1e8a3c', widthMm: 0.2, opacity: 1, startPeg: 120 },
+  { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 160 },
+];
+
+/**
+ * Classic 4-colour CMYK palette: yellow, cyan, magenta, and black.
+ * Produces exceptional continuous-tone blending and skin tones.
+ */
+export const CMYK_THREADS: ThreadConfig[] = [
+  { id: 'yellow', name: 'Amarelo', color: '#fff100', widthMm: 0.2, opacity: 1, startPeg: 0 },
+  { id: 'cyan', name: 'Ciano', color: '#00a0e9', widthMm: 0.2, opacity: 1, startPeg: 50 },
+  { id: 'magenta', name: 'Magenta', color: '#e4007f', widthMm: 0.2, opacity: 1, startPeg: 100 },
+  { id: 'black', name: 'Preto', color: '#000000', widthMm: 0.2, opacity: 1, startPeg: 150 },
 ];
 
 /** Defaults reproduce the grayscale setup of Vrellis' original series. */
@@ -54,12 +66,15 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   minPegGap: 12,
   maxChordRepeats: 1,
   stopWhenNoImprovement: true,
+  colorStrategy: 'layered',
   preprocess: {
     grayscale: true,
     contrast: 1,
     brightness: 0,
     gamma: 1,
     invert: false,
+    shadowLift: 0,
+    edgeEmphasis: 0,
   },
 };
 
@@ -70,6 +85,16 @@ export const PRESETS = {
     ...DEFAULT_OPTIONS,
     threads: VRELLIS_COLOR_THREADS,
     maxLines: 6000,
+    colorStrategy: 'layered',
+    threadLineBudgets: [0.2, 0.2, 0.2, 0.1, 0.3],
+    preprocess: { ...DEFAULT_OPTIONS.preprocess, grayscale: false },
+  },
+  cmyk: {
+    ...DEFAULT_OPTIONS,
+    threads: CMYK_THREADS,
+    maxLines: 6000,
+    colorStrategy: 'layered',
+    threadLineBudgets: [0.2, 0.2, 0.2, 0.4],
     preprocess: { ...DEFAULT_OPTIONS.preprocess, grayscale: false },
   },
 } satisfies Record<string, WeaveOptions>;
@@ -90,6 +115,30 @@ function deepMerge<T>(base: T, override: unknown): T {
     out[key] = isPlainObject(value) ? deepMerge(out[key], value) : value;
   }
   return out as T;
+}
+
+/** Compute integer line budgets per thread according to threadLineBudgets or equal split. */
+export function computeThreadBudgets(options: WeaveOptions): number[] {
+  const T = options.threads.length;
+  if (T === 0) return [];
+  const total = options.maxLines;
+  const rawBudgets = options.threadLineBudgets;
+
+  let proportions: number[];
+  if (rawBudgets && rawBudgets.length === T && rawBudgets.every((b) => b > 0)) {
+    const sum = rawBudgets.reduce((a, b) => a + b, 0);
+    proportions = rawBudgets.map((b) => (sum > 0 ? b / sum : 1 / T));
+  } else {
+    proportions = new Array(T).fill(1 / T);
+  }
+
+  const counts = proportions.map((p) => Math.floor(p * total));
+  const allocated = counts.reduce((a, b) => a + b, 0);
+  const diff = total - allocated;
+  if (diff > 0 && T > 0) {
+    counts[T - 1] += diff;
+  }
+  return counts;
 }
 
 /** Merge user overrides onto a base configuration and validate the result. */
@@ -135,7 +184,23 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (!Number.isInteger(o.maxChordRepeats) || o.maxChordRepeats < 1)
     errors.push('maxChordRepeats deve ser inteiro >= 1');
+  if (o.colorStrategy !== undefined && !['layered', 'interleaved-balanced', 'free'].includes(o.colorStrategy)) {
+    errors.push(`colorStrategy "${String(o.colorStrategy)}" inválida (use: layered, interleaved-balanced, free)`);
+  }
+  if (o.threadLineBudgets !== undefined) {
+    if (!Array.isArray(o.threadLineBudgets) || o.threadLineBudgets.length !== o.threads.length) {
+      errors.push(`threadLineBudgets deve ter o mesmo tamanho que threads (${o.threads.length})`);
+    } else if (o.threadLineBudgets.some((b) => typeof b !== 'number' || !(b > 0))) {
+      errors.push('todos os valores em threadLineBudgets devem ser números > 0');
+    }
+  }
   if (!(o.preprocess.contrast > 0)) errors.push('preprocess.contrast deve ser > 0');
   if (!(o.preprocess.gamma > 0)) errors.push('preprocess.gamma deve ser > 0');
+  if (o.preprocess.shadowLift !== undefined && (!(o.preprocess.shadowLift >= 0) || o.preprocess.shadowLift > 1)) {
+    errors.push('preprocess.shadowLift deve estar em [0, 1]');
+  }
+  if (o.preprocess.edgeEmphasis !== undefined && (!(o.preprocess.edgeEmphasis >= 0) || o.preprocess.edgeEmphasis > 1)) {
+    errors.push('preprocess.edgeEmphasis deve estar em [0, 1]');
+  }
   if (errors.length > 0) throw new Error(`Configuração inválida:\n- ${errors.join('\n- ')}`);
 }

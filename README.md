@@ -25,8 +25,8 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 | Rasterização        | Bresenham / Wu                        | **cobertura exata de área** de um fio com largura real (sub-pixel)                                                                              |
 | Pinos               | pontos                                | **cilindros com diâmetro**: segmentos tangentes, sentido de contorno (horário/anti-horário) e arco enrolado no pino                             |
 | Comprimento do fio  | estimado                              | **exato** (segmentos + arcos), em metros                                                                                                        |
-| Cor                 | camadas separadas                     | **vários fios contínuos** otimizados juntos (preto, azul, magenta, amarelo, verde — a paleta de Vrellis)                                        |
-| Saída               | lista de pinos                        | instruções `.txt`, `.csv`, `.json`, **SVG em escala real**, PNG e **modo tecelagem com voz**                                                    |
+| Cor                 | camadas separadas                     | **camadas sequenciais (`layered`) ou intercalado balanceado** com cotas ponderadas (presets `vrellis-color` e `cmyk`)                           |
+| Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada, `.csv`, `.json`, **SVG em escala real**, PNG e **modo tecelagem com voz**                               |
 
 Detalhes matemáticos em [docs/ALGORITHM.md](docs/ALGORITHM.md).
 
@@ -57,14 +57,15 @@ npm run dev              # estúdio web em http://localhost:5173
 ```bash
 npm run build
 npm run weave -- foto.jpg                       # preset Vrellis monocromático
-npm run weave -- foto.jpg --preset vrellis-color --lines 6000
+npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2   # preset CMYK em camadas (10.000 cordas)
+npm run weave -- foto.jpg --preset vrellis-color --lines 6000 --shadow-lift 0.12 --edge-emphasis 0.5
 npm run weave -- foto.jpg --pegs 240 --diameter 600 --peg-diameter 1.5 --thread-width 0.15
 npm run weave -- --help
 ```
 
-> [!NOTE]
-> O preset `vrellis-color` é **experimental**: avalia 5 fios a cada passo e leva alguns minutos
-> (≈ 4,5 min para 6 000 linhas num notebook atual). O monocromático leva ≈ 13 s.
+> [!TIP]
+> **Tecelagem Multicolorida em Camadas**:
+> Por padrão, presets coloridos utilizam `colorStrategy: 'layered'`. As cores constroem a base cromática luminosa primeiro e o **fio preto entra por último**, conferindo nitidez e contraste sem apagar as cores de baixo. Além disso, avaliar apenas o fio ativo torna a geração em camadas **4 a 5× mais rápida**.
 
 Arquivos gerados em `./output/`:
 
@@ -103,8 +104,10 @@ Arquivos gerados em `./output/`:
 > aproximar disso (uma penalidade por comprimento está no roadmap).
 
 > [!TIP]
-> Fotos escuras pedem mais fio do que o tear consegue colocar. Clarear os meios-tons
-> (`--gamma 0.6` a `0.8`) costuma revelar bem mais as feições do rosto.
+>
+> - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
+> - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
+> - **Metas altas de cordas (ex: 10.000 cordas)**: aumente **Repetições** para `2` ou `3`. Um tear de 200 pinos possui limite combinatório de cordas que cruzam a figura; permitir repetições viabiliza atingir 10.000 cordas mantendo o fundo limpo.
 
 ## Scripts
 

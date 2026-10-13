@@ -35,8 +35,18 @@ async function start(msg: Extract<ToWorker, { type: 'start' }>): Promise<void> {
     if (now - lastPost > 120 || e.done) {
       lastPost = now;
       const rgba = snapshot(e);
+      const thread = e.options.threads[e.currentThreadIndex];
       post(
-        { type: 'progress', size: e.size, rgba, lines: e.steps.length, lengthMm: e.totalLengthMm, elapsedMs: now - t0 },
+        {
+          type: 'progress',
+          size: e.size,
+          rgba,
+          lines: e.steps.length,
+          lengthMm: e.totalLengthMm,
+          elapsedMs: now - t0,
+          currentThread: thread?.name,
+          currentLayer: e.currentLayerIndex + 1,
+        },
         [rgba],
       );
     }

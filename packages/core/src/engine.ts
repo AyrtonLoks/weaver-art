@@ -1,5 +1,5 @@
 import { hexToLinear, isAchromatic, linearToSrgb8, luminance } from './color.js';
-import { resolveOptions } from './config.js';
+import { computeThreadBudgets, resolveOptions } from './config.js';
 import { createLoom, pegDistance, tangentSegment, wrapAngle, type Loom, type Segment } from './geometry.js';
 import { prepareTarget, type TargetImage } from './image.js';
 import { ChordRasterizer } from './raster.js';
@@ -76,6 +76,10 @@ export class WeaveEngine {
   private readonly chordUse: Uint16Array;
   private readonly raster: ChordRasterizer;
   private readonly startedAt: number;
+  private readonly layerBudgets: number[];
+  private readonly threadLineCounts: number[];
+  private currentLayer = 0;
+  private lastStopReason: StopReason = 'no-improvement';
 
   constructor(image: RasterImage | TargetImage, options: WeaveOptions, importance?: RasterImage) {
     this.options = options;
@@ -129,6 +133,9 @@ export class WeaveEngine {
     this.chordUse = new Uint16Array(N * N);
     this.raster = new ChordRasterizer(this.size, Math.max(...this.threadWidthPx, 1));
     this.startedAt = now();
+    this.layerBudgets = computeThreadBudgets(options);
+    this.threadLineCounts = new Array(options.threads.length).fill(0);
+    this.currentLayer = 0;
   }
 
   /** Convenience factory: merge overrides onto the defaults, validate and build. */
@@ -140,6 +147,23 @@ export class WeaveEngine {
     return this.stopReason !== null;
   }
 
+  /** Current layer being woven in layered strategy (or layer of the most recent chord). */
+  get currentLayerIndex(): number {
+    if (this.steps.length > 0) {
+      const last = this.steps[this.steps.length - 1];
+      return last.layerIndex ?? last.thread;
+    }
+    return Math.min(this.currentLayer, this.options.threads.length - 1);
+  }
+
+  /** Current thread index being woven (or thread of the most recent chord). */
+  get currentThreadIndex(): number {
+    if (this.steps.length > 0) {
+      return this.steps[this.steps.length - 1].thread;
+    }
+    return Math.min(this.currentLayer, this.options.threads.length - 1);
+  }
+
   /** Lay the next best chord. Returns null (and sets `stopReason`) when finished. */
   step(): WeaveStep | null {
     if (this.stopReason) return null;
@@ -147,7 +171,144 @@ export class WeaveEngine {
       this.stopReason = 'max-lines';
       return null;
     }
-    const best = this.findBest();
+
+    const strategy = this.options.colorStrategy ?? 'layered';
+    if (strategy === 'layered') {
+      return this.stepLayered();
+    } else if (strategy === 'interleaved-balanced') {
+      return this.stepInterleavedBalanced();
+    } else {
+      return this.stepFree();
+    }
+  }
+
+  private stepLayered(): WeaveStep | null {
+    const numThreads = this.options.threads.length;
+    const stopWhenNoImp = this.options.stopWhenNoImprovement;
+
+    while (this.currentLayer < numThreads) {
+      const t = this.currentLayer;
+      const currentQuota = this.layerBudgets[t];
+
+      if (this.threadLineCounts[t] >= currentQuota) {
+        this.currentLayer++;
+        continue;
+      }
+
+      const best = this.findBestForThread(t);
+
+      if (!best) {
+        this.lastStopReason = 'no-candidates';
+        const unused = currentQuota - this.threadLineCounts[t];
+        if (unused > 0 && this.currentLayer < numThreads - 1) {
+          this.layerBudgets[numThreads - 1] += unused;
+        }
+        this.currentLayer++;
+        continue;
+      }
+
+      if (best.gain <= 0 && stopWhenNoImp) {
+        this.lastStopReason = 'no-improvement';
+        const unused = currentQuota - this.threadLineCounts[t];
+        if (unused > 0 && this.currentLayer < numThreads - 1) {
+          this.layerBudgets[numThreads - 1] += unused;
+        }
+        this.currentLayer++;
+        continue;
+      }
+
+      this.threadLineCounts[t]++;
+      return this.apply(best, t);
+    }
+
+    if (this.steps.length >= this.options.maxLines) {
+      this.stopReason = 'max-lines';
+    } else {
+      this.stopReason = this.lastStopReason;
+    }
+    return null;
+  }
+
+  private stepInterleavedBalanced(): WeaveStep | null {
+    const numThreads = this.options.threads.length;
+    const stopWhenNoImp = this.options.stopWhenNoImprovement;
+
+    // Threads that haven't reached their budget
+    const eligible: { thread: number; ratio: number }[] = [];
+    for (let t = 0; t < numThreads; t++) {
+      if (this.threadLineCounts[t] < this.layerBudgets[t]) {
+        const quota = Math.max(1, this.layerBudgets[t]);
+        eligible.push({ thread: t, ratio: this.threadLineCounts[t] / quota });
+      }
+    }
+
+    if (eligible.length === 0) {
+      this.stopReason = 'max-lines';
+      return null;
+    }
+
+    // Sort by ratio ascending so threads furthest behind their quota take turns first
+    eligible.sort((a, b) => a.ratio - b.ratio || a.thread - b.thread);
+
+    // Try eligible threads in priority order to find one with positive gain
+    let fallbackBest: Candidate | null = null;
+    let fallbackThread = -1;
+
+    for (const item of eligible) {
+      const cand = this.findBestForThread(item.thread);
+      if (cand && cand.gain > 0) {
+        this.threadLineCounts[item.thread]++;
+        return this.apply(cand, item.thread);
+      }
+
+      // If an intermediate thread (t < numThreads - 1) has no positive gain or no candidates,
+      // roll over its remaining budget to the final thread (black) so lines are not lost.
+      if ((!cand || (cand.gain <= 0 && stopWhenNoImp)) && item.thread < numThreads - 1) {
+        const unused = this.layerBudgets[item.thread] - this.threadLineCounts[item.thread];
+        if (unused > 0) {
+          this.layerBudgets[numThreads - 1] += unused;
+          this.layerBudgets[item.thread] = this.threadLineCounts[item.thread];
+        }
+        continue;
+      }
+
+      if (cand && !fallbackBest) {
+        fallbackBest = cand;
+        fallbackThread = item.thread;
+      }
+    }
+
+    // If rollover gave budget to the final thread (numThreads - 1) and it hasn't woven yet,
+    // let's try the final thread if it has positive gain
+    const finalThread = numThreads - 1;
+    if (this.threadLineCounts[finalThread] < this.layerBudgets[finalThread]) {
+      const cand = this.findBestForThread(finalThread);
+      if (cand && cand.gain > 0) {
+        this.threadLineCounts[finalThread]++;
+        return this.apply(cand, finalThread);
+      }
+      if (cand && !fallbackBest) {
+        fallbackBest = cand;
+        fallbackThread = finalThread;
+      }
+    }
+
+    if (stopWhenNoImp) {
+      this.stopReason = 'no-improvement';
+      return null;
+    }
+
+    if (fallbackBest && fallbackThread >= 0) {
+      this.threadLineCounts[fallbackThread]++;
+      return this.apply(fallbackBest, fallbackThread);
+    }
+
+    this.stopReason = 'no-candidates';
+    return null;
+  }
+
+  private stepFree(): WeaveStep | null {
+    const best = this.findBestAllThreads();
     if (!best) {
       this.stopReason = 'no-candidates';
       return null;
@@ -156,7 +317,8 @@ export class WeaveEngine {
       this.stopReason = 'no-improvement';
       return null;
     }
-    return this.apply(best);
+    this.threadLineCounts[best.thread]++;
+    return this.apply(best, best.thread);
   }
 
   /** Lay up to `count` chords. Returns true when the run is finished. */
@@ -240,39 +402,42 @@ export class WeaveEngine {
 
   // ---------------------------------------------------------------------------
 
-  private findBest(): Candidate | null {
+  private findBestForThread(t: number): Candidate | null {
     const { pegs, sides, pegRadiusMm } = this.loom;
     const N = pegs.length;
     const { minPegGap, maxChordRepeats } = this.options;
     const scale = this.pxPerMm;
     let best: Candidate | null = null;
 
-    for (let t = 0; t < this.threads.length; t++) {
-      const state = this.threads[t];
-      const a = pegs[state.peg];
-      const fromSides: readonly PegSide[] = state.side === null ? sides : [state.side];
-      const widthPx = this.threadWidthPx[t];
+    const state = this.threads[t];
+    const a = pegs[state.peg];
+    const fromSides: readonly PegSide[] = state.side === null ? sides : [state.side];
+    const widthPx = this.threadWidthPx[t];
 
-      for (let to = 0; to < N; to++) {
-        if (pegDistance(state.peg, to, N) < minPegGap) continue;
-        if (this.chordUse[state.peg * N + to] >= maxChordRepeats) continue;
-        const b = pegs[to];
-        for (const fromSide of fromSides) {
-          for (const toSide of sides) {
-            const seg = tangentSegment(a, fromSide, b, toSide, pegRadiusMm);
-            const count = this.raster.rasterize(
-              seg.x0 * scale,
-              seg.y0 * scale,
-              seg.x1 * scale,
-              seg.y1 * scale,
-              widthPx,
-            );
-            const gain = this.score(t, count);
-            if (!best || gain > best.gain) {
-              best = { thread: t, to, fromSide, toSide, gain, seg };
-            }
+    for (let to = 0; to < N; to++) {
+      if (pegDistance(state.peg, to, N) < minPegGap) continue;
+      if (this.chordUse[state.peg * N + to] >= maxChordRepeats) continue;
+      const b = pegs[to];
+      for (const fromSide of fromSides) {
+        for (const toSide of sides) {
+          const seg = tangentSegment(a, fromSide, b, toSide, pegRadiusMm);
+          const count = this.raster.rasterize(seg.x0 * scale, seg.y0 * scale, seg.x1 * scale, seg.y1 * scale, widthPx);
+          const gain = this.score(t, count);
+          if (!best || gain > best.gain) {
+            best = { thread: t, to, fromSide, toSide, gain, seg };
           }
         }
+      }
+    }
+    return best;
+  }
+
+  private findBestAllThreads(): Candidate | null {
+    let best: Candidate | null = null;
+    for (let t = 0; t < this.threads.length; t++) {
+      const cand = this.findBestForThread(t);
+      if (cand && (!best || cand.gain > best.gain)) {
+        best = cand;
       }
     }
     return best;
@@ -322,7 +487,7 @@ export class WeaveEngine {
     return gain;
   }
 
-  private apply(cand: Candidate): WeaveStep {
+  private apply(cand: Candidate, layerIndex?: number): WeaveStep {
     const { thread: t, to, fromSide, toSide, seg } = cand;
     const state = this.threads[t];
     const N = this.loom.pegs.length;
@@ -364,6 +529,7 @@ export class WeaveEngine {
       gain: cand.gain,
       segmentMm: seg.length,
       wrapMm,
+      layerIndex: layerIndex ?? t,
     };
     this.steps.push(step);
 

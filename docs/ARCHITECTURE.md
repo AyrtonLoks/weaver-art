@@ -48,13 +48,13 @@ Web Worker) e, no futuro, em WebAssembly/GPU. Ele só conhece `RasterImage` (RGB
 ## Fluxo de dados
 
 1. **Entrada** → `RasterImage` (RGBA8, sRGB).
-2. `prepareTarget()` → `TargetImage` (`S×S`, 1 ou 3 canais em luz linear, máscara, pesos).
-3. `WeaveEngine` mantém `canvas` (simulação), estado de cada fio e uso de cada par de pinos.
-   - `step()` avalia todas as cordas admissíveis, aplica a melhor e registra um `WeaveStep`.
+2. `prepareTarget()` → `TargetImage` (`S×S`, 1 ou 3 canais em luz linear, máscara, pesos com suporte a `shadowLift` e mapa de saliência Sobel `edgeEmphasis`).
+3. `WeaveEngine` mantém `canvas` (simulação), estado de cada fio, uso de pares de pinos e gestão de cotas por camada/fio.
+   - `step()` aplica a estratégia configurada (`layered`, `interleaved-balanced` ou `free`), com transição automática entre camadas e rollover de saldo para o preto final.
    - `runChunk(n)` permite execução cooperativa (o Worker cede o event loop entre blocos para
      poder receber `stop`).
 4. `result()` → `WeaveResult` (JSON serializável, versionado com `version: 1`).
-5. `export.ts` transforma o resultado em instruções, CSV e SVG; `threadPath()` reconstrói a
+5. `export.ts` transforma o resultado em instruções (`.txt` agrupado por camada), CSV e SVG (`<g id="layer-...">`); `threadPath()` reconstrói a
    geometria física (segmentos + arcos) a partir dos passos.
 
 ## Convenções

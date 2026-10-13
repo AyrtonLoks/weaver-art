@@ -13,8 +13,13 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ Estúdio web com Web Worker e pré-visualização ao vivo
 - ✅ Modo tecelagem: próximo pino em destaque, voz pt-BR, avanço automático, progresso salvo
 
-## v0.2 — Fidelidade visual
+## v0.2 — Fidelidade visual & Cor (atual)
 
+- ✅ **Ordem de camadas e blocos por cor**: tecelagem sequencial contínua (`layered`) com rollover dinâmico para atingir metas de 10.000 cordas
+- ✅ **Pré-processamento para retratos**: elevação de sombras (`shadowLift`) e mapa de importância por bordas/feições faciais (`edgeEmphasis`)
+- ✅ **Preset CMYK clássico**: síntese subtrativa (Ciano, Magenta, Amarelo, Preto) com proporção ponderada para o preto final
+- ✅ **Prevenção de paradas prematuras**: controle de parada opcional e aviso/sugestão dinâmica de `maxChordRepeats >= 2`
+- ✅ **Modo tecelagem guiado por camadas**: anúncios de voz inteligentes ao trocar de cor e instruções agrupadas
 - 🔜 **Modelo de distância de observação**: simular em alta resolução e comparar o alvo em
   resolução reduzida/desfocada (percepção), como em Birsak et al. (2018)
 - 🔜 **Refinamento global**: após o guloso, passes de remoção/troca de cordas que reduzam o erro
@@ -23,13 +28,11 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
   as cores reais dos fios
 - 🔜 Métricas perceptuais (SSIM / erro em CIELAB) além do RMSE linear
 - 🔜 Penalidade opcional por comprimento de fio (aproximar 1–2 km para 3–4 mil cordas, como Vrellis)
-- 💡 Pré-processamento orientado a retratos: detecção de rosto → mapa de importância automático
 - 💡 Equalização local de contraste (CLAHE) como opção
 
-## v0.3 — Cor
+## v0.3 — Otimização avançada de cor
 
-- 🔜 Seleção automática de paleta (k cores a partir da imagem) e ordem de camadas
-- 🔜 Restrições de fabricação: trocar de fio o mínimo possível; blocos por cor
+- 🔜 Seleção automática de paleta personalizada (k cores a partir da imagem)
 - 💡 Modelo óptico de mistura por meio-tom (cores vizinhas que se fundem a distância)
 
 ## v0.4 — Fabricação

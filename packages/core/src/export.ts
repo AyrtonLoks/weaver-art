@@ -44,8 +44,29 @@ export function toInstructions(result: WeaveResult, opts: InstructionOptions = {
     lines.push('');
   }
 
+  const isLayered = (result.options.colorStrategy ?? 'layered') === 'layered';
+  const layerCounts = new Map<number, number>();
+  if (isLayered) {
+    for (const s of result.steps) {
+      const layer = s.layerIndex ?? s.thread;
+      layerCounts.set(layer, (layerCounts.get(layer) ?? 0) + 1);
+    }
+  }
+
+  let currentLayer = -1;
   for (const s of result.steps) {
     const thread = threads[s.thread];
+    const layer = s.layerIndex ?? s.thread;
+    if (isLayered && threads.length > 1 && layer !== currentLayer) {
+      currentLayer = layer;
+      const count = layerCounts.get(layer) ?? 0;
+      lines.push('');
+      lines.push(
+        `=== CAMADA ${layer + 1}: ${thread.name.toUpperCase()} (${count} cordas · amarrar no pino ${thread.startPeg + base}) ===`,
+      );
+      lines.push('');
+    }
+
     const n = String(s.index + 1).padStart(pad, '0');
     const name = threads.length > 1 ? `${thread.name.padEnd(8)} ` : '';
     const side = withSides ? `  (${sideLabel(s.toSide)})` : '';
@@ -160,9 +181,12 @@ export function toSVG(result: WeaveResult, opts: SvgOptions = {}): string {
         d.push(`A${p.r} ${p.r} 0 ${large} ${sweep} ${f(p.x1)} ${f(p.y1)}`);
       }
     }
+    const layerId = `layer-${t.id}`;
+    out.push(`<g id="${layerId}">`);
     out.push(
-      `<path d="${d.join(' ')}" fill="none" stroke="${t.color}" stroke-opacity="${t.opacity}" stroke-width="${t.widthMm}" stroke-linejoin="round" stroke-linecap="round"/>`,
+      `  <path d="${d.join(' ')}" fill="none" stroke="${t.color}" stroke-opacity="${t.opacity}" stroke-width="${t.widthMm}" stroke-linejoin="round" stroke-linecap="round"/>`,
     );
+    out.push('</g>');
   });
 
   if (opts.showPegs ?? true) {

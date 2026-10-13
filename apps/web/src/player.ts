@@ -33,6 +33,8 @@ export class KnitPlayer {
   private timer: number | null = null;
   private storageKey = '';
 
+  private stepLayerInfo: { layerIndex: number; threadName: string; stepInLayer: number; totalInLayer: number }[] = [];
+
   constructor(private readonly el: PlayerElements) {
     el.prev.addEventListener('click', () => this.go(this.index - 1));
     el.next.addEventListener('click', () => this.go(this.index + 1, true));
@@ -57,6 +59,27 @@ export class KnitPlayer {
     this.result = result;
     this.loom = createLoom(result.options.loom);
     this.storageKey = `weaver-art:progress:${fingerprint(result)}`;
+
+    // Precompute layer progress for each step
+    const layerTotals = new Map<number, number>();
+    for (const s of result.steps) {
+      const key = s.layerIndex ?? s.thread;
+      layerTotals.set(key, (layerTotals.get(key) ?? 0) + 1);
+    }
+    const layerProgress = new Map<number, number>();
+    this.stepLayerInfo = result.steps.map((s) => {
+      const key = s.layerIndex ?? s.thread;
+      const stepInLayer = (layerProgress.get(key) ?? 0) + 1;
+      layerProgress.set(key, stepInLayer);
+      const thread = result.options.threads[s.thread];
+      return {
+        layerIndex: key,
+        threadName: thread ? thread.name : '',
+        stepInLayer,
+        totalInLayer: layerTotals.get(key) ?? 1,
+      };
+    });
+
     const saved = Number(localStorage.getItem(this.storageKey) ?? 0);
     this.el.empty.hidden = true;
     this.el.live.hidden = false;
@@ -79,9 +102,19 @@ export class KnitPlayer {
     const s = done ? null : r.steps[this.index];
     const thread = s ? r.options.threads[s.thread] : null;
     const withSides = r.options.loom.pegDiameterMm > 0;
+    const layerInfo = s ? this.stepLayerInfo[this.index] : null;
 
     this.el.step.textContent = String(Math.min(this.index + 1, r.steps.length));
-    this.el.thread.textContent = thread ? thread.name : 'Concluído';
+    const isLayered = (r.options.colorStrategy ?? 'layered') === 'layered';
+    if (layerInfo && r.options.threads.length > 1) {
+      if (isLayered) {
+        this.el.thread.textContent = `Camada ${layerInfo.layerIndex + 1}: ${layerInfo.threadName} (${layerInfo.stepInLayer}/${layerInfo.totalInLayer})`;
+      } else {
+        this.el.thread.textContent = `${layerInfo.threadName} (${layerInfo.stepInLayer}/${layerInfo.totalInLayer})`;
+      }
+    } else {
+      this.el.thread.textContent = thread ? thread.name : 'Concluído';
+    }
     this.el.swatch.style.background = thread ? thread.color : 'transparent';
     this.el.from.textContent = s ? String(s.from + PEG_BASE) : '—';
     this.el.to.textContent = s ? String(s.to + PEG_BASE) : '✔';
@@ -95,7 +128,20 @@ export class KnitPlayer {
     if (speak && s && this.el.voice.checked) {
       const prev = this.index > 0 ? r.steps[this.index - 1] : null;
       const parts: string[] = [];
-      if (r.options.threads.length > 1 && (!prev || prev.thread !== s.thread)) parts.push(`fio ${thread?.name ?? ''}`);
+      if (r.options.threads.length > 1) {
+        if (isLayered) {
+          if (prev && prev.layerIndex !== s.layerIndex) {
+            const prevThread = r.options.threads[prev.thread];
+            parts.push(`Camada ${prevThread.name} concluída. Troque para o fio ${thread?.name ?? ''}`);
+          } else if (!prev) {
+            parts.push(`Iniciando camada ${thread?.name ?? ''}`);
+          }
+        } else {
+          if (!prev || prev.thread !== s.thread) {
+            parts.push(`fio ${thread?.name ?? ''}`);
+          }
+        }
+      }
       parts.push(String(s.to + PEG_BASE));
       if (withSides) parts.push(sideLabel(s.toSide));
       sayAloud(parts.join(', '));
