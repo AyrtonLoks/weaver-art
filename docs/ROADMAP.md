@@ -13,22 +13,19 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ Estúdio web com Web Worker e pré-visualização ao vivo
 - ✅ Modo tecelagem: próximo pino em destaque, voz pt-BR, avanço automático, progresso salvo
 
-## v0.2 — Fidelidade visual & Cor (atual)
+## v0.2 — Fidelidade visual & Cor (concluído)
 
 - ✅ **Ordem de camadas e blocos por cor**: tecelagem sequencial contínua (`layered`) com rollover dinâmico para atingir metas de 10.000 cordas
 - ✅ **Pré-processamento para retratos**: elevação de sombras (`shadowLift`) e mapa de importância por bordas/feições faciais (`edgeEmphasis`)
 - ✅ **Preset CMYK clássico**: síntese subtrativa (Ciano, Magenta, Amarelo, Preto) com proporção ponderada para o preto final
 - ✅ **Prevenção de paradas prematuras**: controle de parada opcional e aviso/sugestão dinâmica de `maxChordRepeats >= 2`
 - ✅ **Modo tecelagem guiado por camadas**: anúncios de voz inteligentes ao trocar de cor e instruções agrupadas
-- 🔜 **Modelo de distância de observação**: simular em alta resolução e comparar o alvo em
-  resolução reduzida/desfocada (percepção), como em Birsak et al. (2018)
-- 🔜 **Refinamento global**: após o guloso, passes de remoção/troca de cordas que reduzam o erro
-  (mantendo a continuidade do fio)
-- 🔜 **Calibração**: fotografar um trecho tecido para estimar largura aparente/opacidade do fio e
-  as cores reais dos fios
-- 🔜 Métricas perceptuais (SSIM / erro em CIELAB) além do RMSE linear
-- 🔜 Penalidade opcional por comprimento de fio (aproximar 1–2 km para 3–4 mil cordas, como Vrellis)
-- 💡 Equalização local de contraste (CLAHE) como opção
+- ✅ **Modelo de distância de observação**: simulação de desfoque retiniano com filtro gaussiano separável $O(N)$ baseado na acuidade visual humana (Birsak et al., 2018)
+- ✅ **Refinamento global**: passes pós-gulosos de perturbação de nós intermediários ($p_{i-1} \to p_i' \to p_{i+1}$) que reduzem o erro residual preservando estritamente a continuidade do fio
+- ✅ **Calibração**: extração robusta de cor sRGB linear de foto de meada com rejeição de reflexos/sombras e calibração física de largura/opacidade via transmitância
+- ✅ **Métricas perceptuais**: erro em CIELAB ($\Delta E_{ab}^*$, CIE76) e Índice de Similaridade Estrutural (SSIM) além do RMSE linear
+- ✅ **Penalidade opcional por comprimento de fio**: penalização ajustável proporcional ao comprimento da corda $L_{norm}$ para otimizar consumo de fio
+- ✅ **Equalização local de contraste (CLAHE)**: algoritmo puro em TypeScript de contraste limitado adaptativo com interpolação bilinear contínua sem artefatos de borda de bloco
 
 ## v0.3 — Otimização avançada de cor
 

@@ -14,10 +14,20 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
 - **Filtros de fidelidade para retratos**:
   - `shadowLift` (elevação de sombras): impede que camisetas pretas ou fundos noturnos devorem as cordas e poluam o rosto.
   - `edgeEmphasis` (realce de feições): mapa de saliência automático via filtro Sobel nos olhos, óculos, nariz, boca e silhueta.
+  - `clahe` (equalização adaptativa local): realce de contraste local sem amplificação de ruído em grade de 8×8 blocos com interpolação bilinear e processamento de luminância preservando tons de pele.
+- **Penalidade opcional por comprimento de fio (`lengthPenalty`)**: fator configurável que aplica deságio proporcional ao comprimento da corda $L_{norm}$, favorecendo cordas mais eficientes e aproximando o consumo total aos 1–2 km reportados por Petros Vrellis.
+- **Modelo de distância de observação (`viewingDistanceM`)**: simulação de desfoque retiniano com filtro gaussiano separável $O(N)$ baseado na acuidade visual humana e frequência angular (Birsak et al., 2018).
+- **Refinamento global pós-guloso (`refineWeave`)**: passes de perturbação local de nós intermediários ($p_{i-1} \to p_i' \to p_{i+1}$) que reduzem o erro residual mantendo estritamente a conectividade inquebrável do fio contínuo e tangentes físicas válidas.
+- **Métricas perceptuais avançadas**: cálculo de erro de cor em CIELAB ($\Delta E_{ab}^*$, CIE76) e Índice de Similaridade Estrutural (SSIM) além do RMSE linear no `WeaveResult`.
+- **Módulo de calibração**:
+  - `calibrateThreadColor`: extração robusta de cor sRGB linear a partir de fotos de meadas/carretéis com rejeição de reflexos especulares e sombras.
+  - `calibrateThreadPhysical`: estimativa numérica de largura aparente e opacidade $\alpha$ via transmitância medida de trecho tecido.
 - **Web UI**:
   - Seletor do preset CMYK e seletor de estratégia de cor (`layered` vs `interleaved-balanced`).
-  - Sliders para elevação de sombras e foco em detalhes faciais.
-  - Checkbox para controle de parada prematura (`stopWhenNoImprovement`).
+  - Sliders para elevação de sombras, foco em detalhes faciais, penalidade de comprimento de fio e distância de observação.
+  - Controles de CLAHE (checkbox e slider de corte) e input de passes de refinamento global.
+  - Estatísticas completas em tempo real com Linhas, Fio, RMSE, $\Delta E$ (CIELAB), SSIM e Tempo.
+  - Ferramenta de calibração de cor de meada com clique para copiar `#hex` para a área de transferência.
   - Indicador e recomendação dinâmica para configurar `Repetições = 2 ou 3` em metas superiores a 5.000 cordas.
 - **Modo Tecelagem**:
   - Acompanhamento passo a passo por camadas e avisos de voz inteligentes ao trocar de cor.
@@ -25,7 +35,9 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
   - Instruções `.txt` limpas e divididas em blocos por camada (`=== CAMADA X: Cor ===`).
   - Vetor `.svg` com grupos `<g id="layer-...">` identificando cada cor.
 - **CLI**:
-  - Novas flags `--preset cmyk`, `--color-strategy`, `--shadow-lift` e `--edge-emphasis`.
+  - Novas flags `--preset cmyk`, `--color-strategy`, `--shadow-lift`, `--edge-emphasis`, `--clahe`, `--clahe-clip`, `--length-penalty`, `--viewing-distance` e `--refine`.
+  - Subcomando `weaver-art calibrate-color <foto>`.
+  - Apresentação completa das métricas RMSE, $\Delta E$ (CIELAB) e SSIM ao término da geração.
 
 ### Corrigido
 

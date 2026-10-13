@@ -1,3 +1,4 @@
+import { applyClahe } from './clahe.js';
 import { LUMA_B, LUMA_G, LUMA_R, SRGB8_TO_LINEAR, linearToSrgb, srgbToLinear } from './color.js';
 import type { PreprocessOptions, RasterImage } from './types.js';
 
@@ -156,13 +157,75 @@ export function computeSobelEdgeMagnitude(luma: Float32Array, size: number): Flo
 }
 
 /**
+ * Fast separable Gaussian blur in O(N * radius) for simulating retinal visual acuity.
+ */
+export function gaussianBlur(
+  data: Float32Array,
+  width: number,
+  height: number,
+  channels: 1 | 3,
+  sigmaPx: number,
+): Float32Array {
+  if (sigmaPx < 0.2) return new Float32Array(data);
+  const radius = Math.min(Math.ceil(3 * sigmaPx), Math.floor(Math.min(width, height) / 2));
+  if (radius < 1) return new Float32Array(data);
+
+  const kSize = radius * 2 + 1;
+  const kernel = new Float32Array(kSize);
+  let kSum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigmaPx * sigmaPx));
+    kernel[i + radius] = v;
+    kSum += v;
+  }
+  for (let i = 0; i < kSize; i++) kernel[i] /= kSum;
+
+  const totalPixels = width * height;
+  const temp = new Float32Array(totalPixels * channels);
+  const out = new Float32Array(totalPixels * channels);
+
+  // Horizontal pass
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      for (let c = 0; c < channels; c++) {
+        let sum = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const sx = Math.min(Math.max(x + k, 0), width - 1);
+          sum += data[(row + sx) * channels + c] * kernel[k + radius];
+        }
+        temp[(row + x) * channels + c] = sum;
+      }
+    }
+  }
+
+  // Vertical pass
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      for (let c = 0; c < channels; c++) {
+        let sum = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const sy = Math.min(Math.max(y + k, 0), height - 1);
+          sum += temp[(sy * width + x) * channels + c] * kernel[k + radius];
+        }
+        out[(row + x) * channels + c] = sum;
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
  * Turn a photograph into the optimisation target.
  *
- * @param img        Source RGBA image.
- * @param size       Simulation grid size in pixels.
- * @param opts       Tone / crop options.
- * @param channels   1 = luminance only, 3 = linear RGB.
- * @param importance Optional importance map (white = important, black = ignored), same framing as `img`.
+ * @param img            Source RGBA image.
+ * @param size           Simulation grid size in pixels.
+ * @param opts           Tone / crop options.
+ * @param channels       1 = luminance only, 3 = linear RGB.
+ * @param importance     Optional importance map (white = important, black = ignored), same framing as `img`.
+ * @param loomDiameterMm Loom physical diameter in mm (default: 711.2).
  */
 export function prepareTarget(
   img: RasterImage,
@@ -170,6 +233,7 @@ export function prepareTarget(
   opts: PreprocessOptions,
   channels: 1 | 3,
   importance?: RasterImage,
+  loomDiameterMm = 711.2,
 ): TargetImage {
   const crop = opts.crop ?? centeredSquareCrop(img.width, img.height);
   const rgb = resampleLinear(img, size, crop);
@@ -186,6 +250,67 @@ export function prepareTarget(
       data[p * 3 + 1] = tone(g, opts);
       data[p * 3 + 2] = tone(b, opts);
     }
+  }
+
+  // Local contrast equalization (CLAHE) applied in perceptual space
+  if (opts.clahe) {
+    if (channels === 1) {
+      const sChannel = new Float32Array(n);
+      for (let p = 0; p < n; p++) {
+        sChannel[p] = linearToSrgb(data[p]);
+      }
+      const equalized = applyClahe(sChannel, size, size, {
+        clipLimit: opts.claheClipLimit,
+        gridSize: opts.claheGridSize,
+      });
+      for (let p = 0; p < n; p++) {
+        data[p] = srgbToLinear(equalized[p]);
+      }
+    } else {
+      // For color images, apply CLAHE to perceptual luminance and scale channels proportionally
+      // to preserve hue and saturation without chromatic distortion.
+      const sLuma = new Float32Array(n);
+      for (let p = 0; p < n; p++) {
+        const o = p * 3;
+        const linLuma = LUMA_R * data[o] + LUMA_G * data[o + 1] + LUMA_B * data[o + 2];
+        sLuma[p] = linearToSrgb(linLuma);
+      }
+      const equalized = applyClahe(sLuma, size, size, {
+        clipLimit: opts.claheClipLimit,
+        gridSize: opts.claheGridSize,
+      });
+      for (let p = 0; p < n; p++) {
+        const o = p * 3;
+        const oldLumaSrgb = sLuma[p];
+        const newLumaSrgb = equalized[p];
+        const oldLumaLin = srgbToLinear(oldLumaSrgb);
+        const newLumaLin = srgbToLinear(newLumaSrgb);
+        if (oldLumaLin > 1e-4) {
+          const ratio = newLumaLin / oldLumaLin;
+          data[o] = Math.min(1, Math.max(0, data[o] * ratio));
+          data[o + 1] = Math.min(1, Math.max(0, data[o + 1] * ratio));
+          data[o + 2] = Math.min(1, Math.max(0, data[o + 2] * ratio));
+        } else {
+          data[o] = newLumaLin;
+          data[o + 1] = newLumaLin;
+          data[o + 2] = newLumaLin;
+        }
+      }
+    }
+  }
+
+  // Retinal blur model for observation distance (Birsak et al., 2018)
+  const blurMm =
+    opts.perceptualBlurMm && opts.perceptualBlurMm > 0
+      ? opts.perceptualBlurMm
+      : opts.viewingDistanceM && opts.viewingDistanceM > 0
+        ? opts.viewingDistanceM * 0.291
+        : 0;
+
+  if (blurMm > 0) {
+    const sigmaPx = blurMm * (size / loomDiameterMm);
+    const blurred = gaussianBlur(data, size, size, channels, sigmaPx);
+    data.set(blurred);
   }
 
   const mask = circleMask(size);

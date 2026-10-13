@@ -1,5 +1,6 @@
 import './style.css';
 import {
+  calibrateThreadColor,
   PRESETS,
   resolveOptions,
   toCSV,
@@ -53,13 +54,56 @@ const fields = {
   gap: num('gap'),
   repeats: num('repeats'),
   resolution: num('resolution'),
+  lengthPenalty: num('lengthPenalty'),
+  refinePasses: num('refinePasses'),
+  viewingDistance: num('viewingDistance'),
   contrast: num('contrast'),
   brightness: num('brightness'),
   gamma: num('gamma'),
   shadowLift: num('shadowLift'),
   edgeEmphasis: num('edgeEmphasis'),
+  clahe: $<HTMLInputElement>('clahe'),
+  claheClip: num('claheClip'),
   invert: num('invert'),
 };
+
+const calibrateFileInput = $<HTMLInputElement>('calibrateFile');
+const calibrateOutput = $('calibrateOutput');
+const calibrateSwatch = $('calibrateSwatch');
+const calibrateText = $('calibrateText');
+
+calibrateFileInput.addEventListener('change', async () => {
+  const f = calibrateFileInput.files?.[0];
+  if (!f) return;
+  try {
+    const bitmap = await createImageBitmap(f);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(bitmap, 0, 0);
+    const idata = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    const cal = calibrateThreadColor({ width: idata.width, height: idata.height, data: idata.data });
+    calibrateSwatch.style.backgroundColor = cal.hex;
+    calibrateText.textContent = `Calibrado: ${cal.hex} (clique para copiar)`;
+    calibrateOutput.style.cursor = 'pointer';
+    calibrateOutput.hidden = false;
+    calibrateOutput.onclick = () => {
+      navigator.clipboard?.writeText(cal.hex);
+      calibrateText.textContent = `Copiado: ${cal.hex}!`;
+      setTimeout(() => {
+        calibrateText.textContent = `Calibrado: ${cal.hex} (clique para copiar)`;
+      }, 2000);
+    };
+  } catch (err) {
+    showError(err);
+  }
+});
+
+fields.clahe.addEventListener('change', () => {
+  $('clahe-controls').hidden = !fields.clahe.checked;
+});
 
 const player = new KnitPlayer({
   canvas: $<HTMLCanvasElement>('loom'),
@@ -97,11 +141,17 @@ function fillForm(o: WeaveOptions): void {
   fields.gap.value = String(o.minPegGap);
   fields.repeats.value = String(o.maxChordRepeats);
   fields.resolution.value = String(o.resolutionPx);
+  fields.lengthPenalty.value = String(o.lengthPenalty ?? 0);
+  fields.refinePasses.value = String(o.refinePasses ?? 0);
+  fields.viewingDistance.value = String(o.viewingDistanceM ?? o.preprocess.viewingDistanceM ?? 0);
   fields.contrast.value = String(o.preprocess.contrast);
   fields.brightness.value = String(o.preprocess.brightness);
   fields.gamma.value = String(o.preprocess.gamma);
   fields.shadowLift.value = String(o.preprocess.shadowLift ?? 0);
   fields.edgeEmphasis.value = String(o.preprocess.edgeEmphasis ?? 0);
+  fields.clahe.checked = Boolean(o.preprocess.clahe);
+  fields.claheClip.value = String(o.preprocess.claheClipLimit ?? 2);
+  $('clahe-controls').hidden = !fields.clahe.checked;
   fields.invert.checked = o.preprocess.invert;
   colorStrategy.value = o.colorStrategy ?? 'layered';
   stopImprovement.checked = o.stopWhenNoImprovement;
@@ -110,7 +160,16 @@ function fillForm(o: WeaveOptions): void {
 }
 
 function updateOutputs(): void {
-  for (const id of ['contrast', 'brightness', 'gamma', 'shadowLift', 'edgeEmphasis'] as const) {
+  for (const id of [
+    'contrast',
+    'brightness',
+    'gamma',
+    'shadowLift',
+    'edgeEmphasis',
+    'lengthPenalty',
+    'viewingDistance',
+    'claheClip',
+  ] as const) {
     const el = document.getElementById(`${id}-out`);
     if (el) el.textContent = Number(fields[id].value).toFixed(2);
   }
@@ -139,12 +198,18 @@ function readOptions(): WeaveOptions {
       resolutionPx: Number(fields.resolution.value),
       colorStrategy: colorStrategy.value as 'layered' | 'interleaved-balanced' | 'free',
       stopWhenNoImprovement: stopImprovement.checked,
+      lengthPenalty: Number(fields.lengthPenalty.value),
+      viewingDistanceM: Number(fields.viewingDistance.value),
+      refinePasses: Number(fields.refinePasses.value),
       preprocess: {
         contrast: Number(fields.contrast.value),
         brightness: Number(fields.brightness.value),
         gamma: Number(fields.gamma.value),
         shadowLift: Number(fields.shadowLift.value),
         edgeEmphasis: Number(fields.edgeEmphasis.value),
+        clahe: fields.clahe.checked,
+        claheClipLimit: Number(fields.claheClip.value),
+        viewingDistanceM: Number(fields.viewingDistance.value),
         invert: fields.invert.checked,
       },
     },
@@ -153,7 +218,16 @@ function readOptions(): WeaveOptions {
 }
 
 preset.addEventListener('change', () => fillForm(PRESETS[preset.value as PresetName]));
-for (const id of ['contrast', 'brightness', 'gamma', 'shadowLift', 'edgeEmphasis'] as const) {
+for (const id of [
+  'contrast',
+  'brightness',
+  'gamma',
+  'shadowLift',
+  'edgeEmphasis',
+  'lengthPenalty',
+  'viewingDistance',
+  'claheClip',
+] as const) {
   fields[id].addEventListener('input', updateOutputs);
 }
 fields.lines.addEventListener('input', checkRepeatsHint);
@@ -213,6 +287,8 @@ function setStats(
   ms: number,
   currentThread?: string,
   currentLayer?: number,
+  deltaE?: number | null,
+  ssim?: number | null,
 ): void {
   const isLayered = colorStrategy.value === 'layered';
   const threadInfo = currentThread
@@ -223,6 +299,8 @@ function setStats(
   $('s-lines').textContent = `${lines.toLocaleString('pt-BR')}${threadInfo}`;
   $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
   $('s-rmse').textContent = rmse === null ? '…' : rmse.toFixed(4);
+  $('s-deltaE').textContent = deltaE !== undefined && deltaE !== null ? deltaE.toFixed(2) : '…';
+  $('s-ssim').textContent = ssim !== undefined && ssim !== null ? ssim.toFixed(3) : '…';
   $('s-time').textContent = `${(ms / 1000).toFixed(1)} s`;
 }
 
@@ -269,7 +347,16 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       paint(simCanvas, msg.size, msg.rgba);
       result = msg.result;
       bar.style.width = '100%';
-      setStats(result.steps.length, result.totalLengthMm, result.rmse, result.durationMs);
+      setStats(
+        result.steps.length,
+        result.totalLengthMm,
+        result.rmse,
+        result.durationMs,
+        undefined,
+        undefined,
+        result.metrics?.deltaELab,
+        result.metrics?.ssim,
+      );
       exportButtons.forEach((b) => (b.disabled = false));
       setRunning(false);
       player.load(result);

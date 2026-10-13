@@ -72,15 +72,17 @@ Para fio preto (`K = 0`) sobre fundo branco isso é `R ← R·(1 − α c)`, ou 
 `T = Π(1 − αcᵢ)`: o tom escurece com a **densidade** e as **interseções** das passadas, que nunca
 "somam" além do preto. O modelo vale igualmente para fios coloridos e para fio claro em fundo escuro.
 
-## 5. Preparação da imagem — [`image.ts`](../packages/core/src/image.ts)
+## 5. Preparação da imagem — [`image.ts`](../packages/core/src/image.ts) e [`clahe.ts`](../packages/core/src/clahe.ts)
 
 1. Recorte quadrado (padrão: maior quadrado centralizado).
 2. Reamostragem para `S × S` com **filtro de área** (k×k amostras bilineares por pixel) em luz linear.
-3. Ajustes perceptuais (em sRGB): contraste, brilho, gama, inversão.
-4. **Elevação de sombras** (`shadowLift`): eleva suavemente o piso de pretos profundos, impedindo que roupas pretas ou fundos noturnos absorvam desproporcionalmente as cordas e causem borrões sobre o rosto.
-5. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
-6. Máscara circular anti-serrilhada.
-7. **Realce de bordas e detalhes** (`edgeEmphasis`): filtro Sobel aplicado sobre a luminância para gerar um mapa de saliência automático, multiplicando os pesos `weight` nos olhos, nariz, boca, óculos e contornos faciais. Opcionalmente combinado com um mapa de importância externo.
+3. **Equalização local adaptativa (CLAHE)** (`clahe.ts`): divide a imagem em uma grade de $8 \times 8$ blocos, constrói histogramas locais de 256 bins e redistribui uniformemente os pixels que ultrapassam o limiar de corte (`claheClipLimit`, padrão 2.0). Em imagens coloridas, o CLAHE opera sobre a luminância perceptual e escala canais proporcionalmente, mantendo integridade de cor e tons de pele. As funções CDF são interpoladas bilinearmente por pixel, eliminando artefatos de borda.
+4. Ajustes perceptuais (em sRGB): contraste, brilho, gama, inversão.
+5. **Elevação de sombras** (`shadowLift`): eleva suavemente o piso de pretos profundos, impedindo que roupas pretas ou fundos noturnos absorvam desproporcionalmente as cordas e causem borrões sobre o rosto.
+6. **Modelo de distância de observação e desfoque retiniano** (`viewingDistanceM`): baseado na acuidade visual humana de ~1 minuto de arco (Birsak et al., 2018), aplica um filtro gaussiano separável $O(N)$ sobre o alvo para que detalhes imperceptíveis à distância física configurada não desviem o algoritmo de tons médios e feições principais.
+7. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
+8. Máscara circular anti-serrilhada.
+9. **Realce de bordas e detalhes** (`edgeEmphasis`): filtro Sobel aplicado sobre a luminância para gerar um mapa de saliência automático, multiplicando os pesos `weight` nos olhos, nariz, boca, óculos e contornos faciais. Opcionalmente combinado com um mapa de importância externo.
 
 ## 6. Otimização e estratégias de cor — [`engine.ts`](../packages/core/src/engine.ts)
 
@@ -89,10 +91,19 @@ Estado: para cada fio, o pino atual e o lado em que ele está enrolado.
 A cada passo, para uma corda admissível a partir do pino atual (distância circular `≥ minPegGap`, par `{a, b}` usado menos de `maxChordRepeats` vezes, e os dois lados possíveis de chegada), calcula-se o **ganho**:
 
 ```
-ganho = Σₚ wₚ · [ (tₚ − Rₚ)² − (tₚ − R'ₚ)² ]  =  Σₚ wₚ · δₚ · (2(tₚ − Rₚ) − δₚ),   δₚ = α cₚ (K − Rₚ)
+ganho_base = Σₚ wₚ · [ (tₚ − Rₚ)² − (tₚ − R'ₚ)² ]  =  Σₚ wₚ · δₚ · (2(tₚ − Rₚ) − δₚ),   δₚ = α cₚ (K − Rₚ)
 ```
 
-isto é, a redução exata do erro quadrático ponderado provocada pela corda.
+### Penalidade opcional por comprimento de fio (`lengthPenalty`)
+
+Para aproximar a tecelagem dos 1–2 km reportados por Petros Vrellis para 3.000–4.000 cordas e controlar a tensão mecânica, cordas muito longas podem sofrer um deságio proporcional ao diâmetro do tear:
+
+```
+L_norm = L_corda / D_tear ∈ (0, 1]
+ganho_efetivo = ganho_base · (1 − λ · L_norm)
+```
+
+Com $\lambda = 0$ (padrão de fábrica), o ganho puro é preservado. Com $\lambda \in [0.1, 0.25]$, cordas mais curtas com ganho comparável são priorizadas, gerando economia expressiva de metros de fio com fidelidade visual equivalente.
 
 ### Estratégias de tecelagem multicolorida (`ColorStrategy`)
 
@@ -116,50 +127,45 @@ O processo é concluído quando:
 - nenhuma corda viável reduz mais o erro (quando `stopWhenNoImprovement` estiver ativo); ou
 - não há mais cordas admissíveis sob os limites de repetições configurados.
 
-### Repetições por par de pinos e metas altas de linhas
+## 7. Métricas perceptuais — [`metrics.ts`](../packages/core/src/metrics.ts)
 
-Em um tear circular de 200 pinos, existem cerca de 16.500 pares de pinos possíveis, dos quais apenas cerca de 7.500 cruzam o interior da figura. Para tecer **10.000 cordas** sem escurecer o fundo branco, o parâmetro `maxChordRepeats` deve ser ajustado para **2 ou 3**, permitindo que múltiplos fios passem pelo mesmo par de pinos com ângulos ligeiramente variados.
+Além do RMSE linear tradicional (em luz linear desprovida de ponderação não linear humana), o motor calcula duas métricas perceptuais reportadas em `WeaveResult.metrics`:
 
-### Por que redução de erro em vez de "linha mais escura"?
+1. **Erro de cor em CIELAB ($\Delta E\_{ab}^\*$, CIE76)**:
+   - Conversão linear RGB $\rightarrow$ CIE XYZ (D65) $\rightarrow$ CIELAB ($L^_, a^_, b^*$).
+   - $\Delta E = \sqrt{(\Delta L^_)^2 + (\Delta a^_)^2 + (\Delta b^*)^2}$ ponderado dentro da máscara do tear.
+   - Valores de $\Delta E < 2.3$ aproximam o limiar de diferença quase imperceptível ao olho humano.
+2. **Índice de Similaridade Estrutural (SSIM)**:
+   - Formulação de Wang et al. (2004) aplicada sobre a luminância sRGB com janela gaussiana $11 \times 11$ ($\sigma = 1.5$):
+     $$\text{SSIM}(x, y) = \frac{(2\mu_x\mu_y + C_1)(2\sigma_{xy} + C_2)}{(\mu_x^2 + \mu_y^2 + C_1)(\sigma_x^2 + \sigma_y^2 + C_2)}$$
+   - Varia de 0 a 1, capturando preservação de contraste, nitidez estrutural e luminosidade percebida.
 
-As implementações clássicas escolhem a corda com maior **escuridão média** do alvo e depois
-**subtraem** uma constante do alvo. Isso:
+## 8. Refinamento global com continuidade física do fio — [`refine.ts`](../packages/core/src/refine.ts)
 
-- normaliza pelo comprimento, favorecendo cordas curtas e escuras;
-- ignora que interseções escurecem menos que a soma das passadas (o fio não é aditivo);
-- não sabe quando parar.
+A otimização gulosa escolhe cada corda no momento $t$ sem prever as milhares de cordas subsequentes.
+Para refinar o traçado sem violar a condição física de **fio contínuo e sem emendas**, o algoritmo executa passes de perturbação local em pares de cordas consecutivas:
 
-Minimizar diretamente `‖alvo − simulação‖²` com o modelo físico resolve os três pontos: cordas
-longas que atravessam áreas escuras são naturalmente preferidas, regiões já escuras "saturam", e o
-ganho negativo é um critério de parada objetivo.
+- Para cada pino intermediário $p_i$ na sequência $p_{i-1} \to p_i \to p_{i+1}$:
+  - Avalia candidatos vizinhos $p_i'$ que satisfaçam as regras de espaçamento `minPegGap` e contagem `maxChordRepeats`.
+  - Verifica o lado tangente físico de enrolamento do pino de modo que a chegada e a saída usem o mesmo lado (`toSide === fromSide`).
+  - Calcula a variação líquida de erro no canvas gerada ao desfazer $(p_{i-1} \to p_i, p_i \to p_{i+1})$ e aplicar $(p_{i-1} \to p_i', p_i' \to p_{i+1})$.
+  - Substituições que reduzem estritamente o erro global são aplicadas incrementalmente no canvas e na lista de passos.
+- A continuidade do fio é matematicamente invariante durante todo o processo.
 
-### Resolução da grade = distância de observação
+## 9. Calibração de carretéis e parâmetros físicos — [`calibration.ts`](../packages/core/src/calibration.ts)
 
-Como a cobertura é uma média de área, a grade de `S × S` px equivale a observar a obra com
-"pixels" de `D/S` mm. Em testes com retratos, `S = 400` (≈ 1,8 mm/px) preserva olhos, nariz e boca
-muito melhor que `S = 700` (≈ 1 mm/px): na grade fina, o erro é dominado por detalhes
-sub-milimétricos que 4 000 cordas não conseguem reproduzir, e as feições se perdem. Por isso o
-padrão é 400 px. Um modelo perceptual explícito (simular fino, comparar grosso) está no roadmap.
+- **Calibração de Cor de Carretel**: fotografa uma meada ou trecho de fio, descarta reflexos especulares e sombras profundas por corte de percentis (15% a 85%) e calcula a média aparada em luz linear, convertendo para hex sRGB e luminância.
+- **Calibração Física de Transmitância**: estima numericamente a espessura aparente `widthMm` e opacidade $\alpha$ analisando um patch tecido com número conhecido de passadas sobre fundo conhecido, através da lei física de transmitância $T = (1 - \alpha \cdot \text{cobertura})^N$.
 
-### Custo
-
-Com 200 pinos, 2 lados e grade de 400 px: ≈ 2 × 2 × 176 candidatos × ~500 amostras ≈ 350 mil
-avaliações de pixel por corda. No modo por camadas, cada passo avalia apenas o fio ativo (em vez de
-avaliar todos os 4 ou 5 fios concorrentemente), resultando em tecelagem **4 a 5 vezes mais rápida**
-que o modo guloso irrestrito multicolorido.
-
-## 7. Saídas — [`export.ts`](../packages/core/src/export.ts)
+## 10. Saídas — [`export.ts`](../packages/core/src/export.ts)
 
 - **Instruções** (`.txt`): numeradas a partir do pino 1, com sentido de contorno e cabeçalhos organizados por camada (`=== CAMADA X: Cor (amarrar no pino Y) ===`) quando tecidas por camadas.
 - **CSV**: passo, fio, pinos, lados, comprimentos e ganho.
 - **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos.
-- **JSON**: `WeaveResult` completo — reabrível no modo tecelagem do app web.
+- **JSON**: `WeaveResult` completo (com `metrics`, `threads`, `steps`) — reabrível no modo tecelagem do app web.
 
-## 8. Limitações conhecidas e próximos passos
+## 11. Próximos passos (v0.3 e v0.4)
 
-- Guloso não é ótimo global. Próximo passo: refinamento por remoção/troca de cordas
-  (como em Birsak et al., 2018) — ver [ROADMAP.md](ROADMAP.md).
-- A comparação é feita na resolução da grade; um modelo de distância de observação (desfoque
-  perceptual / comparação em resolução menor) deve melhorar o resultado visto de longe.
-- Largura aparente do fio, diâmetro do pino e cores dos fios são estimativas: devem ser
-  **calibrados** fotografando um tear real.
+- **v0.3**: Seleção automática de paleta personalizada ($k$ cores a partir da imagem) e modelo óptico de meio-tom.
+- **v0.4**: Teares retangulares/quadrados, posições arbitrárias de pinos via CSV e gabarito de furação 1:1 em SVG/PDF.
+- **Desempenho**: Cache de rasterização das cordas mais frequentes e paralelismo em Web Workers.

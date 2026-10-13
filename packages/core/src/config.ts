@@ -67,6 +67,9 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   maxChordRepeats: 1,
   stopWhenNoImprovement: true,
   colorStrategy: 'layered',
+  lengthPenalty: 0,
+  viewingDistanceM: 0,
+  refinePasses: 0,
   preprocess: {
     grayscale: true,
     contrast: 1,
@@ -75,6 +78,11 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
     invert: false,
     shadowLift: 0,
     edgeEmphasis: 0,
+    clahe: false,
+    claheClipLimit: 2,
+    claheGridSize: 8,
+    perceptualBlurMm: 0,
+    viewingDistanceM: 0,
   },
 };
 
@@ -147,6 +155,9 @@ export function resolveOptions(
   base: WeaveOptions = DEFAULT_OPTIONS,
 ): WeaveOptions {
   const merged = deepMerge(JSON.parse(JSON.stringify(base)) as WeaveOptions, overrides);
+  if (merged.viewingDistanceM !== undefined && overrides.preprocess?.viewingDistanceM === undefined) {
+    merged.preprocess.viewingDistanceM = merged.viewingDistanceM;
+  }
   validateOptions(merged);
   return merged;
 }
@@ -201,6 +212,30 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (o.preprocess.edgeEmphasis !== undefined && (!(o.preprocess.edgeEmphasis >= 0) || o.preprocess.edgeEmphasis > 1)) {
     errors.push('preprocess.edgeEmphasis deve estar em [0, 1]');
+  }
+  if (o.lengthPenalty !== undefined && (!(o.lengthPenalty >= 0) || o.lengthPenalty > 1)) {
+    errors.push('lengthPenalty deve estar em [0, 1]');
+  }
+  if (o.viewingDistanceM !== undefined && !(o.viewingDistanceM >= 0)) {
+    errors.push('viewingDistanceM deve ser >= 0');
+  }
+  if (o.refinePasses !== undefined && (!Number.isInteger(o.refinePasses) || o.refinePasses < 0)) {
+    errors.push('refinePasses deve ser inteiro >= 0');
+  }
+  if (o.preprocess.claheClipLimit !== undefined && !(o.preprocess.claheClipLimit > 0)) {
+    errors.push('preprocess.claheClipLimit deve ser > 0');
+  }
+  if (
+    o.preprocess.claheGridSize !== undefined &&
+    (!Number.isInteger(o.preprocess.claheGridSize) || o.preprocess.claheGridSize < 2 || o.preprocess.claheGridSize > 32)
+  ) {
+    errors.push('preprocess.claheGridSize deve ser inteiro em [2, 32]');
+  }
+  if (o.preprocess.perceptualBlurMm !== undefined && !(o.preprocess.perceptualBlurMm >= 0)) {
+    errors.push('preprocess.perceptualBlurMm deve ser >= 0');
+  }
+  if (o.preprocess.viewingDistanceM !== undefined && !(o.preprocess.viewingDistanceM >= 0)) {
+    errors.push('preprocess.viewingDistanceM deve ser >= 0');
   }
   if (errors.length > 0) throw new Error(`Configuração inválida:\n- ${errors.join('\n- ')}`);
 }

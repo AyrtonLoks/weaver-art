@@ -355,4 +355,69 @@ describe('exports', () => {
     const txt = toInstructions(res);
     expect(txt).not.toContain('=== CAMADA');
   });
+
+  it('favors shorter chords when lengthPenalty > 0', () => {
+    const img = discImage();
+    const resDefault = WeaveEngine.create(img, { ...small, maxLines: 30, lengthPenalty: 0 }).run();
+    const resPenalized = WeaveEngine.create(img, { ...small, maxLines: 30, lengthPenalty: 0.3 }).run();
+
+    expect(resDefault.steps.length).toBeGreaterThan(0);
+    expect(resPenalized.steps.length).toBeGreaterThan(0);
+
+    const avgLenDefault = resDefault.totalLengthMm / resDefault.steps.length;
+    const avgLenPenalized = resPenalized.totalLengthMm / resPenalized.steps.length;
+
+    expect(avgLenPenalized).toBeLessThanOrEqual(avgLenDefault);
+  });
+
+  it('prepares target with viewing distance retinal blur and CLAHE', () => {
+    const img = syntheticImage(64, 64, (x, y) => (x % 4 === 0 || y % 4 === 0 ? 0 : 255));
+    const targetNoBlur = prepareTarget(img, 64, { ...DEFAULT_OPTIONS.preprocess, grayscale: true }, 1);
+    const targetWithBlur = prepareTarget(
+      img,
+      64,
+      { ...DEFAULT_OPTIONS.preprocess, grayscale: true, viewingDistanceM: 5.0 },
+      1,
+      undefined,
+      100, // Small loom diameter (100mm) makes retinal blur visible on 64px grid
+    );
+    const targetWithClahe = prepareTarget(
+      img,
+      64,
+      { ...DEFAULT_OPTIONS.preprocess, grayscale: true, clahe: true, claheClipLimit: 2.0 },
+      1,
+    );
+
+    expect(targetNoBlur.data.length).toBe(64 * 64);
+    expect(targetWithBlur.data.length).toBe(64 * 64);
+    expect(targetWithClahe.data.length).toBe(64 * 64);
+    // Blurred image should have softened high frequencies
+    expect(targetWithBlur.data[32 * 64 + 32]).not.toBe(targetNoBlur.data[32 * 64 + 32]);
+  });
+
+  it('runs global refinement automatically when refinePasses > 0', () => {
+    const img = discImage();
+    const res = WeaveEngine.create(img, { ...small, maxLines: 25, refinePasses: 1 }).run();
+    expect(res.steps.length).toBe(25);
+    expect(res.metrics).toBeDefined();
+    expect(res.metrics?.rmse).toBeCloseTo(res.rmse, 6);
+  });
+
+  it('applies viewingDistanceM specified at root WeaveOptions to engine.target', () => {
+    const img = syntheticImage(64, 64, (x, y) => (x % 4 === 0 || y % 4 === 0 ? 0 : 255));
+    const engineNoBlur = WeaveEngine.create(img, {
+      ...small,
+      resolutionPx: 64,
+      loom: { diameterMm: 300, pegDiameterMm: 1 },
+      viewingDistanceM: 0,
+    });
+    const engineWithBlur = WeaveEngine.create(img, {
+      ...small,
+      resolutionPx: 64,
+      loom: { diameterMm: 300, pegDiameterMm: 1 },
+      viewingDistanceM: 5.0,
+    });
+
+    expect(engineWithBlur.target.data[32 * 64 + 32]).not.toBe(engineNoBlur.target.data[32 * 64 + 32]);
+  });
 });

@@ -50,6 +50,21 @@
               <label>Ø pino (mm) <input type="number" id="pegDiameter" min="0" max="10" step="0.1" /></label>
               <label>Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" /></label>
             </div>
+            <label class="button" style="text-align: center; margin-top: 0.25rem">
+              Calibrar cor de meada
+              <input type="file" id="calibrateFile" accept="image/*" hidden />
+            </label>
+            <div
+              id="calibrateOutput"
+              hidden
+              style="font-size: 0.8rem; color: var(--accent-2); display: flex; align-items: center; gap: 0.5rem"
+            >
+              <span
+                id="calibrateSwatch"
+                style="display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid #fff"
+              ></span>
+              <span id="calibrateText"></span>
+            </div>
           </fieldset>
 
           <fieldset>
@@ -67,6 +82,15 @@
               <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" /></label>
               <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" /></label>
               <label>Resolução (px) <input type="number" id="resolution" min="128" max="2048" step="50" /></label>
+            </div>
+            <label title="Prioriza cordas mais curtas para economizar fio. 0 = sem penalidade (padrão)"
+              >Penalidade comp. fio <output id="lengthPenalty-out">0.00</output>
+              <input type="range" id="lengthPenalty" min="0" max="0.5" step="0.01" value="0" />
+            </label>
+            <div class="grid2">
+              <label title="Passes de refinamento pós-guloso mantendo continuidade (0 = desativado)"
+                >Refinamento global <input type="number" id="refinePasses" min="0" max="5" step="1" value="0"
+              /></label>
             </div>
             <label class="check"
               ><input type="checkbox" id="stopImprovement" checked /> Parar se não houver melhoria</label
@@ -98,6 +122,17 @@
               >Foco em detalhes/feições <output id="edgeEmphasis-out"></output>
               <input type="range" id="edgeEmphasis" min="0" max="1" step="0.05" value="0" />
             </label>
+            <label title="Simula desfoque retiniano à distância configurada (Birsak et al., 2018). 0 = desativado"
+              >Distância de observação (m) <output id="viewingDistance-out">0.00</output>
+              <input type="range" id="viewingDistance" min="0" max="5" step="0.25" value="0" />
+            </label>
+            <label class="check"><input type="checkbox" id="clahe" /> Equalização local (CLAHE)</label>
+            <div id="clahe-controls" hidden>
+              <label
+                >Limite de corte CLAHE <output id="claheClip-out">2.00</output>
+                <input type="range" id="claheClip" min="1" max="8" step="0.5" value="2" />
+              </label>
+            </div>
             <label class="check"><input type="checkbox" id="invert" /> Inverter (fio claro em fundo escuro)</label>
           </fieldset>
 
@@ -132,6 +167,14 @@
             <div>
               <dt>RMSE</dt>
               <dd id="s-rmse">—</dd>
+            </div>
+            <div>
+              <dt>ΔE (CIELAB)</dt>
+              <dd id="s-deltaE">—</dd>
+            </div>
+            <div>
+              <dt>SSIM</dt>
+              <dd id="s-ssim">—</dd>
             </div>
             <div>
               <dt>Tempo</dt>

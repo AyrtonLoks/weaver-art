@@ -63,8 +63,14 @@ Ver a tabela “O que há de diferente” no [README](../README.md) e a discuss�
 - **Birsak, M., Rist, F., Wonka, P., Musialski, P.** _String Art: Towards Computational Fabrication
   of String Images._ Computer Graphics Forum (Proc. Eurographics 2018), 37(2):263–274.
   DOI [10.1111/cgf.13359](https://doi.org/10.1111/cgf.13359).
-  Formula string art como otimização discreta, compara em resolução reduzida (modelo de
-  percepção), trata os lados dos pinos e fabrica com braço robótico. Base para o roadmap de
-  refinamento global e modelo de distância de observação.
-- **IEC 61966-2-1** — espaço de cor sRGB (funções de transferência usadas em `color.ts`).
-- **ITU-R BT.709** — coeficientes de luminância.
+  Formula string art como otimização discreta, trata os lados tangentes dos pinos, fundamenta o
+  modelo de distância de observação e inspira o refinamento iterativo com conservação de continuidade física.
+- **Wang, Z., Bovik, A. C., Sheikh, H. R., & Simoncelli, E. P.** _Image quality assessment: from error visibility to structural similarity._ IEEE Transactions on Image Processing, 13(4):600–612, 2004.
+  DOI [10.1109/TIP.2003.819861](https://doi.org/10.1109/TIP.2003.819861).
+  Fundamentação matemática do SSIM implementado em `metrics.ts`.
+- **Zuiderveld, K.** _Contrast Limited Adaptive Histogram Equalization._ In: P. Heckbert (Ed.), Graphics Gems IV, Academic Press, pp. 474–485, 1994.
+  DOI [10.1016/B978-0-12-336156-1.50061-6](https://doi.org/10.1016/B978-0-12-336156-1.50061-6).
+  Fundamentação matemática do algoritmo CLAHE em grade e interpolação bilinear contínua em `clahe.ts`.
+- **CIE (1976) / ISO/CIE 11664-4** — Espaço de cor uniforme $L^_a^*b^*$ e cálculo da diferença euclidiana de cor $\Delta E\_{ab}^_$.
+- **IEC 61966-2-1** — Espaço de cor sRGB (funções de transferência usadas em `color.ts`).
+- **ITU-R BT.709** — Coeficientes de luminância para conversão fotométrica.

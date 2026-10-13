@@ -2,7 +2,9 @@ import { hexToLinear, isAchromatic, linearToSrgb8, luminance } from './color.js'
 import { computeThreadBudgets, resolveOptions } from './config.js';
 import { createLoom, pegDistance, tangentSegment, wrapAngle, type Loom, type Segment } from './geometry.js';
 import { prepareTarget, type TargetImage } from './image.js';
+import { calculateMetrics } from './metrics.js';
 import { ChordRasterizer } from './raster.js';
+import { refineWeave } from './refine.js';
 import type {
   DeepPartial,
   PegSide,
@@ -93,7 +95,11 @@ export class WeaveEngine {
       if (image.size !== this.size) throw new Error('TargetImage.size difere de resolutionPx');
       this.target = image;
     } else {
-      this.target = prepareTarget(image, this.size, options.preprocess, channels, importance);
+      const preprocess = {
+        ...options.preprocess,
+        viewingDistanceM: options.preprocess.viewingDistanceM || options.viewingDistanceM,
+      };
+      this.target = prepareTarget(image, this.size, preprocess, channels, importance, options.loom.diameterMm);
     }
     this.channels = this.target.channels;
     const C = this.channels;
@@ -338,7 +344,15 @@ export class WeaveEngine {
       this.runChunk(every);
       opts.onProgress?.(this);
     }
+    if (this.options.refinePasses && this.options.refinePasses > 0 && this.stopReason !== 'aborted') {
+      this.refine(this.options.refinePasses);
+    }
     return this.result();
+  }
+
+  /** Perform global refinement passes, preserving thread continuity. Returns improvements count. */
+  refine(passes = 1): number {
+    return refineWeave(this, passes);
   }
 
   /** Abort a running weave (keeps the chords laid so far). */
@@ -378,16 +392,117 @@ export class WeaveEngine {
       lengthMm: this.threads[i].lengthMm,
       lines: this.threads[i].lines,
     }));
+    const metrics = calculateMetrics(this.canvas, this.target, this.channels);
+    const rmse = metrics.rmse;
     return {
       version: 1,
       options: this.options,
       steps: [...this.steps],
       threads,
       totalLengthMm: this.totalLengthMm,
-      rmse: this.rmse(),
+      rmse,
+      metrics,
       stopReason: this.stopReason ?? 'aborted',
       durationMs: now() - this.startedAt,
     };
+  }
+
+  /** Helper for refinement: returns linear channel values of thread t. */
+  getThreadColorChannels(t: number): number[] {
+    const C = this.channels;
+    const out: number[] = [];
+    for (let c = 0; c < C; c++) {
+      out.push(this.threadColors[t * C + c]);
+    }
+    return out;
+  }
+
+  /** Helper for refinement: get count of times chord (from, to) was used. */
+  getChordUse(from: number, to: number): number {
+    const N = this.loom.pegs.length;
+    return this.chordUse[from * N + to];
+  }
+
+  /** Helper for refinement: increment chord use count. */
+  incrementChordUse(from: number, to: number): void {
+    const N = this.loom.pegs.length;
+    this.chordUse[from * N + to]++;
+    this.chordUse[to * N + from]++;
+  }
+
+  /** Helper for refinement: decrement chord use count. */
+  decrementChordUse(from: number, to: number): void {
+    const N = this.loom.pegs.length;
+    if (this.chordUse[from * N + to] > 0) this.chordUse[from * N + to]--;
+    if (this.chordUse[to * N + from] > 0) this.chordUse[to * N + from]--;
+  }
+
+  /** Helper for refinement: rebuild canvas and thread physical stats from steps sequence. */
+  rebuildCanvasFromSteps(): void {
+    const C = this.channels;
+    const toChannels = (hex: string): number[] => {
+      const rgb = hexToLinear(hex);
+      return C === 1 ? [luminance(rgb)] : rgb;
+    };
+    const bg = toChannels(this.options.background);
+    for (let p = 0; p < this.size * this.size; p++) {
+      for (let c = 0; c < C; c++) this.canvas[p * C + c] = bg[c];
+    }
+
+    this.threads.forEach((t, i) => {
+      t.peg = this.options.threads[i].startPeg;
+      t.side = null;
+      t.dirX = 0;
+      t.dirY = 0;
+      t.hasDir = false;
+      t.lengthMm = 0;
+      t.lines = 0;
+      t.pegs = [this.options.threads[i].startPeg];
+    });
+
+    const scale = this.pxPerMm;
+    const { pegs, pegRadiusMm } = this.loom;
+
+    for (let i = 0; i < this.steps.length; i++) {
+      const step = this.steps[i];
+      const t = step.thread;
+      const state = this.threads[t];
+      const a = pegs[step.from];
+      const b = pegs[step.to];
+      const seg = tangentSegment(a, step.fromSide, b, step.toSide, pegRadiusMm);
+
+      const count = this.raster.rasterize(
+        seg.x0 * scale,
+        seg.y0 * scale,
+        seg.x1 * scale,
+        seg.y1 * scale,
+        this.threadWidthPx[t],
+      );
+      const { idx, cov } = this.raster;
+      const op = this.threadOpacity[t];
+      for (let k = 0; k < count; k++) {
+        const c = cov[k] * op;
+        const q = idx[k] * C;
+        for (let ch = 0; ch < C; ch++) {
+          const K = this.threadColors[t * C + ch];
+          this.canvas[q + ch] += c * (K - this.canvas[q + ch]);
+        }
+      }
+
+      const wrapMm = state.hasDir
+        ? this.loom.pegRadiusMm * wrapAngle(state.dirX, state.dirY, seg.dx, seg.dy, step.fromSide)
+        : 0;
+      step.segmentMm = seg.length;
+      step.wrapMm = wrapMm;
+      state.lengthMm += wrapMm + seg.length;
+      state.peg = step.to;
+      state.side = step.toSide;
+      state.dirX = seg.dx;
+      state.dirY = seg.dy;
+      state.hasDir = true;
+      state.lines++;
+      state.pegs.push(step.to);
+    }
   }
 
   /** Simulation as 8-bit sRGB RGBA (alpha = loom mask). */
@@ -422,7 +537,11 @@ export class WeaveEngine {
         for (const toSide of sides) {
           const seg = tangentSegment(a, fromSide, b, toSide, pegRadiusMm);
           const count = this.raster.rasterize(seg.x0 * scale, seg.y0 * scale, seg.x1 * scale, seg.y1 * scale, widthPx);
-          const gain = this.score(t, count);
+          let gain = this.score(t, count);
+          if (this.options.lengthPenalty && this.options.lengthPenalty > 0 && gain > 0) {
+            const normLen = seg.length / this.options.loom.diameterMm;
+            gain *= Math.max(0, 1 - this.options.lengthPenalty * normLen);
+          }
           if (!best || gain > best.gain) {
             best = { thread: t, to, fromSide, toSide, gain, seg };
           }

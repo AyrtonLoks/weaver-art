@@ -52,6 +52,9 @@ async function start(msg: Extract<ToWorker, { type: 'start' }>): Promise<void> {
     }
     await tick();
   }
+  if (msg.options.refinePasses && msg.options.refinePasses > 0 && e.stopReason !== 'aborted') {
+    e.refine(msg.options.refinePasses);
+  }
   const rgba = snapshot(e);
   post({ type: 'done', size: e.size, rgba, result: e.result() }, [rgba]);
   engine = null;

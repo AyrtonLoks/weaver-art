@@ -27,7 +27,25 @@ Se um padrão parar antes da meta ou apresentar cores desbalanceadas:
 2. Verificar `stepsPerThread`: inspecione `result.threads[i].lines`.
 3. Se fios claros terminarem cedo por `gain <= 0`, verifique se o rollover para o fio preto está ativo.
 
-### 3. Pipeline de Verificação Padrão
+### 3. Calibração Real de Fios e Cores
+
+Para calibrar fios com base em amostras reais de carretel ou trechos tecidos:
+
+1. **Amostra de carretel / meada**: fotografe o fio sob luz neutra e use `calibrateThreadColor()` ou o CLI:
+   ```bash
+   node packages/cli/dist/index.js calibrate-color amostra.jpg
+   ```
+2. **Transmitância e opacidade física**: use `calibrateThreadPhysical()` com a foto de um patch tecido e o número conhecido de cordas.
+
+### 4. Avaliação de Fidelidade com Métricas Perceptuais
+
+Ao ajustar parâmetros de tecelagem (resolução, CLAHE, penalidade de comprimento):
+
+1. Avalie o erro de cor perceptivo **$\Delta E$ (CIELAB)** (ideal < 2.3 a 3.5 em retratos complexos).
+2. Avalie o índice de similaridade estrutural **SSIM** (valores > 0.70 a 0.85 indicam excelente preservação facial).
+3. Teste o impacto de `lengthPenalty` (0.1 a 0.25) no consumo total em metros sem degradar o SSIM.
+
+### 5. Pipeline de Verificação Padrão
 
 Sempre execute:
 

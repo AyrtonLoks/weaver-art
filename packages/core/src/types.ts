@@ -63,6 +63,16 @@ export interface PreprocessOptions {
   shadowLift?: number;
   /** Edge emphasis: Sobel gradient saliency boost on facial features/edges [0, 1]. 0 = unchanged. */
   edgeEmphasis?: number;
+  /** Contrast-limited adaptive histogram equalization (CLAHE). */
+  clahe?: boolean;
+  /** CLAHE clip limit factor (typical: 2.0). */
+  claheClipLimit?: number;
+  /** CLAHE tile grid size (typical: 8 for 8x8). */
+  claheGridSize?: number;
+  /** Retinal perceptual blur in mm (simulating human eye visual acuity). */
+  perceptualBlurMm?: number;
+  /** Viewing distance in meters (Birsak et al., 2018). Converted to perceptual blur. */
+  viewingDistanceM?: number;
   /** Optional square crop in source pixels. Defaults to the centred largest square. */
   crop?: { x: number; y: number; size: number };
 }
@@ -90,6 +100,12 @@ export interface WeaveOptions {
   colorStrategy?: ColorStrategy;
   /** Line budgets or proportions per thread (e.g. [0.2, 0.2, 0.2, 0.1, 0.3]). */
   threadLineBudgets?: number[];
+  /** Penalty factor for chord length L_norm = seg.length / diameterMm [0, 1]. Default: 0. */
+  lengthPenalty?: number;
+  /** Viewing distance in meters (Birsak et al., 2018). Default: 0 (disabled). */
+  viewingDistanceM?: number;
+  /** Global refinement passes (post-greedy optimization preserving thread continuity). Default: 0. */
+  refinePasses?: number;
   /** Image preparation. */
   preprocess: PreprocessOptions;
 }
@@ -139,6 +155,13 @@ export interface ThreadSummary {
   lines: number;
 }
 
+/** Perceptual metrics comparing simulation and target. */
+export interface WeaveMetrics {
+  rmse: number;
+  deltaELab: number;
+  ssim: number;
+}
+
 /** Final result of a weaving run. */
 export interface WeaveResult {
   version: 1;
@@ -148,6 +171,8 @@ export interface WeaveResult {
   totalLengthMm: number;
   /** Root-mean-square error between simulation and target, in linear light, inside the loom. */
   rmse: number;
+  /** Perceptual metrics (CIELAB ΔE and SSIM, v0.2+). */
+  metrics?: WeaveMetrics;
   /** Why the run stopped. */
   stopReason: StopReason;
   durationMs: number;

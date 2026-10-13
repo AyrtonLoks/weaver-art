@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import sharp from 'sharp';
 import {
+  calibrateThreadColor,
   PRESETS,
   resolveOptions,
   toCSV,
@@ -21,6 +22,7 @@ weaver-art — converte uma imagem em um padrão de tecelagem em tear circular.
 
 Uso:
   weaver-art <imagem> [opções]
+  weaver-art calibrate-color <imagem>
 
 Opções:
   -p, --preset <nome>        vrellis-mono (padrão) | vrellis-color | cmyk
@@ -32,12 +34,17 @@ Opções:
       --gap <n>              distância mínima entre pinos consecutivos (padrão 12)
       --repeats <n>          usos máximos de um mesmo par de pinos (padrão 1)
       --thread-width <mm>    largura aparente do fio (padrão 0.2)
-      --resolution <px>      grade de simulação = distância de observação (padrão 400)
+      --resolution <px>      grade de simulação (padrão 400)
+      --length-penalty <x>   penalidade por comprimento de fio 0..1 (padrão 0)
+      --viewing-distance <m> distância de observação em metros para desfoque retiniano (padrão 0)
+      --refine <n>           passes de refinamento pós-guloso mantendo continuidade (padrão 0)
       --contrast <x>         contraste (padrão 1)
       --brightness <x>       brilho, -1..1 (padrão 0)
       --gamma <x>            gama (padrão 1)
       --shadow-lift <x>      elevação de sombras 0..0.3 (padrão 0)
       --edge-emphasis <x>    realce de bordas/feições 0..1 (padrão 0)
+      --clahe                ativa equalização local de contraste adaptativa (CLAHE)
+      --clahe-clip <x>       limite de corte do CLAHE (padrão 2.0)
       --invert               inverte a imagem (fio claro em fundo escuro)
       --background <#hex>    cor do fundo (padrão #ffffff)
       --importance <imagem>  mapa de importância (branco = importante)
@@ -92,11 +99,16 @@ async function main(): Promise<void> {
       repeats: { type: 'string' },
       'thread-width': { type: 'string' },
       resolution: { type: 'string' },
+      'length-penalty': { type: 'string' },
+      'viewing-distance': { type: 'string' },
+      refine: { type: 'string' },
       contrast: { type: 'string' },
       brightness: { type: 'string' },
       gamma: { type: 'string' },
       'shadow-lift': { type: 'string' },
       'edge-emphasis': { type: 'string' },
+      clahe: { type: 'boolean' },
+      'clahe-clip': { type: 'string' },
       invert: { type: 'boolean' },
       background: { type: 'string' },
       importance: { type: 'string' },
@@ -111,6 +123,20 @@ async function main(): Promise<void> {
   if (values.help || positionals.length === 0) {
     process.stdout.write(HELP);
     process.exit(values.help ? 0 : 1);
+  }
+
+  if (positionals[0] === 'calibrate-color') {
+    const calFile = positionals[1];
+    if (!calFile) {
+      process.stderr.write('Erro: especifique a imagem para calibração. Uso: weaver-art calibrate-color <imagem>\n');
+      process.exit(1);
+    }
+    const calImg = await loadRaster(calFile);
+    const calRes = calibrateThreadColor(calImg);
+    process.stdout.write(
+      `✔ Cor calibrada: ${calRes.hex} (RGB linear: [${calRes.linearRgb.map((v) => v.toFixed(4)).join(', ')}]) · ${calRes.sampleCount} pixels amostrados\n`,
+    );
+    return;
   }
 
   const input = positionals[0];
@@ -138,6 +164,9 @@ async function main(): Promise<void> {
       background: values.background,
       stopWhenNoImprovement: values.stop,
       colorStrategy: values['color-strategy'] as WeaveOptions['colorStrategy'],
+      lengthPenalty: num(values['length-penalty'], 'length-penalty'),
+      viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),
+      refinePasses: num(values.refine, 'refine'),
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
       preprocess: {
         contrast: num(values.contrast, 'contrast'),
@@ -145,6 +174,9 @@ async function main(): Promise<void> {
         gamma: num(values.gamma, 'gamma'),
         shadowLift: num(values['shadow-lift'], 'shadow-lift'),
         edgeEmphasis: num(values['edge-emphasis'], 'edge-emphasis'),
+        clahe: values.clahe,
+        claheClipLimit: num(values['clahe-clip'], 'clahe-clip'),
+        viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),
         invert: values.invert,
       },
     },
@@ -190,9 +222,11 @@ async function main(): Promise<void> {
     'no-candidates': 'sem cordas disponíveis',
     aborted: 'interrompido',
   };
+  const deltaEStr = result.metrics?.deltaELab !== undefined ? ` · ΔE ${result.metrics.deltaELab.toFixed(2)}` : '';
+  const ssimStr = result.metrics?.ssim !== undefined ? ` · SSIM ${result.metrics.ssim.toFixed(3)}` : '';
   process.stderr.write(
     [
-      `✔ ${result.steps.length} linhas · ${(result.totalLengthMm / 1000).toFixed(2)} m de fio · RMSE ${result.rmse.toFixed(4)}`,
+      `✔ ${result.steps.length} linhas · ${(result.totalLengthMm / 1000).toFixed(2)} m de fio · RMSE ${result.rmse.toFixed(4)}${deltaEStr}${ssimStr}`,
       `  parada: ${reasons[result.stopReason]} · ${(result.durationMs / 1000).toFixed(1)} s`,
       `  arquivos: ${base}.weave.{json,txt,csv,svg,png}`,
       '',
