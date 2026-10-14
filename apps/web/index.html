@@ -34,12 +34,54 @@
             <span id="drop-label">Arraste uma foto aqui<br /><small>ou clique para escolher</small></span>
           </label>
 
+          <fieldset id="framingFieldset">
+            <legend>Enquadramento & Guia Facial</legend>
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem">
+              <button
+                type="button"
+                id="btnSmartFrame"
+                class="button primary"
+                style="flex: 1"
+                title="Ajusta o zoom e posição para o rosto preencher 80% do círculo (estilo Petros Vrellis)"
+              >
+                Enquadrar Rosto (80%)
+              </button>
+              <button
+                type="button"
+                id="btnResetCrop"
+                class="button"
+                title="Restaura enquadramento quadrado centralizado"
+              >
+                Reset
+              </button>
+            </div>
+            <div class="grid2">
+              <label
+                >Zoom <output id="cropZoom-out">1.00x</output>
+                <input type="range" id="cropZoom" min="0.8" max="2.5" step="0.05" value="1.0" />
+              </label>
+              <label
+                >Pan Y (Vertical) <output id="cropPanY-out">0%</output>
+                <input type="range" id="cropPanY" min="-40" max="40" step="1" value="0" />
+              </label>
+            </div>
+            <label
+              >Pan X (Horizontal) <output id="cropPanX-out">0%</output>
+              <input type="range" id="cropPanX" min="-40" max="40" step="1" value="0" />
+            </label>
+            <p class="hint" style="font-size: 0.78rem; color: var(--muted); margin-top: 0.25rem">
+              Para fidelidade Petros Vrellis, enquadre a cabeça preenchendo 75% a 85% do círculo.
+            </p>
+          </fieldset>
+
           <fieldset>
             <legend>Tear</legend>
             <label
               >Preset
               <select id="preset">
-                <option value="vrellis-mono">Vrellis · monocromático (preto)</option>
+                <option value="portrait-mono">Retrato Vrellis · monocromático (alta fidelidade)</option>
+                <option value="portrait-cmyk">Retrato Vrellis · CMYK (pele humana calibrada)</option>
+                <option value="vrellis-mono">Vrellis · monocromático clássico (preto)</option>
                 <option value="vrellis-color">Vrellis · 5 cores (amarelo, magenta, azul, verde, preto)</option>
                 <option value="cmyk">CMYK · clássico (ciano, magenta, amarelo, preto)</option>
                 <option value="custom" disabled id="opt-custom">Personalizado (extraído da imagem)</option>
@@ -235,6 +277,18 @@
               >Penalidade comp. fio <output id="lengthPenalty-out">0.00</output>
               <input type="range" id="lengthPenalty" min="0" max="0.5" step="0.01" value="0" />
             </label>
+            <label
+              title="Aplica deságio em cordas consecutivas na mesma direção (<15°) para quebrar a venda horizontal sobre os olhos"
+            >
+              Dispersão angular <output id="angularDiversity-out">0.00</output>
+              <input type="range" id="angularDiversity" min="0" max="0.8" step="0.05" value="0" />
+            </label>
+            <label
+              title="Atenua cordas muito próximas ao centro do tear para eliminar moiré caústico de diamante no nariz"
+            >
+              Damping central (mm) <output id="centerDamp-out">0</output>
+              <input type="range" id="centerDamp" min="0" max="60" step="1" value="0" />
+            </label>
             <div class="grid2">
               <label title="Passes de refinamento pós-guloso mantendo continuidade (0 = desativado)"
                 >Refinamento global <input type="number" id="refinePasses" min="0" max="5" step="1" value="0"
@@ -309,6 +363,10 @@
             <label
               >Foco em detalhes/feições <output id="edgeEmphasis-out"></output>
               <input type="range" id="edgeEmphasis" min="0" max="1" step="0.05" value="0" />
+            </label>
+            <label title="Penaliza o sobre-escurecimento irreversível de tons claros e pele humana">
+              Proteção de realces <output id="highlightProtection-out">0.00</output>
+              <input type="range" id="highlightProtection" min="0" max="5" step="0.1" value="0" />
             </label>
             <label title="Simula desfoque retiniano à distância configurada (Birsak et al., 2018). 0 = desativado"
               >Distância de observação (m) <output id="viewingDistance-out">0.00</output>

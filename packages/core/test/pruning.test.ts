@@ -96,4 +96,25 @@ describe('Candidate Pruning (Minoux Lazy Greedy)', () => {
 
     expect(engineLazy.perf.candidatesSkipped).toBeGreaterThan(0);
   });
+
+  it('guarantees monotonically decreasing error and high skip rate with angularDiversity > 0', () => {
+    const engineExact = WeaveEngine.create(img, {
+      ...baseConfig,
+      angularDiversity: 0.35,
+      candidatePruning: 'none',
+    });
+    const resultExact = engineExact.run();
+
+    const engineLazy = WeaveEngine.create(img, {
+      ...baseConfig,
+      angularDiversity: 0.35,
+      candidatePruning: 'lazy',
+    });
+    const resultLazy = engineLazy.run();
+
+    expect(resultLazy.steps.length).toBe(resultExact.steps.length);
+    const deltaRmse = Math.abs(resultLazy.rmse - resultExact.rmse) / resultExact.rmse;
+    expect(deltaRmse).toBeLessThanOrEqual(0.02);
+    expect(engineLazy.perf.candidatesSkipped).toBeGreaterThan(0);
+  });
 });

@@ -19,6 +19,9 @@ export interface EvaluatorSetup {
   maxChordRepeats: number;
   lengthPenalty?: number;
   rasterCacheBytes: number;
+  highlightProtection?: number;
+  angularDiversity?: number;
+  centerDampRadiusMm?: number;
 }
 
 export interface EvaluatorBuffers {
@@ -33,6 +36,8 @@ export interface CandidateQuery {
   thread: number;
   fromPeg: number;
   fromSide: PegSide | null;
+  lastDirX?: number;
+  lastDirY?: number;
 }
 
 export interface CandidateResult {
@@ -159,7 +164,13 @@ export class JsEvaluator implements CandidateEvaluator {
       }
       const b = pegs[to];
       for (const fSide of fromSides) {
-        const queryWithSide: CandidateQuery = { thread, fromPeg, fromSide: fSide };
+        const queryWithSide: CandidateQuery = {
+          thread,
+          fromPeg,
+          fromSide: fSide,
+          lastDirX: q.lastDirX,
+          lastDirY: q.lastDirY,
+        };
         for (const tSide of sides) {
           const gain = this.scoreChord(queryWithSide, to, tSide);
           if (!best || gain > best.gain) {
@@ -185,6 +196,7 @@ export class JsEvaluator implements CandidateEvaluator {
     const { idx, cov, count } = samples;
     const { canvas, target, weight, halftone } = this.buffers;
     const op = this.setup.threadOpacity[thread];
+    const hp = this.setup.highlightProtection ?? 0;
     let gain = 0;
 
     if (this.setup.channels === 1) {
@@ -196,7 +208,12 @@ export class JsEvaluator implements CandidateEvaluator {
         const R = canvas[p];
         const d = cov[i] * op * (K - R);
         const err = halftone ? halftone[p] : target[p] - R;
-        gain += w * d * (2 * err - d);
+        let term = d * (2 * err - d);
+        if (hp > 0 && term < 0 && target[p] > 0.35) {
+          const norm = (target[p] - 0.35) / 0.65;
+          term *= 1 + hp * (norm * norm);
+        }
+        gain += w * term;
       }
     } else {
       const o = thread * 3;
@@ -208,23 +225,80 @@ export class JsEvaluator implements CandidateEvaluator {
         const w = weight[p];
         if (w === 0) continue;
         const c = cov[i] * op;
-        const q = p * 3;
-        const R0 = canvas[q];
-        const R1 = canvas[q + 1];
-        const R2 = canvas[q + 2];
+        const px3 = p * 3;
+        const R0 = canvas[px3];
+        const R1 = canvas[px3 + 1];
+        const R2 = canvas[px3 + 2];
         const d0 = c * (K0 - R0);
         const d1 = c * (K1 - R1);
         const d2 = c * (K2 - R2);
-        const err0 = halftone ? halftone[q] : target[q] - R0;
-        const err1 = halftone ? halftone[q + 1] : target[q + 1] - R1;
-        const err2 = halftone ? halftone[q + 2] : target[q + 2] - R2;
-        gain += w * (d0 * (2 * err0 - d0) + d1 * (2 * err1 - d1) + d2 * (2 * err2 - d2));
+        const err0 = halftone ? halftone[px3] : target[px3] - R0;
+        const err1 = halftone ? halftone[px3 + 1] : target[px3 + 1] - R1;
+        const err2 = halftone ? halftone[px3 + 2] : target[px3 + 2] - R2;
+        let t0 = d0 * (2 * err0 - d0);
+        let t1 = d1 * (2 * err1 - d1);
+        let t2 = d2 * (2 * err2 - d2);
+        if (hp > 0) {
+          if (t0 < 0 && target[px3] > 0.35) {
+            const n0 = (target[px3] - 0.35) / 0.65;
+            t0 *= 1 + hp * (n0 * n0);
+          }
+          if (t1 < 0 && target[px3 + 1] > 0.35) {
+            const n1 = (target[px3 + 1] - 0.35) / 0.65;
+            t1 *= 1 + hp * (n1 * n1);
+          }
+          if (t2 < 0 && target[px3 + 2] > 0.35) {
+            const n2 = (target[px3 + 2] - 0.35) / 0.65;
+            t2 *= 1 + hp * (n2 * n2);
+          }
+        }
+        gain += w * (t0 + t1 + t2);
       }
     }
 
     if (this.setup.lengthPenalty && this.setup.lengthPenalty > 0 && gain > 0) {
       const normLen = canonical.length / this.setup.extentMm;
       gain *= Math.max(0, 1 - this.setup.lengthPenalty * normLen);
+    }
+
+    if (this.setup.centerDampRadiusMm && this.setup.centerDampRadiusMm > 0 && gain > 0) {
+      const a = this.loom.pegs[fromPeg];
+      const b = this.loom.pegs[to];
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      const dist = Math.hypot(vx, vy);
+      if (dist > 1e-4) {
+        const cx = this.setup.extentMm / 2;
+        const cy = this.setup.extentMm / 2;
+        const dCenter = Math.abs(vy * (cx - a.x) - vx * (cy - a.y)) / dist;
+        const rDamp = this.setup.centerDampRadiusMm;
+        if (dCenter < rDamp) {
+          const u = dCenter / rDamp;
+          gain *= 0.75 + 0.25 * u;
+        }
+      }
+    }
+
+    if (
+      this.setup.angularDiversity &&
+      this.setup.angularDiversity > 0 &&
+      gain > 0 &&
+      q.lastDirX !== undefined &&
+      q.lastDirY !== undefined
+    ) {
+      const a = this.loom.pegs[fromPeg];
+      const b = this.loom.pegs[to];
+      const thetaCand = Math.atan2(b.y - a.y, b.x - a.x);
+      const thetaPrev = Math.atan2(q.lastDirY, q.lastDirX);
+      let diff = Math.abs(thetaCand - thetaPrev);
+      while (diff > Math.PI) diff -= Math.PI;
+      diff = Math.abs(diff);
+      if (diff > Math.PI / 2) diff = Math.PI - diff;
+      const threshold = (15 * Math.PI) / 180;
+      if (diff < threshold) {
+        const penalty = this.setup.angularDiversity * (1 - diff / threshold);
+        gain *= Math.max(0, 1 - penalty);
+      }
     }
 
     return gain;

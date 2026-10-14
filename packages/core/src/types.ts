@@ -108,6 +108,16 @@ export interface PreprocessOptions {
   viewingDistanceM?: number;
   /** Optional square crop in source pixels. Defaults to the centred largest square. */
   crop?: { x: number; y: number; size: number };
+  /** Proteção assimétrica de realces: penaliza sobre-escurecimento de tons claros [0, 10]. Padrão: 0 (2.0 a 4.0 em retratos). */
+  highlightProtection?: number;
+  /** Repulsão angular consecutiva: deságio para cordas paralelas consecutivas [0, 1]. Padrão: 0 (0.3 a 0.5 em retratos). */
+  angularDiversity?: number;
+  /** Raio em mm ao redor do centro do tear com amortecimento de densidade caústica. Padrão: 0 (20 a 30 mm em círculos). */
+  centerDampRadiusMm?: number;
+  /** Raio do filtro de unsharp mask para reforçar microdetalhes (óculos, cílios). */
+  sharpenSigma?: number;
+  /** Feathering suave da borda inferior para atenuar o tronco e roupas escuras [0, 0.5]. */
+  torsoFeathering?: number | boolean;
 }
 
 /** Strategy for choosing thread colours during multi-thread weaving. */
@@ -147,6 +157,12 @@ export interface WeaveOptions {
   rasterCacheMb?: number;
   /** 'none' (exato) | 'lazy' (stale gains como limite superior; aproximado em cor/halftone). Padrão: 'none'. */
   candidatePruning?: 'none' | 'lazy';
+  /** Proteção assimétrica de realces: atalho de nível superior para preprocess.highlightProtection. */
+  highlightProtection?: number;
+  /** Repulsão angular consecutiva: atalho de nível superior para preprocess.angularDiversity. */
+  angularDiversity?: number;
+  /** Amortecimento de singularidade central: atalho de nível superior para preprocess.centerDampRadiusMm. */
+  centerDampRadiusMm?: number;
   /** Image preparation. */
   preprocess: PreprocessOptions;
 }

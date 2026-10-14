@@ -92,6 +92,14 @@ export class StaleGainTable {
         ? (evaluator as { recordSkipped: (c: number) => void }).recordSkipped.bind(evaluator)
         : undefined;
 
+    const angularDiversity =
+      'setup' in evaluator &&
+      evaluator.setup &&
+      typeof (evaluator.setup as { angularDiversity?: number }).angularDiversity === 'number'
+        ? ((evaluator.setup as { angularDiversity?: number }).angularDiversity ?? 0)
+        : 0;
+    const invDiscount = angularDiversity > 0 && angularDiversity < 1 ? 1 / (1 - angularDiversity) : 1;
+
     let candCount = 0;
     const maxPossible = N * fromSides.length * sides.length;
     this.ensureCapacity(maxPossible);
@@ -138,8 +146,12 @@ export class StaleGainTable {
       let best: CandidateResult | null = null;
       for (let i = 0; i < candCount; i++) {
         const cand = this.candidates[i];
-        const exactGain = evaluator.scoreChord({ thread, fromPeg, fromSide: cand.fSide }, cand.to, cand.tSide);
-        this.set(thread, cand.key, exactGain);
+        const exactGain = evaluator.scoreChord(
+          { thread, fromPeg, fromSide: cand.fSide, lastDirX: q.lastDirX, lastDirY: q.lastDirY },
+          cand.to,
+          cand.tSide,
+        );
+        this.set(thread, cand.key, exactGain > 0 && invDiscount > 1 ? exactGain * invDiscount : exactGain);
         if (!best || exactGain > best.gain) {
           const seg = tangentSegment(a, cand.fSide, pegs[cand.to], cand.tSide, pegRadiusMm);
           best = { thread, to: cand.to, fromSide: cand.fSide, toSide: cand.tSide, gain: exactGain, seg };
@@ -174,8 +186,12 @@ export class StaleGainTable {
       }
 
       const cand = this.candidates[idx];
-      const exactGain = evaluator.scoreChord({ thread, fromPeg, fromSide: cand.fSide }, cand.to, cand.tSide);
-      this.set(thread, cand.key, exactGain);
+      const exactGain = evaluator.scoreChord(
+        { thread, fromPeg, fromSide: cand.fSide, lastDirX: q.lastDirX, lastDirY: q.lastDirY },
+        cand.to,
+        cand.tSide,
+      );
+      this.set(thread, cand.key, exactGain > 0 && invDiscount > 1 ? exactGain * invDiscount : exactGain);
 
       if (best === null || exactGain > bestGain) {
         bestGain = exactGain;

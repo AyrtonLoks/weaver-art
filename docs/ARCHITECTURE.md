@@ -10,19 +10,20 @@ flowchart LR
     decode["sharp: decodifica + EXIF"]
   end
   subgraph web["@weaver-art/web (navegador)"]
-    bitmap["createImageBitmap + canvas"] --> worker["Web Worker"]
+    framing["Smart Face Framing (zoom/pan circular 80%)"]
+    bitmap["createImageBitmap + canvas"] --> framing --> worker["Web Worker"]
   end
   photo --> bitmap
   decode --> core
   worker --> core
   pegsCsv --> geo
   subgraph core["@weaver-art/core (TypeScript puro)"]
-    prep["image.ts + clahe.ts: alvo em luz linear"] --> engine["engine.ts: otimização gulosa + meio-tom"]
+    prep["image.ts + clahe.ts: unsharp mask + saliência multiescala + feathering"] --> engine["engine.ts: otimização gulosa + meio-tom"]
     geo["geometry.ts: formas de tear, convex hull, pinos, tangentes, arcos"] --> engine
     ras["raster.ts: cobertura do fio"] --> engine
     cache["chord-cache.ts: cache canônico LRU"] --> engine
     prune["pruning.ts: poda gulosa preguiçosa (Minoux)"] --> engine
-    eval["evaluator.ts: JsEvaluator / CandidateEvaluator"] --> engine
+    eval["evaluator.ts: highlightProtection + angularDiversity + centerDamp"] --> engine
     par["parallel.ts: ParallelEvaluator (SharedArrayBuffer + Atomics)"] --> engine
     engine --> refine["refine.ts: refinamento global"]
     engine --> metrics["metrics.ts: CIELAB ΔE e SSIM"]

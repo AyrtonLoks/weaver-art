@@ -184,4 +184,66 @@ describe('ParallelEvaluator', () => {
       expect(resPar.steps[i].gain).toBeCloseTo(resSeq.steps[i].gain, 8);
     }
   });
+
+  it('produces bit-identical steps with fidelity options (angularDiversity, highlightProtection, centerDamp)', async () => {
+    const img = makeSyntheticImage(64);
+    const options: Partial<WeaveOptions> = {
+      maxLines: 20,
+      resolutionPx: 64,
+      highlightProtection: 2.5,
+      angularDiversity: 0.35,
+      centerDampRadiusMm: 20,
+      loom: { shape: 'circle', diameterMm: 200, pegCount: 40, startAngleDeg: 0, pegDiameterMm: 2 },
+    };
+
+    const engineSeq = WeaveEngine.create(img, options);
+    const resSeq = engineSeq.run();
+
+    const workerCount = 2;
+    const sharedCtrl = createSharedControl(workerCount);
+    let workerHandle: Worker | null = null;
+
+    const enginePar = await WeaveEngine.createAsync(img, options, undefined, {
+      evaluator: (setup: EvaluatorSetup) => {
+        const { buffers, descriptor: buffersDesc } = createSharedBuffers(setup, false);
+
+        workerHandle = new Worker(new URL('./worker-helper.mjs', import.meta.url));
+        workerHandle.postMessage({
+          type: 'start',
+          workerIndex: 1,
+          workerCount,
+          controlDesc: sharedCtrl.descriptor,
+          setup,
+          buffersDesc,
+        });
+
+        const parEval = new ParallelEvaluator({
+          workerCount,
+          setup,
+          buffers,
+          sharedControl: sharedCtrl,
+          onDispose: () => {
+            if (workerHandle) {
+              workerHandle.terminate();
+              workerHandle = null;
+            }
+          },
+        });
+        parEval.waitUntilReady();
+        return parEval;
+      },
+    });
+
+    const resPar = enginePar.run();
+    enginePar.dispose();
+
+    expect(resPar.steps.length).toBe(resSeq.steps.length);
+    for (let i = 0; i < resSeq.steps.length; i++) {
+      expect(resPar.steps[i].from).toBe(resSeq.steps[i].from);
+      expect(resPar.steps[i].to).toBe(resSeq.steps[i].to);
+      expect(resPar.steps[i].fromSide).toBe(resSeq.steps[i].fromSide);
+      expect(resPar.steps[i].toSide).toBe(resSeq.steps[i].toSide);
+      expect(resPar.steps[i].gain).toBeCloseTo(resSeq.steps[i].gain, 8);
+    }
+  });
 });

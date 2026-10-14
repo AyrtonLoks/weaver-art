@@ -96,3 +96,22 @@ Sempre execute:
 npm run check
 npm run build
 ```
+
+### 9. Otimização e Ajuste Fino para Retratos (Fidelidade Petros Vrellis)
+
+Para atingir a qualidade expressiva e reconhecimento facial característicos da obra de Petros Vrellis:
+
+1. **Enquadramento e Zoom Facial**:
+   - Assegure que a cabeça e as feições ocupem entre 75% e 85% do diâmetro útil do tear circular.
+   - Posicione os olhos no terço superior da área circular (evite colocar o centro do nariz exatamente no centro geométrico).
+   - Na Web UI, use o botão "Enquadrar Rosto (80%)" ou ajuste Zoom ~ 1.25 a 1.40 com pan vertical.
+
+2. **Uso dos Presets Calibrados**:
+   - `portrait-mono`: monocromático de alta fidelidade com resolução de 500 px, 4.000 cordas, repetições = 2, proteção de realce 2.5, diversidade angular 0.35, atenuação central de 25 mm, CLAHE ativado, unsharp mask $\sigma = 1.5$ e saliência multiescala $0.8$.
+   - `portrait-cmyk`: retrato em 4 camadas sequenciais (Amarelo 30%, Magenta 5%, Ciano 25%, Preto 40%) com 6.000 cordas e rollover dinâmico para o preto final.
+
+3. **Ajuste de Parâmetros de Fidelidade Facial**:
+   - **`highlightProtection` (2.0 a 4.0)**: Se bochechas, testa ou ponta do nariz ficarem sujas de linhas escuras, aumente o fator para 3.0 ou 3.5.
+   - **`angularDiversity` (0.3 a 0.5)**: Se notar feixes de cordas paralelas causando estrias artificiais ou efeito de grade sobre a face, aumente para 0.4 ou 0.45.
+   - **`centerDampRadiusMm` (20 a 35 mm)**: Se houver acúmulo excessivo e mancha escura no centro do tear, configure o raio para amortecer suavemente os raios centrais.
+   - **`torsoFeathering` (0.2 a 0.3)** e **`shadowLift` (0.1 a 0.15)**: Em fotos com roupas pretas ou terno, ative ambos para suavizar o tronco e impedir que o corpo roube linhas das feições.

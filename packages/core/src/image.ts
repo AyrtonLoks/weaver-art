@@ -395,6 +395,13 @@ export function prepareTarget(
     }
   }
 
+  // High-frequency micro-contrast reinforcement (Unsharp Mask)
+  if (opts.sharpenSigma && opts.sharpenSigma > 0) {
+    const sigmaPx = opts.sharpenSigma;
+    const sharpened = computeUnsharpMask(data, size, size, channels, sigmaPx, 1.0);
+    data.set(sharpened);
+  }
+
   // Retinal blur model for observation distance (Birsak et al., 2018)
   const blurMm =
     opts.perceptualBlurMm && opts.perceptualBlurMm > 0
@@ -432,12 +439,73 @@ export function prepareTarget(
           ? linearToSrgb(data[p])
           : linearToSrgb(LUMA_R * data[p * 3] + LUMA_G * data[p * 3 + 1] + LUMA_B * data[p * 3 + 2]);
     }
-    const edges = computeSobelEdgeMagnitude(luma, size);
-    const factor = opts.edgeEmphasis * 3;
+    const saliency = computeMultiscaleSaliency(luma, size, 0.7);
+    const factor = opts.edgeEmphasis * 3.5;
     for (let p = 0; p < n; p++) {
-      weight[p] *= 1 + factor * edges[p];
+      weight[p] *= 1 + factor * saliency[p];
+    }
+  }
+
+  const featherVal = typeof opts.torsoFeathering === 'number' ? opts.torsoFeathering : opts.torsoFeathering ? 0.25 : 0;
+
+  if (featherVal > 0) {
+    const fraction = Math.min(0.5, Math.max(0, featherVal));
+    const startY = Math.floor(size * (1 - fraction));
+    const span = size - startY;
+    if (span > 0) {
+      for (let y = startY; y < size; y++) {
+        const t = (y - startY) / span;
+        const fade = 0.5 * (1 + Math.cos(Math.PI * t));
+        const row = y * size;
+        for (let x = 0; x < size; x++) {
+          weight[row + x] *= fade;
+        }
+      }
     }
   }
 
   return { size, channels, data, mask, weight };
+}
+
+/**
+ * Unsharp masking filter: I_sharp = clamp(I + amount * (I - I_blur), 0, 1).
+ * Reinforces micro-contrast and fine details such as glasses frames, eyelashes, and pupils.
+ */
+export function computeUnsharpMask(
+  data: Float32Array,
+  width: number,
+  height: number,
+  channels: 1 | 3,
+  sigmaPx: number,
+  amount = 1.0,
+): Float32Array {
+  if (sigmaPx <= 0 || amount <= 0) return new Float32Array(data);
+  const blurred = gaussianBlur(data, width, height, channels, sigmaPx);
+  const total = width * height * channels;
+  const out = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    const v = data[i] + amount * (data[i] - blurred[i]);
+    out[i] = Math.min(1, Math.max(0, v));
+  }
+  return out;
+}
+
+/**
+ * Multiscale non-linear edge saliency map (multiscale gradient + power gamma).
+ * Accentuates delicate facial features such as glasses, pupils, eyebrows, and contours
+ * while compressing broad boundaries to prevent edge saturation.
+ */
+export function computeMultiscaleSaliency(luma: Float32Array, size: number, gamma = 0.7): Float32Array {
+  const e1 = computeSobelEdgeMagnitude(luma, size);
+  // Second scale: slight blur (sigma = 1.5px) captures broader structural context
+  const blurred = gaussianBlur(luma, size, size, 1, 1.5);
+  const e2 = computeSobelEdgeMagnitude(blurred, size);
+
+  const n = size * size;
+  const saliency = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const combined = 0.7 * e1[i] + 0.3 * e2[i];
+    saliency[i] = Math.pow(Math.min(1, Math.max(0, combined)), gamma);
+  }
+  return saliency;
 }

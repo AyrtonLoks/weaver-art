@@ -103,12 +103,16 @@ Para fio preto (`K = 0`) sobre fundo branco isso é `R ← R·(1 − α c)`, ou 
 3. **Equalização local adaptativa (CLAHE)** (`clahe.ts`): divide a imagem em uma grade de $8 \times 8$ blocos, constrói histogramas locais de 256 bins e redistribui uniformemente os pixels que ultrapassam o limiar de corte (`claheClipLimit`, padrão 2.0). Em imagens coloridas, o CLAHE opera sobre a luminância perceptual e escala canais proporcionalmente, mantendo integridade de cor e tons de pele. As funções CDF são interpoladas bilinearmente por pixel, eliminando artefatos de borda.
 4. Ajustes perceptuais (em sRGB): contraste, brilho, gama, inversão.
 5. **Elevação de sombras** (`shadowLift`): eleva suavemente o piso de pretos profundos, impedindo que roupas pretas ou fundos noturnos absorvam desproporcionalmente as cordas e causem borrões sobre o rosto.
-6. **Modelo de distância de observação e desfoque retiniano** (`viewingDistanceM`): baseado na acuidade visual humana de ~1 minuto de arco (Birsak et al., 2018), aplica um filtro gaussiano separável $O(N)$ sobre o alvo para que detalhes imperceptíveis à distância física configurada não desviem o algoritmo de tons médios e feições principais.
-7. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
-8. **Máscara do tear antisserrilhada (`loomMask`)**:
-   - Em teares circulares: máscara analítica circular $m = \text{clamp}(R - d + 0.5)$.
-   - Em teares retangulares e poligonais convexos: cálculo contínuo de distância com sinal a todas as arestas do polígono orientadas em sentido horário, $m = \text{clamp}(\min_e d_e + 0.5)$, garantindo antisserrilhamento e bordas nítidas sem denteamento.
-9. **Realce de bordas e detalhes** (`edgeEmphasis`): filtro Sobel aplicado sobre a luminância para gerar um mapa de saliência automático, multiplicando os pesos `weight` nos olhos, nariz, boca, óculos e contornos faciais. Opcionalmente combinado com um mapa de importância externo.
+6. **Atenuação suave de tronco** (`torsoFeathering`): aplica uma janela cosseno contínua na fração inferior do tear ($y > (1 - f) \cdot S$), desvanecendo os pesos $w_p$ em direção à borda inferior. Previne o "efeito poço negro" onde roupas ou moletons escuros dominam a função objetivo gulosa e atraem centenas de cordas espúrias que cruzam o pescoço e a face clara (_streak bleed-through_).
+7. **Reforço de microcontraste via Unsharp Mask** (`computeUnsharpMask`, `sharpenSigma`): reforça detalhes finos de alta frequência (armações de óculos, pupilas, cílios) através de $I_{\text{sharp}} = \text{clamp}(I + \beta \cdot (I - G_\sigma * I), 0, 1)$, garantindo que estruturas de 1 a 2 pixels tenham contraste nítido antes da quantização.
+8. **Modelo de distância de observação e desfoque retiniano** (`viewingDistanceM`): baseado na acuidade visual humana de ~1 minuto de arco (Birsak et al., 2018), aplica um filtro gaussiano separável $O(N)$ sobre o alvo para que detalhes imperceptíveis à distância física configurada não desviem o algoritmo de tons médios e feições principais.
+9. Luminância (Rec. 709) quando todos os fios e o fundo são acromáticos — 1 canal em vez de 3.
+10. **Máscara do tear antisserrilhada (`loomMask`)**:
+    - Em teares circulares: máscara analítica circular $m = \text{clamp}(R - d + 0.5)$.
+    - Em teares retangulares e poligonais convexos: cálculo contínuo de distância com sinal a todas as arestas do polígono orientadas em sentido horário, $m = \text{clamp}(\min_e d_e + 0.5)$, garantindo antisserrilhamento e bordas nítidas sem denteamento.
+11. **Saliência facial multiescala não-linear** (`computeMultiscaleSaliency`, `edgeEmphasis`): combina gradientes Sobel em escala direta ($E_1$) e escala suavizada ($E_2$), aplicando compressão não-linear via expoente fracionário $\gamma = 0.7$:
+    $$S_{\text{saliency}} = (0.7 \cdot E_1 + 0.3 \cdot E_2)^\gamma$$
+    Como $\gamma < 1$, o peso relativo de arestas sutis (hastes finas de óculos, pupilas e sobrancelhas) é amplificado em até $3\times$ a $5\times$ em relação a bordas grosseiras de alto contraste, orientando o algoritmo guloso a detalhar a face. Opcionalmente combinado com mapa de importância externo.
 
 ## 6. Otimização e estratégias de cor — [`engine.ts`](../packages/core/src/engine.ts)
 
@@ -120,7 +124,53 @@ A cada passo, para uma corda admissível a partir do pino atual (distância circ
 ganho_base = Σₚ wₚ · [ (tₚ − Rₚ)² − (tₚ − R'ₚ)² ]  =  Σₚ wₚ · δₚ · (2(tₚ − Rₚ) − δₚ),   δₚ = α cₚ (K − Rₚ)
 ```
 
-### Penalidade opcional por comprimento de fio (`lengthPenalty`)
+### 6.1 Proteção Assimétrica de Realces (`highlightProtection`)
+
+Na física real da tecelagem, a deposição de fio é uma **operação estritamente irreversível**: uma vez que uma corda preta corta uma bochecha clara ou testa iluminada, ela jamais poderá ser apagada por passadas subsequentes. Na formulação simétrica tradicional de erro quadrático $L_2$, o ganho de escurecer um pixel com alvo preto ($target \approx 0.05$) é substancialmente maior do que a penalidade de escurecer levemente um pixel claro ($target \approx 0.85$). Isso fazia com que o algoritmo guloso disparasse cordas cortando o rosto para atingir sombras periféricas (_streak bleed-through_).
+
+Para modelar a irreversibilidade física, o Weaver Art implementa uma penalização assimétrica progressiva para qualquer pixel onde o ganho seja negativo ($\Delta E_p < 0$, sobre-escurecendo além do alvo) e o tom alvo pertença à faixa de tons médios ou realces ($t_p > 0.35$):
+
+$$\text{termo}_p = \delta_p \cdot (2(t_p - R_p) - \delta_p)$$
+$$\text{se } \text{termo}_p < 0 \text{ e } t_p > 0.35: \quad \text{termo}_p \leftarrow \text{termo}_p \cdot \left[ 1 + \text{highlightProtection} \cdot \left(\frac{t_p - 0.35}{0.65}\right)^2 \right]$$
+
+Com $\text{highlightProtection} \in [2.0, 4.0]$ (padrão 2.5 nos presets de retrato), a penalidade sobre tons claros atinge até $5\times$, blindando maçãs do rosto, nariz, testa e queixo contra cordas intrusivas.
+
+### 6.2 Repulsão Angular Consecutiva (`angularDiversity`)
+
+Elementos visuais horizontais contínuos (como a armação superior de óculos, sobrancelhas e linha dos olhos) atuam como fortes atratores lineares na formulação gulosa. Sem dispersão angular, o motor dispara dezenas de cordas quase perfeitamente paralelas consecutivas entre pinos opostos (ex: pino 50 e pino 150), formando uma faixa densa ou "venda escura" sobre os olhos, destruindo o vão entre os aros e as pupilas.
+
+A repulsão angular monitora o vetor diretor da corda anterior $\vec{d}_{\text{prev}}$ e aplica um deságio proporcional sobre qualquer corda candidata cuja orientação de reta não orientada difira por menos de $15^\circ$ ($|\Delta \theta| < 15^\circ$ modulo $\pi$):
+
+$$\Delta \theta = \min(|\theta_{\text{cand}} - \theta_{\text{prev}}|, \pi - |\theta_{\text{cand}} - \theta_{\text{prev}}|)$$
+$$\text{se } \Delta \theta < \frac{\pi}{12} \text{ e } \text{ganho} > 0: \quad \text{ganho} \leftarrow \text{ganho} \cdot \left[ 1 - \text{angularDiversity} \cdot \left(1 - \frac{\Delta \theta}{\pi / 12}\right) \right]$$
+
+Com $\text{angularDiversity} \in [0.3, 0.5]$ (padrão 0.35 em retratos), o algoritmo alterna continuamente as direções de tecelagem, cruzando os olhos em múltiplos ângulos e revelando as pupilas, a ponte nasal e os aros dos óculos com fidelidade artística.
+
+### 6.3 Amortecimento de Singularidade Central (`centerDampRadiusMm`)
+
+A transformada de Radon analítica sobre uma grade circular com distribuição uniforme de cordas exibe uma singularidade intrínseca de densidade do tipo $1/r$ no centro geométrico do círculo $(c_x, c_y) = (D/2, D/2)$, resultante da intersecção obrigatória de todos os diâmetros no mesmo ponto. Em retratos centralizados, essa singularidade produz um padrão de moiré caústico em formato de diamante/estrela bem na ponta do nariz.
+
+Para equalizar a densidade volumétrica, o avaliador calcula a distância euclidiana da reta infinita da corda ao centro geométrico:
+
+$$d_{\text{center}} = \frac{|(y_2 - y_1)(c_x - x_1) - (x_2 - x_1)(c_y - y_1)|}{\sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}}$$
+$$\text{se } d_{\text{center}} < r_{\text{damp}} \text{ e } \text{ganho} > 0: \quad \text{ganho} \leftarrow \text{ganho} \cdot \left[ 0.75 + 0.25 \cdot \frac{d_{\text{center}}}{r_{\text{damp}}} \right]$$
+
+Com $r_{\text{damp}} \in [20, 30]\text{ mm}$ (padrão 25 mm em retratos), cordas que cruzam o centro sofrem um deságio suave de até 25%, eliminando o artefato de diamante sem comprometer a sombra tridimensional do septo e das narinas.
+
+### 6.4 Presets Calibrados para Retratos de Alta Fidelidade
+
+1. **`portrait-mono` (Monocromático Alta Fidelidade)**:
+   - Resolução: 500 px (permite amostragem nítida de armações de 1.5 mm e pupilas de 3 mm);
+   - 4.000 cordas com `maxChordRepeats: 2`;
+   - Pré-processamento com CLAHE ativado, `edgeEmphasis: 0.8`, `shadowLift: 0.12`, `torsoFeathering: 0.25`;
+   - Avaliador Vrellis com `highlightProtection: 2.5`, `angularDiversity: 0.35` e `centerDampRadiusMm: 25 mm`.
+
+2. **`portrait-cmyk` (CMYK Pele Humana Calibrada)**:
+   - Resolução: 500 px, 6.000 cordas em camadas sequenciais (`layered`);
+   - **Cotas calibradas para pele humana**: $[0.30\text{ Amarelo}, 0.05\text{ Ciano}, 0.25\text{ Magenta}, 0.40\text{ Preto}]$.
+   - _Fundamentação cromática_: A pele caucasiana e miscigenada na síntese subtrativa é composta quase exclusivamente por Amarelo e Magenta, com Preto para sombras e contornos. O uso da cota genérica de 20% Ciano forçava 1.200 linhas de azul/verde sobre o rosto, tornando a pele esverdeada ou lamacenta. Reduzir o Ciano para 5% e direcionar o saldo para Amarelo (30%) e Preto (40%) preserva o calor e o realismo facial.
+
+### 6.5 Penalidade opcional por comprimento de fio (`lengthPenalty`)
 
 Para aproximar a tecelagem dos 1–2 km reportados por Petros Vrellis para 3.000–4.000 cordas e controlar a tensão mecânica, cordas muito longas podem sofrer um deságio proporcional ao diâmetro do tear:
 
@@ -131,12 +181,13 @@ ganho_efetivo = ganho_base · (1 − λ · L_norm)
 
 Com $\lambda = 0$ (padrão de fábrica), o ganho puro é preservado. Com $\lambda \in [0.1, 0.25]$, cordas mais curtas com ganho comparável são priorizadas, gerando economia expressiva de metros de fio com fidelidade visual equivalente.
 
-### Estratégias de tecelagem multicolorida (`ColorStrategy`)
+### 6.6 Estratégias de tecelagem multicolorida (`ColorStrategy`)
 
 1. **Camadas sequenciais (`layered` — padrão para cores)**:
    - Os fios são tecidos em passes independentes e contínuos, seguindo a ordem subtrativa física:
+     - **Preset Retrato CMYK**: Amarelo (30%) $\rightarrow$ Ciano (5%) $\rightarrow$ Magenta (25%) $\rightarrow$ **Preto por último (40%)**.
      - **Preset Vrellis (5 fios)**: Amarelo (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ Azul (20%) $\rightarrow$ Verde (10%) $\rightarrow$ **Preto por último (30%)**.
-     - **Preset CMYK (4 fios)**: Amarelo (20%) $\rightarrow$ Ciano (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ **Preto por último (40%)**.
+     - **Preset CMYK Clássico (4 fios)**: Amarelo (20%) $\rightarrow$ Ciano (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ **Preto por último (40%)**.
    - As cores formam a base cromática luminosa primeiro; o preto entra no final para assentar as sombras profundas e contornos finos.
    - Fisicamente, o tecelão trabalha com um único carretel por vez até concluir a camada, eliminando o emaranhado de fios.
    - Se uma camada inicial esgotar ganhos antes de atingir sua cota, o motor realiza **rollover** automático do saldo de linhas para o preto final, garantindo o atingimento da meta global de linhas.

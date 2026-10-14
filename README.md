@@ -65,7 +65,9 @@ npm run dev              # estúdio web em http://localhost:5173
 
 ```bash
 npm run build
-npm run weave -- foto.jpg                                                    # preset Vrellis monocromático
+npm run weave -- foto.jpg                                                    # preset monocromático padrão
+npm run weave -- foto.jpg --preset portrait-mono                             # preset Petros Vrellis para retratos (alta fidelidade)
+npm run weave -- foto.jpg --preset portrait-cmyk                             # preset CMYK calibrado para pele humana (4 camadas)
 npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2            # preset CMYK em camadas (10.000 cordas)
 npm run weave -- foto.jpg --auto-palette 4 --halftone --lines 6000           # paleta automática da foto + meio-tom óptico
 npm run weave -- foto.jpg --accel wasm --pruning lazy                        # aceleração máxima com Rust SIMD + poda lazy
@@ -104,17 +106,28 @@ Arquivos gerados em `./output/`:
 ### Estúdio web
 
 1. Arraste uma foto (retratos funcionam melhor — como na série de Vrellis baseada em El Greco).
-2. Configure a geometria do tear: **Circular**, **Quadrado**, **Retangular** ou importe um **CSV de pinos**.
-3. Baixe antecipadamente o **Gabarito de furação** (PDF multi-folhas em escala real 1:1 com marcas de registro e régua de conferência, ou SVG) e o **CSV de pinos** para fabricar sua moldura física.
-4. Ajuste algoritmo e tom (incluindo **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
-5. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
-6. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
-7. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)**, **SSIM** e a tabela detalhada de **estimativa de carretéis**.
-8. Exporte arquivos completos (incluindo **G-code** para robôs de tecelagem), ou abra o **Modo tecelagem**:
+2. **Enquadre o rosto**: clique no botão **Enquadrar Rosto (80%)** ou use os seletores de Zoom e Deslocamento X/Y com pré-visualização instantânea na máscara circular do tear.
+3. Configure a geometria do tear: **Circular**, **Quadrado**, **Retangular** ou importe um **CSV de pinos**.
+4. Baixe antecipadamente o **Gabarito de furação** (PDF multi-folhas em escala real 1:1 com marcas de registro e régua de conferência, ou SVG) e o **CSV de pinos** para fabricar sua moldura física.
+5. Ajuste algoritmo e tom (incluindo **Proteção de realces**, **Diversidade angular**, **Atenuação central**, **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
+6. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
+7. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
+8. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)**, **SSIM** e a tabela detalhada de **estimativa de carretéis**.
+9. Exporte arquivos completos (incluindo **G-code** para robôs de tecelagem), ou abra o **Modo tecelagem**:
    - O próximo pino aparece em destaque com o sentido correto de contorno;
    - O número pode ser **ditado por voz** (pt-BR);
    - Acompanhe o **tempo restante estimado** dinamicamente;
    - **Sincronize com outro dispositivo sem servidor**: copie o código compacto (`WA1-...`), compartilhe o link direto (`#progress=...`) ou baixe o arquivo de retomada.
+
+## Presets Disponíveis
+
+| Preset          | Fios              | Resolução | Cordas        | Destaques                                                                                                                                              |
+| --------------- | ----------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `portrait-mono` | 1 (Preto)         | 500 px    | 4.000 (rep=2) | **Recomendado para retratos P&B**: proteção de realce, diversidade angular, atenuação central, unsharp mask e saliência multiescala.                   |
+| `portrait-cmyk` | 4 (Y, C, M, K)    | 500 px    | 6.000 (rep=2) | **Recomendado para retratos coloridos**: 4 camadas sequenciais com cotas calibradas para tons de pele (30% Y, 5% M, 25% C, 40% K) e rollover dinâmico. |
+| `vrellis-mono`  | 1 (Preto)         | 400 px    | 4.000 (rep=1) | Reprodução histórica do setup clássico de Petros Vrellis.                                                                                              |
+| `vrellis-color` | 5 (Y, M, B, G, K) | 400 px    | 5.000 (rep=1) | Paleta de 5 cores em camadas do trabalho colorido de Vrellis.                                                                                          |
+| `cmyk`          | 4 (Y, C, M, K)    | 400 px    | 8.000 (rep=2) | Síntese subtrativa CMYK balanceada genérica.                                                                                                           |
 
 ## Parâmetros padrão (preset `vrellis-mono`)
 
@@ -137,9 +150,10 @@ Arquivos gerados em `./output/`:
 
 > [!TIP]
 >
+> - **Retratos de Alta Fidelidade (Padrão Petros Vrellis)**: utilize `--preset portrait-mono` (ou `portrait-cmyk`). Enquadre a face de modo que a cabeça ocupe entre 75% e 85% do círculo. A **Proteção de realces** (`--highlight-protection 2.5`) impede que cordas cruzem áreas iluminadas (testa, bochechas, nariz), a **Diversidade angular** (`--angular-diversity 0.35`) quebra artefatos lineares estriados paralelos e a **Atenuação cáustica central** (`--center-damp 25`) elimina manchas indesejadas no centro da face.
 > - **Aceleração Máxima e Desempenho**: utilize `--accel wasm --pruning lazy` para combinar o kernel Rust SIMD e a poda lazy de candidatos. Em computadores multi-core com imagens em alta resolução ($\ge 600$ px), utilize `--accel parallel --threads 4` para dividir a avaliação entre trabalhadores via memória compartilhada.
 > - **Economia de fio e tensão mecânica**: utilize **Penalidade comp. fio** (`--length-penalty 0.15` a `0.25`) para priorizar cordas mais eficientes e aproximar a metragem total aos 1–2 km reportados por Petros Vrellis.
-> - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
+> - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) ou atenuação de tronco (`--torso-feathering 0.25`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
 > - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
 > - **Iluminação irregular e retratos**: ative **CLAHE** (`--clahe --clahe-clip 2.0`) para equalizar contraste local adaptativo sem estourar ruído.
 > - **Paleta personalizada da foto**: extraia $k$ cores dominantes da imagem (`--auto-palette <k>`) com amostragem restrita à máscara do tear, ordenação decrescente por luminância e cota reservada de 35%–40% para a âncora escura final.

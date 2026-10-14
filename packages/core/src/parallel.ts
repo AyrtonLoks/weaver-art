@@ -24,6 +24,7 @@ export const CONTROL_DONE_COUNT = 5;
 export const CONTROL_WORKER_COUNT = 6;
 export const CONTROL_HELPER_COUNT = 7;
 export const CONTROL_READY_COUNT = 8;
+export const CONTROL_QUERY_HAS_LAST_DIR = 9;
 
 export interface SharedBuffersDescriptor {
   canvasSab: SharedArrayBuffer;
@@ -136,11 +137,14 @@ export class ParallelEvaluator implements CandidateEvaluator {
   private readonly onDispose?: () => void;
   private isDisposed = false;
 
+  private readonly controlFloat: Float32Array;
+
   constructor(options: ParallelEvaluatorOptions) {
     this.setup = options.setup;
     this.buffers = options.buffers;
     this.workerCount = Math.max(1, options.workerCount);
     this.sharedControl = options.sharedControl;
+    this.controlFloat = new Float32Array(options.sharedControl.descriptor.controlSab);
     this.onDispose = options.onDispose;
 
     const N = this.setup.pegX.length;
@@ -197,6 +201,13 @@ export class ParallelEvaluator implements CandidateEvaluator {
     Atomics.store(control, CONTROL_QUERY_THREAD, q.thread);
     Atomics.store(control, CONTROL_QUERY_FROM_PEG, q.fromPeg);
     Atomics.store(control, CONTROL_QUERY_FROM_SIDE, q.fromSide === null ? 0 : q.fromSide);
+    if (q.lastDirX !== undefined && q.lastDirY !== undefined) {
+      this.controlFloat[10] = q.lastDirX;
+      this.controlFloat[11] = q.lastDirY;
+      Atomics.store(control, CONTROL_QUERY_HAS_LAST_DIR, 1);
+    } else {
+      Atomics.store(control, CONTROL_QUERY_HAS_LAST_DIR, 0);
+    }
     Atomics.store(control, CONTROL_COMMAND, CMD_EVALUATE);
     Atomics.store(control, CONTROL_DONE_COUNT, 0);
 
@@ -291,6 +302,7 @@ export function runHelperLoop(
   buffersDesc: SharedBuffersDescriptor,
 ): void {
   const { control, resultsGain, resultsMeta } = viewSharedControl(controlDesc, workerCount);
+  const controlFloat = new Float32Array(controlDesc.controlSab);
   const buffers = viewSharedBuffers(buffersDesc);
 
   const N = setup.pegX.length;
@@ -329,8 +341,11 @@ export function runHelperLoop(
       const fromPeg = Atomics.load(control, CONTROL_QUERY_FROM_PEG);
       const rawSide = Atomics.load(control, CONTROL_QUERY_FROM_SIDE);
       const fromSide = rawSide === 0 ? null : (rawSide as PegSide);
+      const hasLastDir = Atomics.load(control, CONTROL_QUERY_HAS_LAST_DIR) === 1;
+      const lastDirX = hasLastDir ? controlFloat[10] : undefined;
+      const lastDirY = hasLastDir ? controlFloat[11] : undefined;
 
-      const q: CandidateQuery = { thread, fromPeg, fromSide };
+      const q: CandidateQuery = { thread, fromPeg, fromSide, lastDirX, lastDirY };
       const best = evaluator.bestForThreadSlice(q, startTo, endTo);
 
       if (best) {

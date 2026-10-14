@@ -163,6 +163,9 @@ export class WeaveEngine {
       maxChordRepeats: options.maxChordRepeats,
       lengthPenalty: options.lengthPenalty,
       rasterCacheBytes,
+      highlightProtection: options.preprocess.highlightProtection ?? options.highlightProtection ?? 0,
+      angularDiversity: options.preprocess.angularDiversity ?? options.angularDiversity ?? 0,
+      centerDampRadiusMm: options.preprocess.centerDampRadiusMm ?? options.centerDampRadiusMm ?? 0,
     };
 
     if (extra?.evaluator) {
@@ -301,6 +304,9 @@ export class WeaveEngine {
         maxChordRepeats: options.maxChordRepeats,
         lengthPenalty: options.lengthPenalty,
         rasterCacheBytes,
+        highlightProtection: options.preprocess.highlightProtection ?? options.highlightProtection ?? 0,
+        angularDiversity: options.preprocess.angularDiversity ?? options.angularDiversity ?? 0,
+        centerDampRadiusMm: options.preprocess.centerDampRadiusMm ?? options.centerDampRadiusMm ?? 0,
       };
       const resolvedEval = await Promise.resolve(extra.evaluator(setup));
       return new WeaveEngine(image, options, importance, { evaluator: resolvedEval });
@@ -784,13 +790,15 @@ export class WeaveEngine {
 
   private findBestForThread(t: number): Candidate | null {
     const state = this.threads[t];
+    const query: CandidateQuery = {
+      thread: t,
+      fromPeg: state.peg,
+      fromSide: state.side,
+      lastDirX: state.hasDir ? state.dirX : undefined,
+      lastDirY: state.hasDir ? state.dirY : undefined,
+    };
     if (this.pruningTable) {
       const forceFullScan = this.steps.length % 256 === 0;
-      const query: CandidateQuery = {
-        thread: t,
-        fromPeg: state.peg,
-        fromSide: state.side,
-      };
       return this.pruningTable.findBestLazy(
         query,
         this.evaluator,
@@ -802,11 +810,7 @@ export class WeaveEngine {
         forceFullScan,
       );
     }
-    return this.evaluator.bestForThread({
-      thread: t,
-      fromPeg: state.peg,
-      fromSide: state.side,
-    });
+    return this.evaluator.bestForThread(query);
   }
 
   private findBestAllThreads(): Candidate | null {

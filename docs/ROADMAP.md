@@ -48,7 +48,19 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ **Paralelismo multi-worker com memória compartilhada (`ParallelEvaluator`)**: avaliação concorrente de candidatos dividida entre múltiplos Web Workers e threads Node (`worker_threads`) via `SharedArrayBuffer` e sincronização sem lock por barreira `Atomics`, com desempate determinístico reproduzindo passos idênticos à execução sequencial.
 - 💡 **WebGPU**: mantido como ideia conceitual para exploração futura; o ganho de computação massiva em GPU atualmente é atenuado pela latência de sincronização síncrona exigida pelo algoritmo guloso estrito a cada corda em grades $\le 1600$ px.
 
-## Próximas ideias (v0.6+)
+## v0.6 — Fidelidade Facial e Retratos Petros Vrellis (concluído)
+
+- ✅ **Proteção assimétrica de realces (`highlightProtection`)**: penalização quadrática progressiva para prevenir sobre-escurecimento de zonas claras da pele ($T > 0.35$), preservando a luminosidade de bochechas, testa e nariz.
+- ✅ **Diversidade angular e repulsão direcional (`angularDiversity`)**: penalização de feixes de cordas com orientação quase paralela ($|\Delta\theta| < 15^\circ$) à corda anterior, eliminando artefatos de estrias ou varreduras fibrosas sobre a face.
+- ✅ **Atenuação cáustica central (`centerDampRadiusMm`)**: atenuação suave com função cosseno quadrática para cordas que passam próximas ao centro geométrico do tear, prevenindo acúmulo excessivo e manchas centrais indesejadas.
+- ✅ **Nitidez por unsharp mask e saliência multiescala**: realce de micro-contrastes faciais com máscara de nitidez e saliência de Sobel em múltiplas escalas com compressão não-linear ($edges^\gamma$) para destacar olhos, nariz, lábios e silhueta.
+- ✅ **Transição suave de tronco/fundo (`torsoFeathering`)**: atenuação ponderada da densidade nas bordas inferiores para manter o foco óptico estritamente na fisionomia.
+- ✅ **Presets calibrados de retrato**:
+  - `portrait-mono`: monocromático de alta fidelidade com 3.500 cordas, 200 pinos, repetições = 2, resolução 500 px, proteção de realce e diversidade angular.
+  - `portrait-cmyk`: retrato em 4 camadas sequenciais (7.000 cordas) com cotas cromáticas calibradas para tons de pele humana (30% Amarelo, 5% Magenta, 25% Ciano e 40% Preto) com rollover dinâmico.
+- ✅ **Enquadramento circular interativo (Web UI)**: botão de 1 clique "Enquadrar Rosto (80%)", controles de zoom e deslocamento (pan X/Y) com pré-visualização em tempo real do alvo rasterizado dentro da máscara circular do tear.
+
+## Próximas ideias (v0.7+)
 
 - 💡 Poda de candidatos baseada em limiares de luminância local do alvo
 - 💡 Exportação de instruções em áudio MP3 pré-renderizado por camada

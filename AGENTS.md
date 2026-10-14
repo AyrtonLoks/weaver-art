@@ -18,9 +18,14 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
 - **Atingimento de Metas de Linhas e Repetições**:
   - Um tear circular com 200 pinos possui apenas ~16.500 pares de pinos possíveis, dos quais apenas ~7.500 cruzam a figura.
   - Para metas altas ($\ge 5.000$ cordas, ex: 10.000 cordas), configure `maxChordRepeats >= 2` ou `3`. Se `maxChordRepeats = 1`, o motor ficará sem cordas úteis com ganho positivo e parará prematuramente.
-- **Fidelidade de Retratos e Prevenção do "Buraco Negro"**:
-  - Em retratos com roupas ou fundos pretos, sempre use **`shadowLift`** ($0.10$ a $0.15$) para evitar que o tronco consuma milhares de linhas e suje o rosto com retas transversais.
-  - Use **`edgeEmphasis`** ($0.40$ a $0.60$) com mapa de saliência Sobel para forçar a concentração de cordas nas feições finas (olhos, óculos, nariz, boca e silhueta).
+- **Fidelidade de Retratos e Prevenção do "Buraco Negro" (Padrão Petros Vrellis)**:
+  - **Enquadramento e Escala Facial**: A cabeça/feições devem ocupar entre 75% e 85% do diâmetro útil do tear circular (olhos posicionados no terço superior). Retratos com enquadramento aberto/distante resultam em feições borradas ou irreconhecíveis.
+  - **Resolução de Simulação**: Para retratos, use resolução de grade $\ge 500$ px (padrão de `portrait-mono` e `portrait-cmyk`) para amostragem fiel de micro-feições (íris, pálpebras, narinas e lábios).
+  - **Proteção Assimétrica de Realces (`highlightProtection`)**: Configure entre $2.0$ e $4.0$. Aplica penalização progressiva contra o sobre-escurecimento de áreas de alta luminosidade ($T > 0.35$), garantindo que bochechas, testa e nariz permaneçam limpos de cordas errantes.
+  - **Diversidade Angular e Repulsão Direcional (`angularDiversity`)**: Configure entre $0.30$ e $0.50$. Penaliza cordas com inclinação angular quase idêntica à corda anterior ($|\Delta\theta| < 15^\circ$), quebrando artefatos de estrias paralelas e varreduras fibrosas.
+  - **Atenuação Cáustica no Centro (`centerDampRadiusMm`)**: Em teares circulares, o centro geométrico $(extentMm/2, extentMm/2)$ é um atrator natural de densidade de cordas. Configure um raio de amortecimento entre $20$ e $35$ mm para evitar manchas circulares escuras no centro da face.
+  - **Realce de Saliência Multiescala e Nitidez**: Utilize filtro unsharp mask ($\sigma = 1.0 \dots 1.8$) combinado com saliência de Sobel em múltiplas escalas com compressão não-linear ($edges^\gamma, \gamma = 0.6$) e `edgeEmphasis` ($0.60$ a $0.80$).
+  - **Prevenção de Foco no Tronco**: Em retratos com roupas ou fundos pretos, combine **`shadowLift`** ($0.10$ a $0.15$) com **`torsoFeathering`** ($0.20$ a $0.30$) para atenuar progressivamente a base do tear e impedir que o corpo absorva cordas que deveriam desenhar a face.
 
 ## 3. Invariantes de Código e Arquitetura
 

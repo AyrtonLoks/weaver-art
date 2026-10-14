@@ -80,7 +80,7 @@ Estimativa e Carretéis:
   --spool-margin <pct>   margem de segurança no fio em % (padrão 10)
 
 Opções do algoritmo de tecelagem:
-  -p, --preset <nome>        vrellis-mono (padrão) | vrellis-color | cmyk
+  -p, --preset <nome>        portrait-mono | portrait-cmyk | vrellis-mono (padrão) | vrellis-color | cmyk
       --auto-palette <k>     extrai paleta de k cores da imagem automaticamente (padrão 4)
       --halftone             ativa modelo óptico de mistura por meio-tom
       --halftone-radius <mm> raio de mistura por meio-tom em mm (padrão 0.75)
@@ -98,6 +98,11 @@ Opções do algoritmo de tecelagem:
       --gamma <x>            gama (padrão 1)
       --shadow-lift <x>      elevação de sombras 0..0.3 (padrão 0)
       --edge-emphasis <x>    realce de bordas/feições 0..1 (padrão 0)
+      --highlight-protection <x> penalidade em realces claros 0..10 (padrão 0 ou 2.5 em portrait)
+      --angular-diversity <x> diversidade direcional entre cordas 0..1 (padrão 0 ou 0.35 em portrait)
+      --center-damp <mm>     raio de atenuação cáustica no centro em mm (padrão 0 ou 25 em portrait)
+      --sharpen-sigma <x>    desfoque para máscara de nitidez unsharp mask (padrão 0 ou 1.5 em portrait)
+      --torso-feathering <x> atenuação suave de densidade na base do retrato 0..1 (padrão 0 ou 0.25 em portrait)
       --clahe                ativa equalização local de contraste adaptativa (CLAHE)
       --clahe-clip <x>       limite de corte do CLAHE (padrão 2.0)
       --invert               inverte a imagem (fio claro em fundo escuro)
@@ -258,6 +263,11 @@ async function main(): Promise<void> {
       gamma: { type: 'string' },
       'shadow-lift': { type: 'string' },
       'edge-emphasis': { type: 'string' },
+      'highlight-protection': { type: 'string' },
+      'angular-diversity': { type: 'string' },
+      'center-damp': { type: 'string' },
+      'sharpen-sigma': { type: 'string' },
+      'torso-feathering': { type: 'string' },
       clahe: { type: 'boolean' },
       'clahe-clip': { type: 'string' },
       invert: { type: 'boolean' },
@@ -479,6 +489,9 @@ async function main(): Promise<void> {
       rasterCacheMb: num(values['cache-mb'], 'cache-mb'),
       halftoneMixing: values.halftone ? true : undefined,
       halftoneRadiusMm: num(values['halftone-radius'], 'halftone-radius'),
+      highlightProtection: num(values['highlight-protection'], 'highlight-protection'),
+      angularDiversity: num(values['angular-diversity'], 'angular-diversity'),
+      centerDampRadiusMm: num(values['center-damp'], 'center-damp'),
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
       preprocess: {
         contrast: num(values.contrast, 'contrast'),
@@ -486,6 +499,11 @@ async function main(): Promise<void> {
         gamma: num(values.gamma, 'gamma'),
         shadowLift: num(values['shadow-lift'], 'shadow-lift'),
         edgeEmphasis: num(values['edge-emphasis'], 'edge-emphasis'),
+        highlightProtection: num(values['highlight-protection'], 'highlight-protection'),
+        angularDiversity: num(values['angular-diversity'], 'angular-diversity'),
+        centerDampRadiusMm: num(values['center-damp'], 'center-damp'),
+        sharpenSigma: num(values['sharpen-sigma'], 'sharpen-sigma'),
+        torsoFeathering: num(values['torso-feathering'], 'torso-feathering'),
         clahe: values.clahe,
         claheClipLimit: num(values['clahe-clip'], 'clahe-clip'),
         viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),

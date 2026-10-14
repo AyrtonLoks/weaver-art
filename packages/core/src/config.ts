@@ -91,6 +91,9 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   halftoneRadiusMm: 0.75,
   rasterCacheMb: 128,
   candidatePruning: 'none',
+  highlightProtection: 0,
+  angularDiversity: 0,
+  centerDampRadiusMm: 0,
   preprocess: {
     grayscale: true,
     contrast: 1,
@@ -104,11 +107,61 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
     claheGridSize: 8,
     perceptualBlurMm: 0,
     viewingDistanceM: 0,
+    highlightProtection: 0,
+    angularDiversity: 0,
+    centerDampRadiusMm: 0,
+    sharpenSigma: 0,
+    torsoFeathering: 0,
   },
 };
 
 /** Named presets exposed to the CLI and the web app. */
 export const PRESETS = {
+  'portrait-mono': {
+    ...DEFAULT_OPTIONS,
+    resolutionPx: 500,
+    maxLines: 4000,
+    maxChordRepeats: 2,
+    highlightProtection: 2.5,
+    angularDiversity: 0.35,
+    centerDampRadiusMm: 25,
+    preprocess: {
+      ...DEFAULT_OPTIONS.preprocess,
+      grayscale: true,
+      clahe: true,
+      edgeEmphasis: 0.8,
+      highlightProtection: 2.5,
+      angularDiversity: 0.35,
+      shadowLift: 0.12,
+      centerDampRadiusMm: 25,
+      sharpenSigma: 1.5,
+      torsoFeathering: 0.25,
+    },
+  },
+  'portrait-cmyk': {
+    ...DEFAULT_OPTIONS,
+    threads: CMYK_THREADS,
+    resolutionPx: 500,
+    maxLines: 6000,
+    maxChordRepeats: 2,
+    colorStrategy: 'layered',
+    threadLineBudgets: [0.3, 0.05, 0.25, 0.4],
+    highlightProtection: 2.5,
+    angularDiversity: 0.35,
+    centerDampRadiusMm: 25,
+    preprocess: {
+      ...DEFAULT_OPTIONS.preprocess,
+      grayscale: false,
+      clahe: true,
+      edgeEmphasis: 0.8,
+      highlightProtection: 2.5,
+      angularDiversity: 0.35,
+      shadowLift: 0.12,
+      centerDampRadiusMm: 25,
+      sharpenSigma: 1.5,
+      torsoFeathering: 0.25,
+    },
+  },
   'vrellis-mono': DEFAULT_OPTIONS,
   'vrellis-color': {
     ...DEFAULT_OPTIONS,
@@ -182,6 +235,15 @@ export function resolveOptions(
   const merged = deepMerge(baseCopy, overrides);
   if (merged.viewingDistanceM !== undefined && overrides.preprocess?.viewingDistanceM === undefined) {
     merged.preprocess.viewingDistanceM = merged.viewingDistanceM;
+  }
+  if (merged.highlightProtection !== undefined && overrides.preprocess?.highlightProtection === undefined) {
+    merged.preprocess.highlightProtection = merged.highlightProtection;
+  }
+  if (merged.angularDiversity !== undefined && overrides.preprocess?.angularDiversity === undefined) {
+    merged.preprocess.angularDiversity = merged.angularDiversity;
+  }
+  if (merged.centerDampRadiusMm !== undefined && overrides.preprocess?.centerDampRadiusMm === undefined) {
+    merged.preprocess.centerDampRadiusMm = merged.centerDampRadiusMm;
   }
   validateOptions(merged);
   return merged;
@@ -342,6 +404,30 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (o.candidatePruning !== undefined && !['none', 'lazy'].includes(o.candidatePruning)) {
     errors.push(`candidatePruning "${String(o.candidatePruning)}" inválido (use: none, lazy)`);
+  }
+  if (
+    o.preprocess.highlightProtection !== undefined &&
+    (!(o.preprocess.highlightProtection >= 0) || o.preprocess.highlightProtection > 10)
+  ) {
+    errors.push('preprocess.highlightProtection deve estar em [0, 10]');
+  }
+  if (
+    o.preprocess.angularDiversity !== undefined &&
+    (!(o.preprocess.angularDiversity >= 0) || o.preprocess.angularDiversity > 1)
+  ) {
+    errors.push('preprocess.angularDiversity deve estar em [0, 1]');
+  }
+  if (
+    o.preprocess.centerDampRadiusMm !== undefined &&
+    (!(o.preprocess.centerDampRadiusMm >= 0) || o.preprocess.centerDampRadiusMm > 500)
+  ) {
+    errors.push('preprocess.centerDampRadiusMm deve estar em [0, 500]');
+  }
+  if (
+    o.preprocess.sharpenSigma !== undefined &&
+    (!(o.preprocess.sharpenSigma >= 0) || o.preprocess.sharpenSigma > 50)
+  ) {
+    errors.push('preprocess.sharpenSigma deve ser >= 0');
   }
   if (errors.length > 0) throw new Error(`Configuração inválida:\n- ${errors.join('\n- ')}`);
 }

@@ -8,12 +8,14 @@ import {
   formatDuration,
   loomPegCount,
   parsePegsCSV,
+  prepareTarget,
   PRESETS,
   resolveOptions,
   toCSV,
   toGcode,
   toInstructions,
   toPegsCSV,
+  toRGBA,
   toSVG,
   toTemplatePDF,
   toTemplateSVG,
@@ -100,6 +102,10 @@ const sEstTime = $('s-est-time');
 const spoolBreakdown = $('spoolBreakdown');
 const spoolTableContainer = $('spoolTableContainer');
 
+// Framing controls
+const btnSmartFrame = $<HTMLButtonElement>('btnSmartFrame');
+const btnResetCrop = $<HTMLButtonElement>('btnResetCrop');
+
 const fields = {
   pegs: num('pegs'),
   diameter: num('diameter'),
@@ -112,11 +118,17 @@ const fields = {
   lengthPenalty: num('lengthPenalty'),
   refinePasses: num('refinePasses'),
   viewingDistance: num('viewingDistance'),
+  angularDiversity: num('angularDiversity'),
+  centerDamp: num('centerDamp'),
   contrast: num('contrast'),
   brightness: num('brightness'),
   gamma: num('gamma'),
   shadowLift: num('shadowLift'),
   edgeEmphasis: num('edgeEmphasis'),
+  highlightProtection: num('highlightProtection'),
+  cropZoom: num('cropZoom'),
+  cropPanX: num('cropPanX'),
+  cropPanY: num('cropPanY'),
   clahe: $<HTMLInputElement>('clahe'),
   claheClip: num('claheClip'),
   invert: num('invert'),
@@ -422,11 +434,14 @@ function fillForm(o: WeaveOptions): void {
   fields.lengthPenalty.value = String(o.lengthPenalty ?? 0);
   fields.refinePasses.value = String(o.refinePasses ?? 0);
   fields.viewingDistance.value = String(o.viewingDistanceM ?? o.preprocess.viewingDistanceM ?? 0);
+  fields.angularDiversity.value = String(o.preprocess.angularDiversity ?? o.angularDiversity ?? 0);
+  fields.centerDamp.value = String(o.preprocess.centerDampRadiusMm ?? o.centerDampRadiusMm ?? 0);
   fields.contrast.value = String(o.preprocess.contrast);
   fields.brightness.value = String(o.preprocess.brightness);
   fields.gamma.value = String(o.preprocess.gamma);
   fields.shadowLift.value = String(o.preprocess.shadowLift ?? 0);
   fields.edgeEmphasis.value = String(o.preprocess.edgeEmphasis ?? 0);
+  fields.highlightProtection.value = String(o.preprocess.highlightProtection ?? o.highlightProtection ?? 0);
   fields.clahe.checked = Boolean(o.preprocess.clahe);
   fields.claheClip.value = String(o.preprocess.claheClipLimit ?? 2);
   $('clahe-controls').hidden = !fields.clahe.checked;
@@ -448,6 +463,8 @@ function updateOutputs(): void {
     'gamma',
     'shadowLift',
     'edgeEmphasis',
+    'highlightProtection',
+    'angularDiversity',
     'lengthPenalty',
     'viewingDistance',
     'claheClip',
@@ -456,7 +473,75 @@ function updateOutputs(): void {
     const el = document.getElementById(`${id}-out`);
     if (el) el.textContent = Number(fields[id].value).toFixed(2);
   }
+  const centerDampEl = document.getElementById('centerDamp-out');
+  if (centerDampEl) centerDampEl.textContent = String(Math.round(Number(fields.centerDamp.value)));
+
+  const zoomEl = document.getElementById('cropZoom-out');
+  if (zoomEl) zoomEl.textContent = `${Number(fields.cropZoom.value).toFixed(2)}x`;
+
+  const panXEl = document.getElementById('cropPanX-out');
+  if (panXEl) panXEl.textContent = `${Math.round(Number(fields.cropPanX.value))}%`;
+
+  const panYEl = document.getElementById('cropPanY-out');
+  if (panYEl) panYEl.textContent = `${Math.round(Number(fields.cropPanY.value))}%`;
 }
+
+function computeActiveCrop(): { x: number; y: number; size: number } | undefined {
+  if (!image) return undefined;
+  const zoom = Math.max(0.5, Number(fields.cropZoom.value) || 1.0);
+  const panXFrac = (Number(fields.cropPanX.value) || 0) / 100;
+  const panYFrac = (Number(fields.cropPanY.value) || 0) / 100;
+
+  const baseSize = Math.min(image.width, image.height);
+  const cropSize = Math.max(16, baseSize / zoom);
+
+  const cx = image.width / 2 + panXFrac * baseSize;
+  const cy = image.height / 2 + panYFrac * baseSize;
+
+  let cropX = cx - cropSize / 2;
+  let cropY = cy - cropSize / 2;
+
+  cropX = Math.max(0, Math.min(image.width - cropSize, cropX));
+  cropY = Math.max(0, Math.min(image.height - cropSize, cropY));
+
+  return { x: cropX, y: cropY, size: cropSize };
+}
+
+function updateTargetPreview(): void {
+  if (!image) return;
+  try {
+    const opts = readOptions();
+    const previewSize = 256;
+    const tgt = prepareTarget(
+      { width: image.width, height: image.height, data: image.data },
+      previewSize,
+      opts.preprocess,
+      opts.preprocess.grayscale ? 1 : 3,
+      undefined,
+      createLoom(getCurrentLoomConfig()),
+    );
+    const rgba = toRGBA(tgt.data, tgt.channels, tgt.mask);
+    paint(targetCanvas, previewSize, rgba.buffer as ArrayBuffer);
+  } catch {
+    // Non-fatal if options are incomplete
+  }
+}
+
+btnSmartFrame.addEventListener('click', () => {
+  fields.cropZoom.value = '1.25';
+  fields.cropPanY.value = '-6';
+  fields.cropPanX.value = '0';
+  updateOutputs();
+  if (image) updateTargetPreview();
+});
+
+btnResetCrop.addEventListener('click', () => {
+  fields.cropZoom.value = '1.0';
+  fields.cropPanX.value = '0';
+  fields.cropPanY.value = '0';
+  updateOutputs();
+  if (image) updateTargetPreview();
+});
 
 function readOptions(): WeaveOptions {
   const base = preset.value === 'custom' ? getCustomPresetOptions() : PRESETS[preset.value as PresetName];
@@ -482,6 +567,9 @@ function readOptions(): WeaveOptions {
       lengthPenalty: Number(fields.lengthPenalty.value),
       viewingDistanceM: Number(fields.viewingDistance.value),
       refinePasses: Number(fields.refinePasses.value),
+      highlightProtection: Number(fields.highlightProtection.value),
+      angularDiversity: Number(fields.angularDiversity.value),
+      centerDampRadiusMm: Number(fields.centerDamp.value),
       candidatePruning:
         ((document.getElementById('candidatePruning') as HTMLSelectElement | null)?.value as 'none' | 'lazy') ?? 'none',
       rasterCacheMb: Number((document.getElementById('rasterCacheMb') as HTMLInputElement | null)?.value || 128),
@@ -493,6 +581,12 @@ function readOptions(): WeaveOptions {
         gamma: Number(fields.gamma.value),
         shadowLift: Number(fields.shadowLift.value),
         edgeEmphasis: Number(fields.edgeEmphasis.value),
+        highlightProtection: Number(fields.highlightProtection.value),
+        angularDiversity: Number(fields.angularDiversity.value),
+        centerDampRadiusMm: Number(fields.centerDamp.value),
+        sharpenSigma: base.preprocess.sharpenSigma,
+        torsoFeathering: base.preprocess.torsoFeathering,
+        crop: computeActiveCrop(),
         clahe: fields.clahe.checked,
         claheClipLimit: Number(fields.claheClip.value),
         viewingDistanceM: Number(fields.viewingDistance.value),
@@ -509,23 +603,35 @@ preset.addEventListener('change', () => {
   } else {
     fillForm(PRESETS[preset.value as PresetName]);
   }
+  updateTargetPreview();
 });
+
 for (const id of [
   'contrast',
   'brightness',
   'gamma',
   'shadowLift',
   'edgeEmphasis',
+  'highlightProtection',
+  'angularDiversity',
+  'centerDamp',
+  'cropZoom',
+  'cropPanX',
+  'cropPanY',
   'lengthPenalty',
   'viewingDistance',
   'claheClip',
   'halftoneRadius',
 ] as const) {
-  fields[id].addEventListener('input', updateOutputs);
+  fields[id].addEventListener('input', () => {
+    updateOutputs();
+    updateTargetPreview();
+  });
 }
 fields.lines.addEventListener('input', checkRepeatsHint);
 fields.repeats.addEventListener('input', checkRepeatsHint);
-fillForm(PRESETS['vrellis-mono']);
+preset.value = 'portrait-mono';
+fillForm(PRESETS['portrait-mono']);
 
 // ------------------------------------------------------------------ image
 async function loadFile(file: File): Promise<void> {
@@ -546,6 +652,7 @@ async function loadFile(file: File): Promise<void> {
   drop.classList.add('has-image');
   runBtn.disabled = running;
   btnExtractPalette.disabled = false;
+  updateTargetPreview();
 }
 
 fileInput.addEventListener('change', () => {
