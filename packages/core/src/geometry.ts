@@ -406,7 +406,7 @@ export function pegDistance(a: number, b: number, pegCount: number): number {
 export function tangentSegment(a: Peg, sa: PegSide, b: Peg, sb: PegSide, r: number): Segment {
   const vx = b.x - a.x;
   const vy = b.y - a.y;
-  const dist = Math.hypot(vx, vy);
+  const dist = Math.sqrt(vx * vx + vy * vy);
   const ux = vx / dist;
   const uy = vy / dist;
   let dx = ux;
@@ -430,6 +430,46 @@ export function tangentSegment(a: Peg, sa: PegSide, b: Peg, sb: PegSide, r: numb
     dy,
     length,
   };
+}
+
+/**
+ * Canonical physical segment between peg `from` and peg `to`.
+ *
+ * Reversing the travel direction flips the thread normal and the side sign:
+ * tangentSegment(b, -toSide, a, -fromSide) traces the exact same geometric
+ * line segment as tangentSegment(a, fromSide, b, toSide).
+ * Canonical orientation picks `from <= to` so both directions share identical
+ * coordinates and rasterisation.
+ */
+export function canonicalSegment(loom: Loom, from: number, fromSide: PegSide, to: number, toSide: PegSide): Segment {
+  const { pegs, pegRadiusMm } = loom;
+  if (from <= to) {
+    return tangentSegment(pegs[from], fromSide, pegs[to], toSide, pegRadiusMm);
+  }
+  return tangentSegment(pegs[to], -toSide as PegSide, pegs[from], -fromSide as PegSide, pegRadiusMm);
+}
+
+/**
+ * Symmetric integer key for a chord between pegs `from` and `to` with their peg sides.
+ *
+ * Canonical representation ensures `chordKey(from, fromSide, to, toSide, N)`
+ * matches the reverse direction `chordKey(to, -toSide, from, -fromSide, N)`.
+ * Fits within standard 31-bit integer for N <= 1000.
+ */
+export function chordKey(from: number, fromSide: PegSide, to: number, toSide: PegSide, N: number): number {
+  let lo = from;
+  let hi = to;
+  let sLo = fromSide;
+  let sHi = toSide;
+  if (from > to) {
+    lo = to;
+    hi = from;
+    sLo = -toSide as PegSide;
+    sHi = -fromSide as PegSide;
+  }
+  const sLoBit = sLo === 1 ? 1 : 0;
+  const sHiBit = sHi === 1 ? 1 : 0;
+  return ((lo * N + hi) * 2 + sLoBit) * 2 + sHiBit;
 }
 
 /**

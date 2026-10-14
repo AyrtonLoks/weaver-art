@@ -6,6 +6,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@weaver-art/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
+      '@weaver-art/wasm': fileURLToPath(new URL('../../packages/wasm/src/index.ts', import.meta.url)),
     },
   },
   worker: {
@@ -13,5 +14,15 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
 });

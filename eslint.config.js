@@ -3,7 +3,16 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', 'coverage/**', 'output/**'] },
+  {
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      'coverage/**',
+      'output/**',
+      '**/packages/wasm/src/generated/**',
+      '**/packages/wasm/rust/target/**',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

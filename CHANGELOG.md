@@ -3,6 +3,40 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] — 2026-10-13
+
+### Adicionado
+
+- **Cache de rasterização de cordas canônicas (`chord-cache.ts`)**:
+  - Cache LRU em memória (`ChordCache`) delimitado por bytes (`rasterCacheMb`, padrão 128 MB no CLI e 64 MB no web).
+  - Indexação por chave canônica de corda (`chordKey`), garantindo resultados de simulação e métricas 100% bit-idênticos à rasterização sem cache.
+  - Suporte completo a teares circulares, retangulares e com pinos arbitrários importados via CSV.
+- **Poda de candidatos por Lazy Greedy (`pruning.ts`)**:
+  - Algoritmo de aceleração gulosa preguiçosa baseado no princípio de submodularidade (Minoux, 1978).
+  - Tabela de limites superiores de ganho (`StaleGainTable`) que permite interromper a busca assim que o melhor ganho superestimado não supera a melhor corda exata já encontrada.
+  - Em monocromático com fio preto sobre fundo claro, matematicamente preserva passos idênticos à busca exata; em CMYK e mistura óptica de meio-tom, opera como heurística acelerada com fidelidade $\Delta\text{RMSE} \le 2\%$ e $\Delta\text{SSIM} \le 2\%$, pulando até mais de 90% das avaliações de cordas.
+- **Núcleo em Rust → WebAssembly SIMD (`@weaver-art/wasm`)**:
+  - Novo pacote `@weaver-art/wasm` contendo kernel puro em Rust (`no_std`, `wasm32-unknown-unknown`) com instruções vetoriais de 128 bits (`+simd128`).
+  - Fusão de cálculo de segmento tangente canônico, rasterização por cobertura de área e acúmulo de erro quadrático em laço contíguo sem alocações na heap.
+  - Binário WASM leve (<32 KB) embutido em Base64 para compilação e execução imediata em qualquer ambiente sem necessidade de toolchain Rust local instalada.
+  - Paridade numérica estrita com a implementação de referência em TypeScript validada por suíte de testes dedicada.
+- **Paralelismo multi-worker com memória compartilhada (`parallel.ts`)**:
+  - Avaliador concorrente `ParallelEvaluator` dividindo os pinos candidatos de chegada (`to`) entre múltiplos trabalhadores com particionamento intercalado para balanceamento de carga.
+  - Comunicação de ultra-baixa latência através de `SharedArrayBuffer` com controle de sincronização e barreiras por `Atomics.wait` e `Atomics.notify`.
+  - Desempate determinístico preservando estritamente a sequência de cordas da execução sequencial.
+  - Suporte nativo em Web Workers (com isolamento cross-origin COOP/COEP) e em Node.js via `node:worker_threads`.
+- **Interface e Linha de Comando**:
+  - CLI: novas opções `--accel js|wasm|parallel`, `--threads <N>`, `--pruning none|lazy` e `--cache-mb <N>`.
+  - Web: grupo retrátil "Desempenho" permitindo alternar motor de cálculo, ativar poda acelerada e configurar quota de cache, com telemetria ao vivo de velocidade (cordas/s).
+- **Benchmarking e Automação**:
+  - Script reprodutível `scripts/bench.mjs` executável via `npm run bench`.
+  - Job de CI dedicado em `.github/workflows/ci.yml` para compilação e teste do kernel WASM.
+
+### Alterado
+
+- `geometry.ts`: `tangentSegment` passa a calcular a hipotenusa com `Math.sqrt(vx*vx + vy*vy)` em substituição a `Math.hypot` para paridade numérica estrita com a libm Rust/WASM.
+- `engine.ts`: arquitetura modularizada desacoplando a orquestração do tecido (`WeaveEngine`) dos motores de pontuação (`CandidateEvaluator`), com suporte a inicialização assíncrona com `WeaveEngine.createAsync`.
+
 ## [0.4.0] — 2026-10-13
 
 ### Adicionado

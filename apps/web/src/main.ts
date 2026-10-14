@@ -482,6 +482,9 @@ function readOptions(): WeaveOptions {
       lengthPenalty: Number(fields.lengthPenalty.value),
       viewingDistanceM: Number(fields.viewingDistance.value),
       refinePasses: Number(fields.refinePasses.value),
+      candidatePruning:
+        ((document.getElementById('candidatePruning') as HTMLSelectElement | null)?.value as 'none' | 'lazy') ?? 'none',
+      rasterCacheMb: Number((document.getElementById('rasterCacheMb') as HTMLInputElement | null)?.value || 128),
       halftoneMixing: fields.halftoneMixing.checked,
       halftoneRadiusMm: Number(fields.halftoneRadius.value),
       preprocess: {
@@ -669,7 +672,17 @@ runBtn.addEventListener('click', () => {
   sEstTime.textContent = '…';
   setRunning(true);
   const data = image.data.slice().buffer;
-  const msg: ToWorker = { type: 'start', image: { width: image.width, height: image.height, data }, options };
+  const accelEl = document.getElementById('accel') as HTMLSelectElement | null;
+  const threadsEl = document.getElementById('threads') as HTMLInputElement | null;
+  const accel = (accelEl?.value as 'js' | 'wasm' | 'parallel') ?? 'js';
+  const threads = threadsEl ? Math.max(1, parseInt(threadsEl.value, 10) || 4) : 4;
+  const msg: ToWorker = {
+    type: 'start',
+    image: { width: image.width, height: image.height, data },
+    options,
+    accel,
+    threads,
+  };
   worker.postMessage(msg, [data]);
 });
 

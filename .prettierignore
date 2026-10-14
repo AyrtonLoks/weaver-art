@@ -3,3 +3,6 @@ dist
 coverage
 output
 package-lock.json
+packages/wasm/src/generated/**
+packages/wasm/rust/target/**
+

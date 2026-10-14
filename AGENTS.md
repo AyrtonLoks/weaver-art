@@ -28,5 +28,9 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
 - **Convenção de Unidades**:
   - Grandeza física $\rightarrow$ `mm` (ex: `diameterMm`, `pegRadiusMm`, `widthMm`, `totalLengthMm`).
   - Grandeza discreta de simulação $\rightarrow$ sufixo `Px` (ex: `resolutionPx`, `widthPx`).
+- **Invariantes de Desempenho e Aceleração**:
+  - **Paridade Exata TS ↔ WASM**: O kernel SIMD em Rust (`packages/wasm/rust/src/lib.rs`) e o avaliador em TypeScript (`packages/core/src/evaluator.ts`) devem produzir resultados bit a bit idênticos (`parity.test.ts`). Ao alterar a lógica de amostragem, redução ou antialiasing em um, o outro deve ser atualizado obrigatoriamente.
+  - **Isolamento de Threads e Plataforma**: `@weaver-art/core` nunca instancia diretamente `Worker` (DOM) ou `worker_threads` (Node). A orquestração e instanciação de workers pertencem estritamente às camadas de aplicação (`apps/web` e `@weaver-art/cli`).
+  - **Benchmarking de Regressão**: Antes de finalizar alterações na camada de avaliação, amostragem ou poda, execute `npm run bench` para assegurar ausência de regressões temporais e verificar paridade.
 - **Verificação Obrigatória**:
   - Antes de concluir qualquer tarefa, execute `npm run check` (typecheck + eslint + prettier + vitest) e `npm run build`. Todos os testes devem passar com 0 erros.

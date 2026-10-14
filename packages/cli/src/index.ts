@@ -3,14 +3,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import sharp from 'sharp';
+import os from 'node:os';
+import { Worker } from 'node:worker_threads';
 import {
   calibrateThreadColor,
+  createSharedBuffers,
+  createSharedControl,
   describeLoom,
   estimateWeave,
   extractPalette,
   formatDuration,
   gcodePathLengthMm,
   loomPegCount,
+  ParallelEvaluator,
   parsePegsCSV,
   PRESETS,
   resolveOptions,
@@ -25,6 +30,7 @@ import {
   type CircleLoomConfig,
   type CustomLoomConfig,
   type DeepPartial,
+  type EvaluatorSetup,
   type GcodeOptions,
   type LoomConfig,
   type PaperSize,
@@ -35,6 +41,7 @@ import {
   type WeaveOptions,
   type WeaveResult,
 } from '@weaver-art/core';
+import { instantiateWasmKernel } from '@weaver-art/wasm';
 
 const HELP = `
 weaver-art — computação de string art / tecelagem em tear circular ou retangular.
@@ -98,6 +105,12 @@ Opções do algoritmo de tecelagem:
       --importance <imagem>  mapa de importância (branco = importante)
       --config <arquivo>     JSON com WeaveOptions parciais (aplicado antes das flags)
       --no-stop              não parar quando nenhuma linha melhora o resultado
+
+Aceleração e Desempenho:
+      --accel <motor>        js (padrão) | wasm (Rust SIMD) | parallel (threads)
+      --threads <n>          número de threads para --accel parallel (padrão: CPUs)
+      --pruning <modo>       none (padrão) | lazy (busca gulosa preguiçosa Minoux 1978)
+      --cache-mb <n>         orçamento do cache de rasterização em MB (padrão 128)
   -o, --out <pasta>          pasta de saída (padrão ./output)
   -n, --name <nome>          nome base dos arquivos (padrão: nome da imagem)
   -h, --help                 mostra esta ajuda
@@ -251,6 +264,10 @@ async function main(): Promise<void> {
       background: { type: 'string' },
       importance: { type: 'string' },
       config: { type: 'string' },
+      accel: { type: 'string', default: 'js' },
+      threads: { type: 'string' },
+      pruning: { type: 'string', default: 'none' },
+      'cache-mb': { type: 'string' },
       stop: { type: 'boolean', default: true },
       out: { type: 'string', short: 'o', default: 'output' },
       name: { type: 'string', short: 'n' },
@@ -458,6 +475,8 @@ async function main(): Promise<void> {
       lengthPenalty: num(values['length-penalty'], 'length-penalty'),
       viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),
       refinePasses: num(values.refine, 'refine'),
+      candidatePruning: (values.pruning as WeaveOptions['candidatePruning']) ?? 'none',
+      rasterCacheMb: num(values['cache-mb'], 'cache-mb'),
       halftoneMixing: values.halftone ? true : undefined,
       halftoneRadiusMm: num(values['halftone-radius'], 'halftone-radius'),
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
@@ -488,10 +507,54 @@ async function main(): Promise<void> {
     options.preprocess.grayscale = false;
   }
   const importance = values.importance ? await loadRaster(values.importance) : undefined;
-  const engine = new WeaveEngine(image, options, importance);
+  const accel = (values.accel as string | undefined) ?? 'js';
+  const workerThreads: Worker[] = [];
+
+  let engine: WeaveEngine;
+  if (accel === 'wasm') {
+    engine = await WeaveEngine.createAsync(image, options, importance, {
+      evaluator: async (setup: EvaluatorSetup) => {
+        return instantiateWasmKernel(setup);
+      },
+    });
+  } else if (accel === 'parallel') {
+    const threadCount = num(values.threads, 'threads') ?? Math.max(1, os.cpus().length);
+    const sharedCtrl = createSharedControl(threadCount);
+    engine = await WeaveEngine.createAsync(image, options, importance, {
+      evaluator: (setup: EvaluatorSetup) => {
+        const { buffers, descriptor: buffersDesc } = createSharedBuffers(setup, Boolean(options.halftoneMixing));
+        for (let w = 1; w < threadCount; w++) {
+          const worker = new Worker(new URL('./helper.js', import.meta.url));
+          worker.postMessage({
+            type: 'start',
+            workerIndex: w,
+            workerCount: threadCount,
+            controlDesc: sharedCtrl.descriptor,
+            setup,
+            buffersDesc,
+          });
+          workerThreads.push(worker);
+        }
+        const parEval = new ParallelEvaluator({
+          workerCount: threadCount,
+          setup,
+          buffers,
+          sharedControl: sharedCtrl,
+          onDispose: () => {
+            workerThreads.forEach((w) => w.terminate());
+            workerThreads.length = 0;
+          },
+        });
+        parEval.waitUntilReady();
+        return parEval;
+      },
+    });
+  } else {
+    engine = new WeaveEngine(image, options, importance);
+  }
 
   process.stderr.write(
-    `${describeLoom(options.loom)} · grade ${options.resolutionPx}px · ` +
+    `${describeLoom(options.loom)} · grade ${options.resolutionPx}px · aceleração: ${accel} · poda: ${options.candidatePruning ?? 'none'} · ` +
       `${options.threads.map((t) => t.name).join(', ')}\n`,
   );
 
@@ -505,6 +568,7 @@ async function main(): Promise<void> {
     },
   });
   process.stderr.write('\n');
+  engine.dispose();
 
   const outDir = path.resolve(values.out);
   await mkdir(outDir, { recursive: true });

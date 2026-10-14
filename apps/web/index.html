@@ -258,6 +258,37 @@
           </fieldset>
 
           <fieldset>
+            <legend>Desempenho & Aceleração</legend>
+            <div class="grid2">
+              <label
+                >Aceleração
+                <select id="accel">
+                  <option value="js">JavaScript (padrão)</option>
+                  <option value="wasm">WebAssembly SIMD</option>
+                  <option value="parallel">Paralelo (Web Workers)</option>
+                </select>
+              </label>
+              <label id="threads-container"
+                >Threads
+                <input type="number" id="threads" min="1" max="32" value="4" />
+              </label>
+            </div>
+            <div class="grid2" style="margin-top: 0.5rem">
+              <label
+                >Poda de candidatos
+                <select id="candidatePruning">
+                  <option value="none">Nenhuma (busca exata)</option>
+                  <option value="lazy">Lazy Greedy (Minoux 1978)</option>
+                </select>
+              </label>
+              <label
+                >Cache de cordas (MB)
+                <input type="number" id="rasterCacheMb" min="0" max="1024" step="32" value="128" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
             <legend>Imagem</legend>
             <label
               >Contraste <output id="contrast-out"></output>

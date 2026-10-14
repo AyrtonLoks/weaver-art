@@ -1,6 +1,6 @@
 {
   "name": "weaver-art",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Arte computacional com fio contínuo sobre um tear circular — inspirado em 'A new way to knit' (2016), de Petros Vrellis.",
   "license": "MIT",
@@ -10,11 +10,12 @@
   },
   "workspaces": [
     "packages/core",
+    "packages/wasm",
     "packages/cli",
     "apps/web"
   ],
   "scripts": {
-    "build": "npm run build --workspace @weaver-art/core && npm run build --workspace @weaver-art/cli && npm run build --workspace @weaver-art/web",
+    "build": "npm run build --workspace @weaver-art/core && npm run build --workspace @weaver-art/wasm && npm run build --workspace @weaver-art/cli && npm run build --workspace @weaver-art/web",
     "dev": "npm run dev --workspace @weaver-art/web",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,6 +24,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "weave": "node packages/cli/dist/index.js",
+    "build:wasm": "node packages/wasm/scripts/build-wasm.mjs",
+    "bench": "node scripts/bench.mjs",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
   },
   "devDependencies": {

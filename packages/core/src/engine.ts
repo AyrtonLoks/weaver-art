@@ -3,8 +3,17 @@ import { computeThreadBudgets, resolveOptions } from './config.js';
 import { buildChordMask, createLoom, tangentSegment, wrapAngle, type Loom, type Segment } from './geometry.js';
 import { prepareTarget, type TargetImage } from './image.js';
 import { calculateMetrics } from './metrics.js';
-import { ChordRasterizer } from './raster.js';
 import { refineWeave } from './refine.js';
+import {
+  type CandidateEvaluator,
+  type CandidateQuery,
+  type CandidateResult,
+  type EvaluatorFactory,
+  type EvaluatorSetup,
+  JsEvaluator,
+} from './evaluator.js';
+import type { ChordSamples } from './chord-cache.js';
+import { StaleGainTable } from './pruning.js';
 import type {
   DeepPartial,
   PegSide,
@@ -29,13 +38,10 @@ interface ThreadState {
   pegs: number[];
 }
 
-interface Candidate {
-  thread: number;
-  to: number;
-  fromSide: PegSide;
-  toSide: PegSide;
-  gain: number;
-  seg: Segment;
+type Candidate = CandidateResult;
+
+export interface EngineExtraOptions {
+  evaluator?: EvaluatorFactory | CandidateEvaluator;
 }
 
 export interface RunOptions {
@@ -70,6 +76,7 @@ export class WeaveEngine {
   /** Simulated appearance of the artwork, linear light, `size * size * channels`. */
   readonly canvas: Float32Array;
   readonly steps: WeaveStep[] = [];
+  readonly evaluator: CandidateEvaluator;
   stopReason: StopReason | null = null;
 
   private readonly threads: ThreadState[];
@@ -77,7 +84,7 @@ export class WeaveEngine {
   private readonly threadWidthPx: Float32Array;
   private readonly threadOpacity: Float32Array;
   private readonly chordUse: Uint16Array;
-  private readonly raster: ChordRasterizer;
+  private readonly pruningTable: StaleGainTable | null = null;
   private readonly startedAt: number;
   private readonly layerBudgets: number[];
   private readonly threadLineCounts: number[];
@@ -90,7 +97,12 @@ export class WeaveEngine {
   private readonly halftoneResidual: Float32Array | null;
   private readonly halftoneScratch: Float32Array | null;
 
-  constructor(image: RasterImage | TargetImage, options: WeaveOptions, importance?: RasterImage) {
+  constructor(
+    image: RasterImage | TargetImage,
+    options: WeaveOptions,
+    importance?: RasterImage,
+    extra?: EngineExtraOptions,
+  ) {
     this.options = options;
     this.loom = createLoom(options.loom);
     this.size = options.resolutionPx;
@@ -126,10 +138,59 @@ export class WeaveEngine {
       this.threadOpacity[i] = t.opacity;
     });
 
+    const N = this.loom.pegs.length;
+    const pegX = new Float64Array(N);
+    const pegY = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      pegX[i] = this.loom.pegs[i].x;
+      pegY[i] = this.loom.pegs[i].y;
+    }
+
+    const rasterCacheBytes = (options.rasterCacheMb ?? 128) * 1024 * 1024;
+    const setup: EvaluatorSetup = {
+      size: this.size,
+      channels: this.channels,
+      scale: this.pxPerMm,
+      extentMm: this.loom.extentMm,
+      pegX,
+      pegY,
+      pegRadiusMm: this.loom.pegRadiusMm,
+      sides: this.loom.sides,
+      chordMask: this.chordMask,
+      threadColors: this.threadColors,
+      threadWidthPx: this.threadWidthPx,
+      threadOpacity: this.threadOpacity,
+      maxChordRepeats: options.maxChordRepeats,
+      lengthPenalty: options.lengthPenalty,
+      rasterCacheBytes,
+    };
+
+    if (extra?.evaluator) {
+      if (typeof extra.evaluator === 'function') {
+        const created = extra.evaluator(setup);
+        if (created instanceof Promise) {
+          throw new Error('Async evaluator factory must be initialized using WeaveEngine.createAsync()');
+        }
+        this.evaluator = created;
+      } else {
+        this.evaluator = extra.evaluator;
+      }
+    } else {
+      this.evaluator = new JsEvaluator(setup);
+    }
+
+    this.canvas = this.evaluator.buffers.canvas;
+    this.chordUse = this.evaluator.buffers.chordUse;
+    this.evaluator.buffers.target.set(this.target.data);
+    this.evaluator.buffers.weight.set(this.target.weight);
+
     const bg = toChannels(options.background);
-    this.canvas = new Float32Array(this.size * this.size * C);
     for (let p = 0; p < this.size * this.size; p++) {
       for (let c = 0; c < C; c++) this.canvas[p * C + c] = bg[c];
+    }
+
+    if (options.candidatePruning === 'lazy') {
+      this.pruningTable = new StaleGainTable(options.threads.length, N);
     }
 
     this.threads = options.threads.map((t) => ({
@@ -143,9 +204,6 @@ export class WeaveEngine {
       pegs: [t.startPeg],
     }));
 
-    const N = this.loom.pegs.length;
-    this.chordUse = new Uint16Array(N * N);
-    this.raster = new ChordRasterizer(this.size, Math.max(...this.threadWidthPx, 1));
     this.startedAt = now();
     this.layerBudgets = computeThreadBudgets(options);
     this.threadLineCounts = new Array(options.threads.length).fill(0);
@@ -166,7 +224,12 @@ export class WeaveEngine {
         kSum += v;
       }
       for (let i = 0; i < kSize; i++) this.halftoneKernel[i] /= kSum;
-      this.halftoneResidual = new Float32Array(this.size * this.size * C);
+      if (this.evaluator.buffers.halftone && this.evaluator.buffers.halftone.length === this.size * this.size * C) {
+        this.halftoneResidual = this.evaluator.buffers.halftone;
+      } else {
+        this.halftoneResidual = new Float32Array(this.size * this.size * C);
+        this.evaluator.buffers.halftone = this.halftoneResidual;
+      }
       this.halftoneScratch = new Float32Array(this.size * this.size * C);
       this.refreshHalftoneResidualFull();
     } else {
@@ -178,8 +241,71 @@ export class WeaveEngine {
   }
 
   /** Convenience factory: merge overrides onto the defaults, validate and build. */
-  static create(image: RasterImage, overrides: DeepPartial<WeaveOptions> = {}, importance?: RasterImage): WeaveEngine {
-    return new WeaveEngine(image, resolveOptions(overrides), importance);
+  static create(
+    image: RasterImage,
+    overrides: DeepPartial<WeaveOptions> = {},
+    importance?: RasterImage,
+    extra?: EngineExtraOptions,
+  ): WeaveEngine {
+    return new WeaveEngine(image, resolveOptions(overrides), importance, extra);
+  }
+
+  /** Async factory for asynchronous evaluators (e.g. WebAssembly or parallel workers). */
+  static async createAsync(
+    image: RasterImage,
+    overrides: DeepPartial<WeaveOptions> = {},
+    importance?: RasterImage,
+    extra?: EngineExtraOptions,
+  ): Promise<WeaveEngine> {
+    const options = resolveOptions(overrides);
+    if (extra?.evaluator && typeof extra.evaluator === 'function') {
+      const loom = createLoom(options.loom);
+      const size = options.resolutionPx;
+      const pxPerMm = size / loom.extentMm;
+      const chordMask = buildChordMask(loom, options.minPegGap);
+      const achromatic = isAchromatic(options.background) && options.threads.every((t) => isAchromatic(t.color));
+      const channels: 1 | 3 = achromatic || options.preprocess.grayscale ? 1 : 3;
+      const N = loom.pegs.length;
+      const pegX = new Float64Array(N);
+      const pegY = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        pegX[i] = loom.pegs[i].x;
+        pegY[i] = loom.pegs[i].y;
+      }
+      const toChannels = (hex: string): number[] => {
+        const rgb = hexToLinear(hex);
+        return channels === 1 ? [luminance(rgb)] : rgb;
+      };
+      const threadColors = new Float32Array(options.threads.length * channels);
+      const threadWidthPx = new Float32Array(options.threads.length);
+      const threadOpacity = new Float32Array(options.threads.length);
+      options.threads.forEach((t, i) => {
+        threadColors.set(toChannels(t.color), i * channels);
+        threadWidthPx[i] = t.widthMm * pxPerMm;
+        threadOpacity[i] = t.opacity;
+      });
+      const rasterCacheBytes = (options.rasterCacheMb ?? 128) * 1024 * 1024;
+      const setup: EvaluatorSetup = {
+        size,
+        channels,
+        scale: pxPerMm,
+        extentMm: loom.extentMm,
+        pegX,
+        pegY,
+        pegRadiusMm: loom.pegRadiusMm,
+        sides: loom.sides,
+        chordMask,
+        threadColors,
+        threadWidthPx,
+        threadOpacity,
+        maxChordRepeats: options.maxChordRepeats,
+        lengthPenalty: options.lengthPenalty,
+        rasterCacheBytes,
+      };
+      const resolvedEval = await Promise.resolve(extra.evaluator(setup));
+      return new WeaveEngine(image, options, importance, { evaluator: resolvedEval });
+    }
+    return new WeaveEngine(image, options, importance, extra);
   }
 
   get done(): boolean {
@@ -493,9 +619,9 @@ export class WeaveEngine {
       t.pegs = [this.options.threads[i].startPeg];
     });
 
-    const scale = this.pxPerMm;
     const { pegs, pegRadiusMm } = this.loom;
 
+    this.chordUse.fill(0);
     for (let i = 0; i < this.steps.length; i++) {
       const step = this.steps[i];
       const t = step.thread;
@@ -504,14 +630,8 @@ export class WeaveEngine {
       const b = pegs[step.to];
       const seg = tangentSegment(a, step.fromSide, b, step.toSide, pegRadiusMm);
 
-      const count = this.raster.rasterize(
-        seg.x0 * scale,
-        seg.y0 * scale,
-        seg.x1 * scale,
-        seg.y1 * scale,
-        this.threadWidthPx[t],
-      );
-      const { idx, cov } = this.raster;
+      const samples = this.evaluator.samples(step.from, step.fromSide, step.to, step.toSide, t);
+      const { idx, cov, count } = samples;
       const op = this.threadOpacity[t];
       for (let k = 0; k < count; k++) {
         const c = cov[k] * op;
@@ -663,37 +783,30 @@ export class WeaveEngine {
   // ---------------------------------------------------------------------------
 
   private findBestForThread(t: number): Candidate | null {
-    const { pegs, sides, pegRadiusMm } = this.loom;
-    const N = pegs.length;
-    const { maxChordRepeats } = this.options;
-    const scale = this.pxPerMm;
-    let best: Candidate | null = null;
-
     const state = this.threads[t];
-    const a = pegs[state.peg];
-    const fromSides: readonly PegSide[] = state.side === null ? sides : [state.side];
-    const widthPx = this.threadWidthPx[t];
-
-    for (let to = 0; to < N; to++) {
-      if (this.chordMask[state.peg * N + to] === 0) continue;
-      if (this.chordUse[state.peg * N + to] >= maxChordRepeats) continue;
-      const b = pegs[to];
-      for (const fromSide of fromSides) {
-        for (const toSide of sides) {
-          const seg = tangentSegment(a, fromSide, b, toSide, pegRadiusMm);
-          const count = this.raster.rasterize(seg.x0 * scale, seg.y0 * scale, seg.x1 * scale, seg.y1 * scale, widthPx);
-          let gain = this.score(t, count);
-          if (this.options.lengthPenalty && this.options.lengthPenalty > 0 && gain > 0) {
-            const normLen = seg.length / this.loom.extentMm;
-            gain *= Math.max(0, 1 - this.options.lengthPenalty * normLen);
-          }
-          if (!best || gain > best.gain) {
-            best = { thread: t, to, fromSide, toSide, gain, seg };
-          }
-        }
-      }
+    if (this.pruningTable) {
+      const forceFullScan = this.steps.length % 256 === 0;
+      const query: CandidateQuery = {
+        thread: t,
+        fromPeg: state.peg,
+        fromSide: state.side,
+      };
+      return this.pruningTable.findBestLazy(
+        query,
+        this.evaluator,
+        this.loom.pegs,
+        this.loom.sides,
+        this.loom.pegRadiusMm,
+        this.chordMask,
+        this.options.maxChordRepeats,
+        forceFullScan,
+      );
     }
-    return best;
+    return this.evaluator.bestForThread({
+      thread: t,
+      fromPeg: state.peg,
+      fromSide: state.side,
+    });
   }
 
   private findBestAllThreads(): Candidate | null {
@@ -707,66 +820,14 @@ export class WeaveEngine {
     return best;
   }
 
-  /** Error reduction if thread `t` covered the samples currently in the rasterizer. */
-  private score(t: number, count: number): number {
-    const { idx, cov } = this.raster;
-    const { data: target, weight } = this.target;
-    const canvas = this.canvas;
-    const op = this.threadOpacity[t];
-    const halftone = this.halftoneResidual;
-    let gain = 0;
-    if (this.channels === 1) {
-      const K = this.threadColors[t];
-      for (let i = 0; i < count; i++) {
-        const p = idx[i];
-        const w = weight[p];
-        if (w === 0) continue;
-        const R = canvas[p];
-        const d = cov[i] * op * (K - R);
-        const err = halftone ? halftone[p] : target[p] - R;
-        gain += w * d * (2 * err - d);
-      }
-    } else {
-      const o = t * 3;
-      const K0 = this.threadColors[o];
-      const K1 = this.threadColors[o + 1];
-      const K2 = this.threadColors[o + 2];
-      for (let i = 0; i < count; i++) {
-        const p = idx[i];
-        const w = weight[p];
-        if (w === 0) continue;
-        const c = cov[i] * op;
-        const q = p * 3;
-        const R0 = canvas[q];
-        const R1 = canvas[q + 1];
-        const R2 = canvas[q + 2];
-        const d0 = c * (K0 - R0);
-        const d1 = c * (K1 - R1);
-        const d2 = c * (K2 - R2);
-        const err0 = halftone ? halftone[q] : target[q] - R0;
-        const err1 = halftone ? halftone[q + 1] : target[q + 1] - R1;
-        const err2 = halftone ? halftone[q + 2] : target[q + 2] - R2;
-        gain += w * (d0 * (2 * err0 - d0) + d1 * (2 * err1 - d1) + d2 * (2 * err2 - d2));
-      }
-    }
-    return gain;
-  }
-
   private apply(cand: Candidate, layerIndex?: number): WeaveStep {
     const { thread: t, to, fromSide, toSide, seg } = cand;
     const state = this.threads[t];
     const N = this.loom.pegs.length;
-    const scale = this.pxPerMm;
 
-    // Paint the chord onto the simulated canvas.
-    const count = this.raster.rasterize(
-      seg.x0 * scale,
-      seg.y0 * scale,
-      seg.x1 * scale,
-      seg.y1 * scale,
-      this.threadWidthPx[t],
-    );
-    const { idx, cov } = this.raster;
+    // Paint the chord onto the simulated canvas using canonical cached samples
+    const samples = this.evaluator.samples(state.peg, fromSide, to, toSide, t);
+    const { idx, cov, count } = samples;
     const op = this.threadOpacity[t];
     const C = this.channels;
     for (let i = 0; i < count; i++) {
@@ -817,6 +878,35 @@ export class WeaveEngine {
     }
 
     return step;
+  }
+
+  /** Chords samples in canonical orientation (cached). */
+  chordSamples(from: number, fromSide: PegSide, to: number, toSide: PegSide, thread = 0): ChordSamples {
+    return this.evaluator.samples(from, fromSide, to, toSide, thread);
+  }
+
+  /** Performance diagnostics for benchmark and UI. */
+  get perf(): {
+    evaluator: 'js' | 'wasm' | 'parallel';
+    cacheHits: number;
+    cacheMisses: number;
+    cacheBytes: number;
+    candidatesScored: number;
+    candidatesSkipped: number;
+  } {
+    const s = this.evaluator.stats;
+    return {
+      evaluator: this.evaluator.name,
+      cacheHits: s.cacheHits,
+      cacheMisses: s.cacheMisses,
+      cacheBytes: s.cacheBytes,
+      candidatesScored: s.candidatesScored,
+      candidatesSkipped: s.candidatesSkipped,
+    };
+  }
+
+  dispose(): void {
+    this.evaluator.dispose();
   }
 }
 

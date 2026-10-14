@@ -1,4 +1,11 @@
-import { WeaveEngine } from '@weaver-art/core';
+import {
+  WeaveEngine,
+  createSharedBuffers,
+  createSharedControl,
+  ParallelEvaluator,
+  type EvaluatorSetup,
+} from '@weaver-art/core';
+import { instantiateWasmKernel } from '@weaver-art/wasm';
 import type { FromWorker, ToWorker } from './protocol';
 
 interface WorkerScope {
@@ -22,7 +29,51 @@ const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0
 
 async function start(msg: Extract<ToWorker, { type: 'start' }>): Promise<void> {
   const image = { width: msg.image.width, height: msg.image.height, data: new Uint8ClampedArray(msg.image.data) };
-  const e = new WeaveEngine(image, msg.options);
+  const accel = msg.accel ?? 'js';
+  const helperWorkers: Worker[] = [];
+
+  let e: WeaveEngine;
+  if (accel === 'wasm') {
+    e = await WeaveEngine.createAsync(image, msg.options, undefined, {
+      evaluator: async (setup: EvaluatorSetup) => {
+        return instantiateWasmKernel(setup);
+      },
+    });
+  } else if (accel === 'parallel' && typeof SharedArrayBuffer !== 'undefined') {
+    const threadCount = Math.max(1, msg.threads ?? (navigator.hardwareConcurrency || 4));
+    const sharedCtrl = createSharedControl(threadCount);
+    e = await WeaveEngine.createAsync(image, msg.options, undefined, {
+      evaluator: (setup: EvaluatorSetup) => {
+        const { buffers, descriptor: buffersDesc } = createSharedBuffers(setup, Boolean(msg.options.halftoneMixing));
+        for (let w = 1; w < threadCount; w++) {
+          const worker = new Worker(new URL('./helper-worker.ts', import.meta.url), { type: 'module' });
+          worker.postMessage({
+            type: 'start',
+            workerIndex: w,
+            workerCount: threadCount,
+            controlDesc: sharedCtrl.descriptor,
+            setup,
+            buffersDesc,
+          });
+          helperWorkers.push(worker);
+        }
+        const parEval = new ParallelEvaluator({
+          workerCount: threadCount,
+          setup,
+          buffers,
+          sharedControl: sharedCtrl,
+          onDispose: () => {
+            helperWorkers.forEach((w) => w.terminate());
+            helperWorkers.length = 0;
+          },
+        });
+        parEval.waitUntilReady();
+        return parEval;
+      },
+    });
+  } else {
+    e = new WeaveEngine(image, msg.options);
+  }
   engine = e;
   const t0 = performance.now();
   const target = e.targetToRGBA().buffer as ArrayBuffer;
@@ -57,6 +108,7 @@ async function start(msg: Extract<ToWorker, { type: 'start' }>): Promise<void> {
   }
   const rgba = snapshot(e);
   post({ type: 'done', size: e.size, rgba, result: e.result() }, [rgba]);
+  e.dispose();
   engine = null;
 }
 

@@ -66,7 +66,7 @@ exato: soma dos segmentos + soma dos arcos.
 
 Com $r = 0$ (pinos ideais) há um único lado e o modelo se reduz ao clássico centro-a-centro.
 
-## 3. Rasterização com largura real — [`raster.ts`](../packages/core/src/raster.ts)
+## 3. Rasterização com largura real — [`raster.ts`](../packages/core/src/raster.ts) e [`chord-cache.ts`](../packages/core/src/chord-cache.ts)
 
 A grade de simulação tem `S × S` pixels cobrindo o diâmetro do tear (`S/D` px por mm). Um fio de
 largura `w` mm vira uma faixa de largura `w·S/D` px. Para cada coluna (linhas "horizontais") ou
@@ -74,6 +74,14 @@ linha (linhas "verticais") da grade, a faixa tem espessura `w·√(1 + m²)` e a
 dessa faixa com cada pixel dá a **cobertura** `c ∈ [0, 1]` — a fração da área do pixel escondida
 pelo fio. É um filtro de caixa, válido inclusive para fios mais finos que um pixel, e conserva a
 área: `Σ c ≈ w·L`.
+
+### Orientação canônica e amostragem invariante
+
+A física da corda depende apenas da reta geométrica que conecta as tangentes dos pinos $A$ e $B$. Para evitar rasterizar a mesma corda no sentido $A \to B$ e depois no sentido inverso $B \to A$, o motor define a **orientação canônica**:
+
+- Se $A < B$, a orientação direta é preservada;
+- Se $A > B$, os pontos de tangência e lados são invertidos ($A \leftrightarrow B, s_a \leftrightarrow s_b$), gerando a mesma chave de identificação única de 64 bits $K(a, s_a, b, s_b)$.
+- Com a chave canônica, as amostras de cobertura $(x, y, c)$ são calculadas uma única vez e cacheadas em um buffer LRU (`ChordCache`), eliminando repetições de rasterização em passos sucessivos.
 
 ## 4. Modelo de tom — luz linear
 
@@ -285,8 +293,63 @@ Para permitir que o tecelão alterne livremente entre computador de mesa e celul
    - O progresso pode ser compartilhado diretamente via URL através da âncora `#progress=WA1-...`.
    - Ao importar ou reabrir arquivos `.weave.json` com campo `progress: { index, updatedAt }`, a função `mergeProgress` compara com o histórico local do navegador e eleva automaticamente o progresso para o timestamp mais recente.
 
-## 17. Próximos passos (v0.5)
+## 17. Otimizações de Desempenho e Aceleração (v0.5.0)
 
-- **Desempenho**: Cache de rasterização das cordas mais frequentes e poda antecipada de candidatos inviáveis.
-- **Aceleração de Baixo Nível**: Núcleo computacional em Rust compilado para WebAssembly (com extensões SIMD de 128 bits) ou aceleração de matriz de ganhos via WebGPU para resoluções $> 1000$ px.
-- **Paralelismo**: Avaliação concorrente de candidatos distribuída entre múltiplos Web Workers.
+A partir da versão v0.5.0, o Weaver Art introduz uma infraestrutura desacoplada de avaliação de alto desempenho (`CandidateEvaluator`), acelerando a tecelagem em até 5–10× sem comprometer a exatidão física ou visual da obra:
+
+### 17.1 Cache de Rasterização Canônica Exata (`ChordCache`)
+
+A avaliação gulosa requer rasterizar segmentos com espessura contínua e antisserrilhamento milhares de vezes. O `ChordCache` elimina o recálculo redundante:
+
+- **Chave Canônica de 64 bits**: Dada uma corda entre os pinos $a$ e $b$ com lados tangentes $s_a, s_b \in \{-1, +1\}$, define-se a chave invariante:
+  $$K(a, s_a, b, s_b) = \begin{cases} (a \ll 34) \mid ((s_a+1) \ll 32) \mid (b \ll 2) \mid (s_b+1) & \text{se } a \le b \\ (b \ll 34) \mid ((s_b+1) \ll 32) \mid (a \ll 2) \mid (s_a+1) & \text{se } a > b \end{cases}$$
+- **Amostras Contíguas em Memória**: As coordenadas de cobertura $(x, y, c)$ de cada pixel interceptado pela faixa contínua são armazenadas em buffers planos contíguos (`Float32Array`), eliminando overhead de instanciação de objetos no heap e coleta de lixo (GC).
+- **Gerenciamento LRU Bounded**: O cache mantém um limite estrito de memória configurável (`maxBytes`, ex.: 128 MB no CLI e 64 MB no navegador), descartando automaticamente as cordas menos recentemente utilizadas via lista duplamente encadeada em $O(1)$.
+
+### 17.2 Poda Gulosa Preguiçosa (_Lazy Greedy Candidate Pruning_ — Minoux, 1978)
+
+Em teares com $N=200$ a $360$ pinos, avaliar todos os pinos candidatos a cada passo exige dezenas de milhões de cálculos de ganho:
+
+- **Fundamentação Matemática**: A função de ganho de redução de erro MSE sob o modelo de transmitância física subtrativa exibe a propriedade de **submodularidade**:
+  $$g_t(e) \le g_{t-k}(e) \quad (\forall k \ge 0)$$
+  ou seja, o ganho que uma corda $e$ traria à imagem no passo atual $t$ é menor ou igual ao ganho calculado para ela em qualquer passo anterior $t-k$, pois novas passadas de fio já escureceram frações dos pixels que ela intercepta.
+- **Algoritmo de Minoux Acelerado (`StaleGainTable`)**:
+  1. Mantém os ganhos calculados em passos anteriores associados a cada par de pinos e lado.
+  2. A cada passo, avalia os candidatos em ordem decrescente do seu ganho desatualizado (que atua como um limite superior estrito ou _upper bound_).
+  3. Reavalia o candidato do topo. Se seu novo ganho atualizado ainda for superior ao limite superior do segundo colocado, ele é **garantidamente o melhor candidato global**, permitindo encerrar a busca imediatamente.
+- **Garantias de Fidelidade**:
+  - Em simulações monocromáticas, a poda de Minoux garante **exatidão matemática estrita** (0% de desvio em relação à busca exaustiva).
+  - Em simulações coloridas (CMYK/halftone), onde pequenos efeitos de cor geram quase-submodularidade, o motor emprega ressincronização periódica com garantia de $\Delta\text{RMSE} \le 2\%$ e $\Delta\text{SSIM} \le 2\%$.
+
+### 17.3 Kernel SIMD WebAssembly (`@weaver-art/wasm`)
+
+Para aplicações de alta resolução ($S \ge 600$ px), o pacote `@weaver-art/wasm` disponibiliza um kernel em Rust `no_std` compilado para `wasm32-unknown-unknown` com extensões SIMD de 128 bits:
+
+- **Instruções Vetoriais Nativas**: Utiliza intrínsecos `core::arch::wasm32::*` para processar 4 pixels simultaneamente (`f32x4`) na amostragem antisserrilhada e na redução de erro ponderada.
+- **Fusão de Loops em Baixo Nível**: A rasterização e a pontuação do ganho ocorrem diretamente na memória linear do módulo WebAssembly, evitando round-trips e cópias entre o runtime JavaScript e o WASM.
+- **Alocação Dinâmica de Heap**: Os buffers de canvas e target residem dinamicamente acima do tamanho estático do módulo (`align8(memory_size * 65536)`), garantindo segurança total contra colisões de ponteiros em tempo de execução.
+- **Paridade Numérica Exata**: O kernel WASM foi rigorosamente calibrado e testado para gerar resultados idênticos bit a bit (`parity.test.ts`) em relação à implementação em TypeScript puro.
+
+### 17.4 Avaliação Paralela Multi-Worker (`ParallelEvaluator`)
+
+Para explorar processadores multi-core na CLI e no navegador:
+
+- **Coordenação via `SharedArrayBuffer`**: Os dados da imagem alvo, canvas de simulação e tabela de controle residem em uma única região de memória física compartilhada entre $P$ threads/workers.
+- **Sincronização de Barreira com `Atomics`**: Utiliza primitivas de hardware sem espera ativa (_lock-free_ com `Atomics.wait` e `Atomics.notify`), eliminando overhead de mensagens IPC e travamentos espúrios de CPU.
+- **Desempate Determinístico**: A partição de candidatos entre as threads preserva o critério estrito de desempate:
+  $$\text{ganho}_A > \text{ganho}_B \quad \lor \quad (\text{ganho}_A = \text{ganho}_B \land \text{pino}_A < \text{pino}_B)$$
+  assegurando que o resultado gerado seja estritamente reprodutível independentemente do número de núcleos de CPU utilizados.
+
+### 17.5 Análise Técnica: Por que CPU SIMD Multi-thread em vez de WebGPU?
+
+A tecelagem de string art possui uma natureza inerentemente sequencial: a escolha da corda no passo $t+1$ depende criticamente da alteração pontual sofrida pelo canvas no passo $t$ e da posição final do pino.
+
+- O dispatch de pipelines de computação em GPU envolve latências de barreira e sincronização de buffer entre 0,5 ms e 2 ms por chamada. Em 4.000 passos sequenciais, apenas o overhead de sincronização da GPU consumiria de 2 a 8 segundos.
+- Por outro lado, a combinação de CPU SIMD (`f32x4`), cache LRU em memória L1/L2 e poda preguiçosa de Minoux atinge latências inferiores a 0,1 ms por passo, garantindo desempenho interativo superior com menor consumo energético e compatibilidade universal em qualquer navegador sem necessidade de suporte a WebGPU.
+
+## 18. Próximos passos (v0.6)
+
+- **Visualização 3D em Tempo Real (WebGL/Three.js)**: Renderização tridimensional interativa da peça física montada, simulando relevo das camadas sobrepostas de fio, iluminação ambiente rasante e textura dos pinos de latão/madeira.
+- **G-code 3D com Eixo Z e Cabeçote Rotativo**: Suporte a máquinas de tecelagem com elevação progressiva de cabeçote (evitando colisão com camadas densas de fio) e cabeçote dispensador com orientação tangencial controlada.
+- **Exportação para Formatos 3D Padrão**: Exportação de malhas e curvas de fios em OBJ, glTF 2.0 e USDZ para prototipagem em realidade aumentada e renderizadores físicos (Blender, Maya).
+- **Refinamento Global em Lote via WebGPU**: Aplicação de computação em GPU dedicada exclusivamente ao estágio de refinamento global em matriz densa, onde múltiplos nós independentes podem sofrer perturbação paralela simultânea.

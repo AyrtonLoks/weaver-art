@@ -89,6 +89,8 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   refinePasses: 0,
   halftoneMixing: false,
   halftoneRadiusMm: 0.75,
+  rasterCacheMb: 128,
+  candidatePruning: 'none',
   preprocess: {
     grayscale: true,
     contrast: 1,
@@ -334,6 +336,12 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (o.halftoneRadiusMm !== undefined && (!(o.halftoneRadiusMm > 0) || o.halftoneRadiusMm > 20)) {
     errors.push('halftoneRadiusMm deve ser número em (0, 20]');
+  }
+  if (o.rasterCacheMb !== undefined && (!(o.rasterCacheMb >= 0) || o.rasterCacheMb > 4096)) {
+    errors.push('rasterCacheMb deve estar em [0, 4096]');
+  }
+  if (o.candidatePruning !== undefined && !['none', 'lazy'].includes(o.candidatePruning)) {
+    errors.push(`candidatePruning "${String(o.candidatePruning)}" inválido (use: none, lazy)`);
   }
   if (errors.length > 0) throw new Error(`Configuração inválida:\n- ${errors.join('\n- ')}`);
 }

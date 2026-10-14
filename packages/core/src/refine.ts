@@ -1,12 +1,6 @@
-import { tangentSegment } from './geometry.js';
+import { tangentSegment, type Segment } from './geometry.js';
 import type { PegSide } from './types.js';
 import type { WeaveEngine } from './engine.js';
-import { ChordRasterizer } from './raster.js';
-
-interface TouchedCoverage {
-  covOld: number;
-  covNew: number;
-}
 
 /**
  * Post-greedy global refinement for Weaver Art.
@@ -29,14 +23,18 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
   const { loom, target, options, channels } = engine;
   const { pegs, sides, pegRadiusMm } = loom;
   const N = pegs.length;
-  const scale = engine.pxPerMm;
-  const widthPxMax = Math.max(...options.threads.map((t) => t.widthMm * scale), 1);
-  const raster = new ChordRasterizer(engine.size, widthPxMax);
 
   let totalImprovements = 0;
 
   // Search neighborhood around peg p_i (closest first)
   const deltaOffsets = [-1, 1, -2, 2, -3, 3];
+
+  // Scratch arrays to avoid per-candidate allocations
+  const totalPixels = engine.size * engine.size;
+  const covOldArr = new Float32Array(totalPixels);
+  const covNewArr = new Float32Array(totalPixels);
+  const touchedOld = new Int32Array(totalPixels);
+  const touchedCand = new Int32Array(totalPixels);
 
   for (let pass = 0; pass < passes; pass++) {
     let passImprovements = 0;
@@ -52,7 +50,6 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
 
       const t = stepA.thread;
       const op = options.threads[t].opacity;
-      const widthPx = options.threads[t].widthMm * scale;
       const pegFrom = stepA.from;
       const pegMid = stepA.to; // = stepB.from
       const pegTo = stepB.to;
@@ -68,54 +65,42 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
       const oldSegA = tangentSegment(pA, stepA.fromSide, pMid, stepA.toSide, pegRadiusMm);
       const oldSegB = tangentSegment(pMid, stepB.fromSide, pB, stepB.toSide, pegRadiusMm);
 
-      // Rasterize old chords to know their current coverage on canvas
-      const oldACount = raster.rasterize(
-        oldSegA.x0 * scale,
-        oldSegA.y0 * scale,
-        oldSegA.x1 * scale,
-        oldSegA.y1 * scale,
-        widthPx,
-      );
-      const oldAIdx = new Int32Array(raster.idx.subarray(0, oldACount));
-      const oldACov = new Float32Array(raster.cov.subarray(0, oldACount));
+      const oldASamples = engine.chordSamples(pegFrom, stepA.fromSide, pegMid, stepA.toSide, t);
+      const oldBSamples = engine.chordSamples(pegMid, stepB.fromSide, pegTo, stepB.toSide, t);
 
-      const oldBCount = raster.rasterize(
-        oldSegB.x0 * scale,
-        oldSegB.y0 * scale,
-        oldSegB.x1 * scale,
-        oldSegB.y1 * scale,
-        widthPx,
-      );
-      const oldBIdx = new Int32Array(raster.idx.subarray(0, oldBCount));
-      const oldBCov = new Float32Array(raster.cov.subarray(0, oldBCount));
-
-      // Build a map of old coverage per pixel: covOld = 1 - (1 - cA)(1 - cB)
-      const touchedPixels = new Map<number, TouchedCoverage>();
-      for (let k = 0; k < oldACount; k++) {
-        const p = oldAIdx[k];
-        touchedPixels.set(p, { covOld: oldACov[k] * op, covNew: 0 });
-      }
-      for (let k = 0; k < oldBCount; k++) {
-        const p = oldBIdx[k];
-        const existing = touchedPixels.get(p);
-        const cB = oldBCov[k] * op;
-        if (existing) {
-          existing.covOld = 1 - (1 - existing.covOld) * (1 - cB);
+      let touchedOldCount = 0;
+      for (let k = 0; k < oldASamples.count; k++) {
+        const p = oldASamples.idx[k];
+        const cA = oldASamples.cov[k] * op;
+        if (covOldArr[p] === 0) {
+          touchedOld[touchedOldCount++] = p;
+          covOldArr[p] = cA;
         } else {
-          touchedPixels.set(p, { covOld: cB, covNew: 0 });
+          covOldArr[p] = 1 - (1 - covOldArr[p]) * (1 - cA);
+        }
+      }
+      for (let k = 0; k < oldBSamples.count; k++) {
+        const p = oldBSamples.idx[k];
+        const cB = oldBSamples.cov[k] * op;
+        if (covOldArr[p] === 0) {
+          touchedOld[touchedOldCount++] = p;
+          covOldArr[p] = cB;
+        } else {
+          covOldArr[p] = 1 - (1 - covOldArr[p]) * (1 - cB);
         }
       }
 
-      // Thread color in channels
       const threadColor = engine.getThreadColorChannels(t);
 
       let bestCand: {
         midPeg: number;
         midSide: PegSide;
-        segA: typeof oldSegA;
-        segB: typeof oldSegB;
+        segA: Segment;
+        segB: Segment;
         deltaError: number;
-        touched: Map<number, TouchedCoverage>;
+        pixels: Int32Array;
+        covOld: Float32Array;
+        covNew: Float32Array;
       } | null = null;
 
       // Temporarily decrement chord usage for the two old chords
@@ -134,68 +119,52 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
 
         const pCandMid = pegs[candMid];
 
-        // Test possible arrival/departure tangent side around the candidate intermediate peg.
-        // Arrival and departure use the identical peg side to model continuous physical peg wrapping.
         for (const candSide of sides) {
           const candSegA = tangentSegment(pA, stepA.fromSide, pCandMid, candSide, pegRadiusMm);
           const candSegB = tangentSegment(pCandMid, candSide, pB, stepB.toSide, pegRadiusMm);
 
-          // Rasterize candidate chords
-          const candACount = raster.rasterize(
-            candSegA.x0 * scale,
-            candSegA.y0 * scale,
-            candSegA.x1 * scale,
-            candSegA.y1 * scale,
-            widthPx,
-          );
-          const candAIdx = new Int32Array(raster.idx.subarray(0, candACount));
-          const candACov = new Float32Array(raster.cov.subarray(0, candACount));
+          const candASamples = engine.chordSamples(pegFrom, stepA.fromSide, candMid, candSide, t);
+          const candBSamples = engine.chordSamples(candMid, candSide, pegTo, stepB.toSide, t);
 
-          const candBCount = raster.rasterize(
-            candSegB.x0 * scale,
-            candSegB.y0 * scale,
-            candSegB.x1 * scale,
-            candSegB.y1 * scale,
-            widthPx,
-          );
-          const candBIdx = new Int32Array(raster.idx.subarray(0, candBCount));
-          const candBCov = new Float32Array(raster.cov.subarray(0, candBCount));
-
-          // Union touched pixels
-          const candidateTouched = new Map<number, TouchedCoverage>();
-          for (const [p, cov] of touchedPixels.entries()) {
-            candidateTouched.set(p, { covOld: cov.covOld, covNew: 0 });
+          let touchedCandCount = 0;
+          for (let k = 0; k < touchedOldCount; k++) {
+            touchedCand[touchedCandCount++] = touchedOld[k];
           }
 
-          for (let k = 0; k < candACount; k++) {
-            const p = candAIdx[k];
-            const cA = candACov[k] * op;
-            const existing = candidateTouched.get(p);
-            if (existing) {
-              existing.covNew = cA;
+          for (let k = 0; k < candASamples.count; k++) {
+            const p = candASamples.idx[k];
+            const cA = candASamples.cov[k] * op;
+            if (covNewArr[p] === 0) {
+              if (covOldArr[p] === 0) {
+                touchedCand[touchedCandCount++] = p;
+              }
+              covNewArr[p] = cA;
             } else {
-              candidateTouched.set(p, { covOld: 0, covNew: cA });
-            }
-          }
-          for (let k = 0; k < candBCount; k++) {
-            const p = candBIdx[k];
-            const cB = candBCov[k] * op;
-            const existing = candidateTouched.get(p);
-            if (existing) {
-              existing.covNew = 1 - (1 - existing.covNew) * (1 - cB);
-            } else {
-              candidateTouched.set(p, { covOld: 0, covNew: cB });
+              covNewArr[p] = 1 - (1 - covNewArr[p]) * (1 - cA);
             }
           }
 
-          // Compute change in squared error across touched pixels
+          for (let k = 0; k < candBSamples.count; k++) {
+            const p = candBSamples.idx[k];
+            const cB = candBSamples.cov[k] * op;
+            if (covNewArr[p] === 0) {
+              if (covOldArr[p] === 0) {
+                touchedCand[touchedCandCount++] = p;
+              }
+              covNewArr[p] = cB;
+            } else {
+              covNewArr[p] = 1 - (1 - covNewArr[p]) * (1 - cB);
+            }
+          }
+
           let deltaError = 0;
-          for (const [p, covs] of candidateTouched.entries()) {
+          for (let k = 0; k < touchedCandCount; k++) {
+            const p = touchedCand[k];
             const w = target.weight[p];
             if (w === 0) continue;
 
-            const cOld = covs.covOld;
-            const cNew = covs.covNew;
+            const cOld = covOldArr[p];
+            const cNew = covNewArr[p];
             if (Math.abs(cOld - cNew) < 1e-6) continue;
 
             for (let ch = 0; ch < channels; ch++) {
@@ -204,7 +173,6 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
               const CanvasCurrent = engine.canvas[q];
               const K = threadColor[ch];
 
-              // Unmix old coverage and apply candidate coverage
               const denom = Math.max(1e-4, 1 - cOld);
               const base = Math.min(1, Math.max(0, (CanvasCurrent - cOld * K) / denom));
               const canvasNew = Math.min(1, Math.max(0, base + cNew * (K - base)));
@@ -224,23 +192,40 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
           }
 
           if (deltaError < -1e-5 && (!bestCand || deltaError < bestCand.deltaError)) {
+            const pixelsSnapshot = new Int32Array(touchedCandCount);
+            const covOldSnapshot = new Float32Array(touchedCandCount);
+            const covNewSnapshot = new Float32Array(touchedCandCount);
+            for (let k = 0; k < touchedCandCount; k++) {
+              const p = touchedCand[k];
+              pixelsSnapshot[k] = p;
+              covOldSnapshot[k] = covOldArr[p];
+              covNewSnapshot[k] = covNewArr[p];
+            }
             bestCand = {
               midPeg: candMid,
               midSide: candSide,
               segA: candSegA,
               segB: candSegB,
               deltaError,
-              touched: candidateTouched,
+              pixels: pixelsSnapshot,
+              covOld: covOldSnapshot,
+              covNew: covNewSnapshot,
             };
+          }
+
+          // Reset covNewArr for next candidate
+          for (let k = 0; k < touchedCandCount; k++) {
+            covNewArr[touchedCand[k]] = 0;
           }
         }
       }
 
       if (bestCand) {
-        // Apply pixel delta directly to engine canvas to keep state accurate for subsequent steps
-        for (const [p, covs] of bestCand.touched.entries()) {
-          const cOld = covs.covOld;
-          const cNew = covs.covNew;
+        // Apply pixel delta directly to engine canvas
+        for (let k = 0; k < bestCand.pixels.length; k++) {
+          const p = bestCand.pixels[k];
+          const cOld = bestCand.covOld[k];
+          const cNew = bestCand.covNew[k];
           if (Math.abs(cOld - cNew) < 1e-6) continue;
           for (let ch = 0; ch < channels; ch++) {
             const q = p * channels + ch;
@@ -252,7 +237,6 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
           }
         }
 
-        // Accept the replacement
         stepA.to = bestCand.midPeg;
         stepA.toSide = bestCand.midSide;
         stepA.segmentMm = bestCand.segA.length;
@@ -270,6 +254,11 @@ export function refineWeave(engine: WeaveEngine, passes = 1): number {
         // Restore chord usage for old chords
         engine.incrementChordUse(pegFrom, pegMid);
         engine.incrementChordUse(pegMid, pegTo);
+      }
+
+      // Reset covOldArr
+      for (let k = 0; k < touchedOldCount; k++) {
+        covOldArr[touchedOld[k]] = 0;
       }
     }
 

@@ -2,7 +2,13 @@ import type { WeaveOptions, WeaveResult } from '@weaver-art/core';
 
 /** Messages from the UI thread to the weaving worker. */
 export type ToWorker =
-  | { type: 'start'; image: { width: number; height: number; data: ArrayBuffer }; options: WeaveOptions }
+  | {
+      type: 'start';
+      image: { width: number; height: number; data: ArrayBuffer };
+      options: WeaveOptions;
+      accel?: 'js' | 'wasm' | 'parallel';
+      threads?: number;
+    }
   | { type: 'stop' };
 
 /** Messages from the weaving worker to the UI thread. */

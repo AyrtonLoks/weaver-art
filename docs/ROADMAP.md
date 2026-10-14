@@ -40,8 +40,16 @@ Legenda: ✅ feito · 🔜 próximo · 💡 ideia
 - ✅ **Exportação de G-code para máquinas/plotters XY**: comandos G1 para segmentos tangentes e G2/G3 para arcos ao redor dos pinos com raio de folga da ferramenta, divisão de arcos >180°, pausas M0 para troca de cor e cálculo exato de percurso.
 - ✅ **Retomada e sincronização de progresso sem servidor**: códigos curtos compactos com checksum (`WA1-<fingerprint>-<step>-<checksum>`), sincronização via hash de URL (`#progress=...`), cópia/cola na interface e exportação/retomada em arquivos `.weave.json`.
 
-## Desempenho
+## v0.5 — Desempenho (concluído)
 
-- 🔜 Cache de rasterização das cordas mais usadas e poda de candidatos
-- 💡 Núcleo em Rust → WebAssembly (SIMD) ou WebGPU para grades maiores
-- 💡 Paralelismo: avaliar candidatos em vários Workers
+- ✅ **Cache de rasterização de cordas canônicas (`ChordCache`)**: cache LRU delimitado por memória (128 MB padrão CLI, 64 MB web) armazenando coberturas antialiasing exatas indexadas por chave canônica independente do sentido da corda, bit-idêntico à rasterização direta.
+- ✅ **Poda de candidatos por lazy greedy (`candidatePruning: 'lazy'`)**: aceleração baseada no princípio de monotonicidade submodular (Minoux, 1978) que usa o último ganho calculado como limite superior estrito para podar até 90%+ dos candidatos viáveis sem perda de fidelidade (passos idênticos em monocromático, $\Delta\text{RMSE} \le 2\%$ e $\Delta\text{SSIM} \le 2\%$ em CMYK/halftone).
+- ✅ **Núcleo em Rust → WebAssembly SIMD (`@weaver-art/wasm`)**: pacote dedicado com kernel puro em Rust (`no_std`, `wasm32-unknown-unknown`) e vetorização SIMD de 128 bits (`+simd128`), fusão de rasterização e pontuação de ganho em laço único sem materialização intermediária, com paridade numérica estrita com a referência em TypeScript.
+- ✅ **Paralelismo multi-worker com memória compartilhada (`ParallelEvaluator`)**: avaliação concorrente de candidatos dividida entre múltiplos Web Workers e threads Node (`worker_threads`) via `SharedArrayBuffer` e sincronização sem lock por barreira `Atomics`, com desempate determinístico reproduzindo passos idênticos à execução sequencial.
+- 💡 **WebGPU**: mantido como ideia conceitual para exploração futura; o ganho de computação massiva em GPU atualmente é atenuado pela latência de sincronização síncrona exigida pelo algoritmo guloso estrito a cada corda em grades $\le 1600$ px.
+
+## Próximas ideias (v0.6+)
+
+- 💡 Poda de candidatos baseada em limiares de luminância local do alvo
+- 💡 Exportação de instruções em áudio MP3 pré-renderizado por camada
+- 💡 Algoritmo alternativo de tecelagem não-guloso por simulated annealing global

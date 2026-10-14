@@ -23,3 +23,7 @@ export * from './template.js';
 export * from './estimate.js';
 export * from './gcode.js';
 export * from './progress.js';
+export * from './chord-cache.js';
+export * from './evaluator.js';
+export * from './pruning.js';
+export * from './parallel.js';

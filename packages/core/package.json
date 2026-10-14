@@ -1,6 +1,6 @@
 {
   "name": "@weaver-art/core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Motor de geração de padrões de string art em tear circular (modelo físico de fio, pinos e cor).",
   "license": "MIT",
   "type": "module",

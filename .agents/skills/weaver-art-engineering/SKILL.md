@@ -69,7 +69,26 @@ Para automatizar a tecelagem com plotters cartesianos XY:
    - Sentido correto dos arcos `G2`/`G3`;
    - Pausas programadas `M0` nas trocas de carretel/cor.
 
-### 7. Pipeline de Verificação Padrão
+### 7. Aceleração, Desempenho e Benchmarking (v0.5.0)
+
+Ao otimizar tempos de processamento ou perfilar o algoritmo:
+
+1. **Executar o Benchmark Padronizado**:
+   ```bash
+   npm run bench
+   ```
+   Compara `JS`, `WASM (SIMD)`, `WASM + Minoux (lazy)` e `Parallel (N threads)`. O benchmark valida se todas as variantes preservam paridade estrita de RMSE e SSIM.
+2. **Flags de Performance na CLI**:
+   - `--accel wasm`: Ativa o kernel WebAssembly SIMD compilado a partir de Rust.
+   - `--pruning lazy`: Ativa a poda preguiçosa de Minoux (3–5× mais rápido, preservando exatidão matemática).
+   - `--threads <N>`: Distribui a avaliação de candidatos entre $N$ threads de trabalho via `SharedArrayBuffer` + `Atomics`.
+   - `--cache-mb <N>`: Configura o tamanho máximo em megabytes do cache LRU de cordas canônicas (padrão 128 MB).
+3. **Recompilar o Kernel WebAssembly (se editar Rust)**:
+   ```bash
+   npm run build:wasm
+   ```
+
+### 8. Pipeline de Verificação Padrão
 
 Sempre execute:
 

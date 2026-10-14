@@ -143,6 +143,10 @@ export interface WeaveOptions {
   halftoneMixing?: boolean;
   /** Raio de mistura óptica de meio-tom em mm. Padrão: 0.75 mm. */
   halftoneRadiusMm?: number;
+  /** Orçamento do cache de rasterização de cordas, em MB. 0 = desligado. Padrão: 128. */
+  rasterCacheMb?: number;
+  /** 'none' (exato) | 'lazy' (stale gains como limite superior; aproximado em cor/halftone). Padrão: 'none'. */
+  candidatePruning?: 'none' | 'lazy';
   /** Image preparation. */
   preprocess: PreprocessOptions;
 }

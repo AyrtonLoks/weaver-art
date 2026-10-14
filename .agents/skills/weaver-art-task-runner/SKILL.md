@@ -24,19 +24,28 @@ Execute o checklist de qualidade completo:
 npm run check
 ```
 
-## 2. Roteiro para Alterações no Algoritmo Core
+## 2. Roteiro para Alterações no Algoritmo Core e Kernel WASM
 
-Ao alterar `packages/core/src`:
+Ao alterar `packages/core/src` ou `packages/wasm/rust`:
 
-1. Mantenha os testes existentes em `packages/core/test/` passando.
-2. Adicione testes para novas invariantes matemáticas (ex.: conservação de continuidade, limites de tolerância).
-3. Compile o core:
+1. Mantenha os testes existentes passando (`npm test` ou `vitest run`).
+2. Se editar o kernel Rust (`packages/wasm/rust/`):
+   ```bash
+   npm run build:wasm
+   ```
+3. Garanta que a paridade numérica exata continue 100% válida:
+   ```bash
+   npx vitest run packages/wasm/test/parity.test.ts
+   ```
+4. Compile os workspaces:
    ```bash
    npm run build --workspace @weaver-art/core
-   ```
-4. Compile o CLI:
-   ```bash
+   npm run build --workspace @weaver-art/wasm
    npm run build --workspace @weaver-art/cli
+   ```
+5. Execute a suíte de benchmarks para validar velocidade e estabilidade:
+   ```bash
+   npm run bench
    ```
 
 ## 3. Validação Visual Ponta a Ponta
@@ -44,9 +53,9 @@ Ao alterar `packages/core/src`:
 Para verificar se uma alteração melhorou ou piorou a qualidade visual:
 
 1. Use uma imagem de referência de teste (ex.: retrato ou imagem em escala de cinza em `scratch/`).
-2. Execute o CLI salvando em pasta de saída temporária:
+2. Execute o CLI salvando em pasta de saída temporária com aceleração ativada:
    ```bash
-   node packages/cli/dist/index.js caminho/imagem.jpg -o output/teste --resolution 400
+   node packages/cli/dist/index.js caminho/imagem.jpg -o output/teste --resolution 400 --accel wasm --pruning lazy --threads 4
    ```
 3. Inspecione o PNG gerado (`output/teste/*.weave.png`) e verifique RMSE e metros de fio informados.
 4. Compare os SVGs em escala real se a mudança envolver geometria, rotação ou lados de pinos.

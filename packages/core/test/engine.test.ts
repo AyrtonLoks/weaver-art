@@ -485,4 +485,71 @@ describe('exports', () => {
     expect(result.rmse).toBeGreaterThan(0);
     expect(result.steps.every((s) => s.gain > 0)).toBe(true);
   });
+
+  it('produces bit-identical weave steps with rasterCacheMb: 0 vs 128 across mono, CMYK, and rectangular loom', () => {
+    const img = discImage();
+
+    // 1. Mono circle
+    const monoOpts: DeepPartial<WeaveOptions> = { ...small, maxLines: 25 };
+    const eMonoUncached = WeaveEngine.create(img, { ...monoOpts, rasterCacheMb: 0 });
+    const rMonoUncached = eMonoUncached.run();
+    const eMonoCached = WeaveEngine.create(img, { ...monoOpts, rasterCacheMb: 128 });
+    const rMonoCached = eMonoCached.run();
+
+    expect(rMonoCached.steps.length).toBe(rMonoUncached.steps.length);
+    for (let i = 0; i < rMonoCached.steps.length; i++) {
+      expect(rMonoCached.steps[i].from).toBe(rMonoUncached.steps[i].from);
+      expect(rMonoCached.steps[i].to).toBe(rMonoUncached.steps[i].to);
+      expect(rMonoCached.steps[i].fromSide).toBe(rMonoUncached.steps[i].fromSide);
+      expect(rMonoCached.steps[i].toSide).toBe(rMonoUncached.steps[i].toSide);
+      expect(rMonoCached.steps[i].gain).toBe(rMonoUncached.steps[i].gain);
+    }
+    expect(eMonoCached.perf.cacheHits).toBeGreaterThan(0);
+
+    // 2. CMYK circle
+    const cmykOpts: DeepPartial<WeaveOptions> = {
+      ...small,
+      maxLines: 20,
+      threads: CMYK_THREADS.map((t, i) => ({ ...t, startPeg: i * 10 })),
+      preprocess: { grayscale: false },
+    };
+    const eCmykUncached = WeaveEngine.create(img, { ...cmykOpts, rasterCacheMb: 0 });
+    const rCmykUncached = eCmykUncached.run();
+    const eCmykCached = WeaveEngine.create(img, { ...cmykOpts, rasterCacheMb: 128 });
+    const rCmykCached = eCmykCached.run();
+
+    expect(rCmykCached.steps.length).toBe(rCmykUncached.steps.length);
+    for (let i = 0; i < rCmykCached.steps.length; i++) {
+      expect(rCmykCached.steps[i].thread).toBe(rCmykUncached.steps[i].thread);
+      expect(rCmykCached.steps[i].from).toBe(rCmykUncached.steps[i].from);
+      expect(rCmykCached.steps[i].to).toBe(rCmykUncached.steps[i].to);
+      expect(rCmykCached.steps[i].gain).toBe(rCmykUncached.steps[i].gain);
+    }
+
+    // 3. Rectangular loom
+    const rectOpts: DeepPartial<WeaveOptions> = {
+      ...small,
+      maxLines: 20,
+      minPegGap: 2,
+      loom: {
+        shape: 'rectangle' as const,
+        widthMm: 200,
+        heightMm: 150,
+        pegsX: 12,
+        pegsY: 8,
+        pegDiameterMm: 1.5,
+      },
+    };
+    const eRectUncached = WeaveEngine.create(img, { ...rectOpts, rasterCacheMb: 0 });
+    const rRectUncached = eRectUncached.run();
+    const eRectCached = WeaveEngine.create(img, { ...rectOpts, rasterCacheMb: 128 });
+    const rRectCached = eRectCached.run();
+
+    expect(rRectCached.steps.length).toBe(rRectUncached.steps.length);
+    for (let i = 0; i < rRectCached.steps.length; i++) {
+      expect(rRectCached.steps[i].from).toBe(rRectUncached.steps[i].from);
+      expect(rRectCached.steps[i].to).toBe(rRectUncached.steps[i].to);
+      expect(rRectCached.steps[i].gain).toBe(rRectUncached.steps[i].gain);
+    }
+  });
 });

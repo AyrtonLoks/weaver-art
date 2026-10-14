@@ -8,38 +8,46 @@ Obrigado pelo interesse! Este guia resume o fluxo de trabalho.
   — se o npm estiver usando outro Node mais antigo, dependências nativas (rolldown, sharp) podem não
   ser instaladas.
 - `npm install` na raiz instala todos os workspaces.
+- **Rust Toolchain (opcional)**: O binário WebAssembly do `@weaver-art/wasm` já vem pré-compilado e embutido no repositório. Para modificar o código-fonte Rust do kernel SIMD (`packages/wasm/rust/`), instale o target WASM com `rustup target add wasm32-unknown-unknown` e recompile com `npm run build:wasm`.
 
 ## Fluxo
 
 1. Crie um branch a partir de `main`: `feat/…`, `fix/…`, `docs/…`.
 2. Faça commits pequenos seguindo [Conventional Commits](https://www.conventionalcommits.org/pt-br/):
-   `feat(core): …`, `fix(web): …`, `docs: …`, `test: …`, `chore: …`.
+   `feat(core): …`, `feat(wasm): …`, `fix(web): …`, `docs: …`, `test: …`, `chore: …`.
 3. Rode `npm run check` (typecheck + lint + formatação + testes) antes de abrir o PR.
-4. Descreva no PR **o efeito visual** da mudança quando ela tocar o algoritmo — de preferência com
+4. Para alterações no motor de tecelagem, execute `npm run bench` para verificar ausência de regressões de velocidade e garantir paridade numérica exata.
+5. Descreva no PR **o efeito visual** da mudança quando ela tocar o algoritmo — de preferência com
    imagens antes/depois geradas pela CLI com os mesmos parâmetros.
 
 ## Onde mexer
 
-| Quero…                                     | Arquivo                                   |
-| ------------------------------------------ | ----------------------------------------- |
-| mudar a geometria do tear / pinos          | `packages/core/src/geometry.ts`           |
-| importar/exportar coordenadas de pinos CSV | `packages/core/src/pegs-csv.ts`           |
-| mudar como o fio cobre os pixels           | `packages/core/src/raster.ts`             |
-| mudar a função objetivo ou a busca         | `packages/core/src/engine.ts`             |
-| mudar o preparo da foto                    | `packages/core/src/image.ts`              |
-| mexer no gabarito de furação ou PDF puro   | `packages/core/src/template.ts`, `pdf.ts` |
-| ajustar estimativas de tempo e carretéis   | `packages/core/src/estimate.ts`           |
-| ajustar emissão de percursos G-code CNC    | `packages/core/src/gcode.ts`              |
-| mexer na persistência ou código de sync    | `packages/core/src/progress.ts`           |
-| adicionar um formato de saída              | `packages/core/src/export.ts`             |
-| adicionar opção na CLI                     | `packages/cli/src/index.ts`               |
-| mexer na interface                         | `apps/web/src/*`                          |
+| Quero…                                     | Arquivo                                       |
+| ------------------------------------------ | --------------------------------------------- |
+| mudar a geometria do tear / pinos          | `packages/core/src/geometry.ts`               |
+| importar/exportar coordenadas de pinos CSV | `packages/core/src/pegs-csv.ts`               |
+| mudar como o fio cobre os pixels           | `packages/core/src/raster.ts`                 |
+| mudar o cache de cordas canônico LRU       | `packages/core/src/chord-cache.ts`            |
+| mudar o algoritmo de poda gulosa (Minoux)  | `packages/core/src/pruning.ts`                |
+| mudar o loop de busca e avaliadores        | `packages/core/src/evaluator.ts`, `engine.ts` |
+| mudar o paralelismo multi-worker / Atomics | `packages/core/src/parallel.ts`               |
+| mudar o kernel SIMD em Rust (WASM)         | `packages/wasm/rust/src/lib.rs`               |
+| mudar o wrapper/avaliação WebAssembly      | `packages/wasm/src/wasm-evaluator.ts`         |
+| mudar o preparo da foto                    | `packages/core/src/image.ts`                  |
+| mexer no gabarito de furação ou PDF puro   | `packages/core/src/template.ts`, `pdf.ts`     |
+| ajustar estimativas de tempo e carretéis   | `packages/core/src/estimate.ts`               |
+| ajustar emissão de percursos G-code CNC    | `packages/core/src/gcode.ts`                  |
+| mexer na persistência ou código de sync    | `packages/core/src/progress.ts`               |
+| adicionar um formato de saída              | `packages/core/src/export.ts`                 |
+| adicionar opção na CLI                     | `packages/cli/src/index.ts`                   |
+| mexer na interface                         | `apps/web/src/*`                              |
 
 ## Princípios
 
 - **Fidelidade física primeiro**: grandezas em mm, luz linear, nada de "constantes mágicas" em
   pixels. Se um parâmetro é uma estimativa, documente-o como tal.
 - **Core sem dependências** e sem APIs de plataforma (DOM, `fs`, `Buffer`).
+- **Paridade Exata TS ↔ WASM**: o kernel WebAssembly SIMD deve produzir resultados matematicamente idênticos bit a bit à implementação pura em TypeScript.
 - **Testes para invariantes**: toda mudança no motor deve manter (ou acrescentar) testes de
-  continuidade do fio, restrições de pinos e redução de erro.
+  continuidade do fio, restrições de pinos, redução de erro e concorrência sem travamentos.
 - Documentação e interface em português; código e comentários em inglês.

@@ -31,6 +31,7 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 | Cor                 | camadas separadas                     | **paleta automática da foto** (K-Means em CIELAB), **camadas sequenciais (`layered`) ou intercalado balanceado** com cotas ponderadas e âncora escura (presets `vrellis-color`, `cmyk` ou personalizado) |
 | Percepção           | pixel a pixel local                   | **modelo óptico de meio-tom** ($G * (T - C)$), **distância de observação** (desfoque retiniano, Birsak et al., 2018), CLAHE e **métricas CIELAB ΔE e SSIM**                                              |
 | Otimização          | apenas gulosa                         | **gulosa + refinamento global pós-processamento** preservando a continuidade física estrita do fio                                                                                                       |
+| Desempenho          | laço único JS sem cache               | **cache LRU exato de cordas**, **poda lazy greedy (Minoux 1978)**, **núcleo Rust SIMD (WASM)** e **paralelismo multi-worker (SharedArrayBuffer + Atomics)**                                              |
 | Calibração          | manual empírica                       | **ferramenta de calibração** de cor e parâmetros físicos a partir de fotos de meadas                                                                                                                     |
 | Fabricação          | nenhuma                               | **gabaritos de furação 1:1** (SVG e PDF multi-folhas com régua de conferência), **estimativa de tempo/carretéis**, **exportação G-code (XY)** e **retomada entre dispositivos**                          |
 | Saída               | lista de pinos                        | instruções `.txt` agrupadas por camada com estimativa, `.csv`, `.json`, **SVG 1:1**, PNG, G-code e **modo tecelagem com voz e sincronização**                                                            |
@@ -43,6 +44,7 @@ Detalhes matemáticos em [docs/ALGORITHM.md](docs/ALGORITHM.md).
 weaver-art/
 ├── packages/
 │   ├── core/   @weaver-art/core — motor e fabricação (TypeScript puro, sem dependências; roda no navegador e no Node)
+│   ├── wasm/   @weaver-art/wasm — kernel computacional de alta performance em Rust compilado para WebAssembly com SIMD 128-bit
 │   └── cli/    @weaver-art/cli  — linha de comando (foto → JSON/TXT/CSV/SVG/PNG/GCODE/PDF)
 ├── apps/
 │   └── web/    @weaver-art/web  — estúdio no navegador (Vite + Web Worker) e modo tecelagem com sincronização
@@ -66,6 +68,9 @@ npm run build
 npm run weave -- foto.jpg                                                    # preset Vrellis monocromático
 npm run weave -- foto.jpg --preset cmyk --lines 10000 --repeats 2            # preset CMYK em camadas (10.000 cordas)
 npm run weave -- foto.jpg --auto-palette 4 --halftone --lines 6000           # paleta automática da foto + meio-tom óptico
+npm run weave -- foto.jpg --accel wasm --pruning lazy                        # aceleração máxima com Rust SIMD + poda lazy
+npm run weave -- foto.jpg --accel parallel --threads 4                       # paralelismo em 4 threads via SharedArrayBuffer
+npm run weave -- foto.jpg --cache-mb 256                                     # ajuste do orçamento do ChordCache de rasterização
 npm run weave -- foto.jpg --shape square --width 500 --pegs 50 --gcode       # tear quadrado 500 mm + geração de G-code CNC
 npm run weave -- foto.jpg --shape rectangle --width 600 --height 400 --pegs-x 60 --pegs-y 40
 npm run weave -- foto.jpg --pegs-csv pinos.csv                               # pinos personalizados via CSV
@@ -113,23 +118,26 @@ Arquivos gerados em `./output/`:
 
 ## Parâmetros padrão (preset `vrellis-mono`)
 
-| Parâmetro               | Valor                | Origem                                                                     |
-| ----------------------- | -------------------- | -------------------------------------------------------------------------- |
-| Diâmetro do tear        | 711,2 mm (28″)       | publicado por Vrellis                                                      |
-| Pinos                   | 200                  | publicado por Vrellis                                                      |
-| Linhas                  | até 4 000            | Vrellis: 3 000 – 4 000 cordas, 1 – 2 km de fio                             |
-| Diâmetro do pino        | 2 mm                 | estimativa — calibre com o seu tear                                        |
-| Largura aparente do fio | 0,2 mm               | estimativa — calibre com o seu fio                                         |
-| Gap mínimo              | 12 pinos             | evita cordas inúteis rente ao aro                                          |
-| Repetições por par      | 1                    | uma passada por par de pinos                                               |
-| Resolução da grade      | 400 px               | resolução de simulação física (ver ALGORITHM.md)                           |
-| Penalidade comp. fio    | 0.0                  | deságio de cordas longas (use 0.1 a 0.25 para economizar fio)              |
-| Distância de observação | 0.0 m                | desfoque retiniano à distância real (ex: 1.5 a 3.0 m, Birsak et al., 2018) |
-| Meio-tom óptico         | desativado (0.75 mm) | fusão espacial retiniana de cores adjacentes à distância                   |
-| Refinamento global      | 0 passes             | passes pós-gulosos para redução de erro mantendo continuidade              |
+| Parâmetro               | Valor                     | Origem                                                                     |
+| ----------------------- | ------------------------- | -------------------------------------------------------------------------- |
+| Diâmetro do tear        | 711,2 mm (28″)            | publicado por Vrellis                                                      |
+| Pinos                   | 200                       | publicado por Vrellis                                                      |
+| Linhas                  | até 4 000                 | Vrellis: 3 000 – 4 000 cordas, 1 – 2 km de fio                             |
+| Diâmetro do pino        | 2 mm                      | estimativa — calibre com o seu tear                                        |
+| Largura aparente do fio | 0,2 mm                    | estimativa — calibre com o seu fio                                         |
+| Gap mínimo              | 12 pinos                  | evita cordas inúteis rente ao aro                                          |
+| Repetições por par      | 1                         | uma passada por par de pinos                                               |
+| Resolução da grade      | 400 px                    | resolução de simulação física (ver ALGORITHM.md)                           |
+| Penalidade comp. fio    | 0.0                       | deságio de cordas longas (use 0.1 a 0.25 para economizar fio)              |
+| Distância de observação | 0.0 m                     | desfoque retiniano à distância real (ex: 1.5 a 3.0 m, Birsak et al., 2018) |
+| Meio-tom óptico         | desativado (0.75 mm)      | fusão espacial retiniana de cores adjacentes à distância                   |
+| Refinamento global      | 0 passes                  | passes pós-gulosos para redução de erro mantendo continuidade              |
+| Orçamento do cache      | 128 MB (CLI), 64 MB (web) | tamanho do `ChordCache` de rasterização de cordas canônicas                |
+| Poda de candidatos      | `none` (exata)            | poda lazy greedy (`lazy`) para aceleração de até 5–10×                     |
 
 > [!TIP]
 >
+> - **Aceleração Máxima e Desempenho**: utilize `--accel wasm --pruning lazy` para combinar o kernel Rust SIMD e a poda lazy de candidatos. Em computadores multi-core com imagens em alta resolução ($\ge 600$ px), utilize `--accel parallel --threads 4` para dividir a avaliação entre trabalhadores via memória compartilhada.
 > - **Economia de fio e tensão mecânica**: utilize **Penalidade comp. fio** (`--length-penalty 0.15` a `0.25`) para priorizar cordas mais eficientes e aproximar a metragem total aos 1–2 km reportados por Petros Vrellis.
 > - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
 > - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
@@ -142,14 +150,16 @@ Arquivos gerados em `./output/`:
 
 ## Scripts
 
-| Comando                           | O que faz                             |
-| --------------------------------- | ------------------------------------- |
-| `npm run dev`                     | estúdio web com hot reload            |
-| `npm run build`                   | compila core, CLI e web               |
-| `npm test`                        | testes unitários                      |
-| `npm run typecheck`               | checagem de tipos em todos os pacotes |
-| `npm run lint` / `npm run format` | ESLint / Prettier                     |
-| `npm run check`                   | tudo acima (o mesmo que a CI)         |
+| Comando                           | O que faz                                                      |
+| --------------------------------- | -------------------------------------------------------------- |
+| `npm run dev`                     | estúdio web com hot reload                                     |
+| `npm run build`                   | compila core, wasm, CLI e web                                  |
+| `npm run build:wasm`              | compila o kernel Rust para WASM e regenera o binário em Base64 |
+| `npm run bench`                   | executa a suíte de benchmarks de desempenho                    |
+| `npm test`                        | testes unitários (Vitest)                                      |
+| `npm run typecheck`               | checagem de tipos em todos os pacotes                          |
+| `npm run lint` / `npm run format` | ESLint / Prettier                                              |
+| `npm run check`                   | tudo acima (o mesmo que a CI)                                  |
 
 ## Documentação
 
