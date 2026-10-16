@@ -1,0 +1,8 @@
+[package]
+name = "weaver-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camada 1 (Domain): Geometria polimórfica, Tangentes CW/CCW, Furação, Cores CIELAB/LinearRGB e Matriz Esparsa CSR."
+
+[dependencies]

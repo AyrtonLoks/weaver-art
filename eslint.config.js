@@ -7,10 +7,12 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/node_modules/**',
+      '**/target/**',
       'coverage/**',
       'output/**',
       '**/packages/wasm/src/generated/**',
       '**/packages/wasm/rust/target/**',
+      '**/pkg/**',
     ],
   },
   js.configs.recommended,

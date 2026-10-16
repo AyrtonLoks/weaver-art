@@ -1,0 +1,9 @@
+[package]
+name = "weaver-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camada 2 (DSP): Auto-Crop, CLAHE, Morfologia Matemática, Sobel/Canny e Transformada de Radon."
+
+[dependencies]
+weaver-domain = { path = "../weaver-domain" }

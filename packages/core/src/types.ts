@@ -110,10 +110,6 @@ export interface PreprocessOptions {
   crop?: { x: number; y: number; size: number };
   /** Proteção assimétrica de realces: penaliza sobre-escurecimento de tons claros [0, 10]. Padrão: 0 (2.0 a 4.0 em retratos). */
   highlightProtection?: number;
-  /** Repulsão angular consecutiva: deságio para cordas paralelas consecutivas [0, 1]. Padrão: 0 (0.3 a 0.5 em retratos). */
-  angularDiversity?: number;
-  /** Raio em mm ao redor do centro do tear com amortecimento de densidade caústica. Padrão: 0 (20 a 30 mm em círculos). */
-  centerDampRadiusMm?: number;
   /** Raio do filtro de unsharp mask para reforçar microdetalhes (óculos, cílios). */
   sharpenSigma?: number;
   /** Feathering suave da borda inferior para atenuar o tronco e roupas escuras [0, 0.5]. */
@@ -121,7 +117,7 @@ export interface PreprocessOptions {
 }
 
 /** Strategy for choosing thread colours during multi-thread weaving. */
-export type ColorStrategy = 'layered' | 'interleaved-balanced' | 'free';
+export type ColorStrategy = 'layered';
 
 /** Options controlling the optimisation itself. */
 export interface WeaveOptions {
@@ -137,32 +133,14 @@ export interface WeaveOptions {
   minPegGap: number;
   /** How many times the same peg pair may be used (regardless of wrap side). */
   maxChordRepeats: number;
-  /** Stop early when no chord reduces the error any further. */
-  stopWhenNoImprovement: boolean;
   /** Colour strategy for multi-thread weaving. Default: 'layered'. */
   colorStrategy?: ColorStrategy;
   /** Line budgets or proportions per thread (e.g. [0.2, 0.2, 0.2, 0.1, 0.3]). */
   threadLineBudgets?: number[];
-  /** Penalty factor for chord length L_norm = seg.length / diameterMm [0, 1]. Default: 0. */
-  lengthPenalty?: number;
   /** Viewing distance in meters (Birsak et al., 2018). Default: 0 (disabled). */
   viewingDistanceM?: number;
-  /** Global refinement passes (post-greedy optimization preserving thread continuity). Default: 0. */
-  refinePasses?: number;
-  /** Modelo óptico de mistura por meio-tom (fusão espacial de cores vizinhas a distância). */
-  halftoneMixing?: boolean;
-  /** Raio de mistura óptica de meio-tom em mm. Padrão: 0.75 mm. */
-  halftoneRadiusMm?: number;
-  /** Orçamento do cache de rasterização de cordas, em MB. 0 = desligado. Padrão: 128. */
-  rasterCacheMb?: number;
-  /** 'none' (exato) | 'lazy' (stale gains como limite superior; aproximado em cor/halftone). Padrão: 'none'. */
-  candidatePruning?: 'none' | 'lazy';
   /** Proteção assimétrica de realces: atalho de nível superior para preprocess.highlightProtection. */
   highlightProtection?: number;
-  /** Repulsão angular consecutiva: atalho de nível superior para preprocess.angularDiversity. */
-  angularDiversity?: number;
-  /** Amortecimento de singularidade central: atalho de nível superior para preprocess.centerDampRadiusMm. */
-  centerDampRadiusMm?: number;
   /** Image preparation. */
   preprocess: PreprocessOptions;
 }

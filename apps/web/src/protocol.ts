@@ -6,8 +6,6 @@ export type ToWorker =
       type: 'start';
       image: { width: number; height: number; data: ArrayBuffer };
       options: WeaveOptions;
-      accel?: 'js' | 'wasm' | 'parallel';
-      threads?: number;
     }
   | { type: 'stop' };
 

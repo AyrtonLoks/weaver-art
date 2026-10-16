@@ -10,8 +10,9 @@
     "declarationMap": false,
     "allowImportingTsExtensions": false,
     "paths": {
-      "@weaver-art/core": ["../../packages/core/src/index.ts"]
+      "@weaver-art/core": ["../../packages/core/src/index.ts"],
+      "@weaver-art/wasm": ["../../packages/wasm/src/index.ts"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "test", "vite.config.ts"]
 }

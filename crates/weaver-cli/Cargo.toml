@@ -1,0 +1,16 @@
+[package]
+name = "weaver-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camada 4 (CLI): Binário CLI para testes e benchmarks nativos."
+
+[[bin]]
+name = "weaver-cli"
+path = "src/main.rs"
+
+[dependencies]
+weaver-domain = { path = "../weaver-domain" }
+weaver-dsp = { path = "../weaver-dsp" }
+weaver-solvers = { path = "../weaver-solvers" }
+weaver-cam = { path = "../weaver-cam" }

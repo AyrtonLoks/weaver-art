@@ -1,13 +1,11 @@
-import { tangentSegment, type Loom, type Peg } from './geometry.js';
 import type { PegSide } from './types.js';
-import {
-  JsEvaluator,
-  type CandidateEvaluator,
-  type CandidateQuery,
-  type CandidateResult,
-  type EvaluatorBuffers,
-  type EvaluatorSetup,
-  type EvaluatorStats,
+import type {
+  CandidateEvaluator,
+  CandidateQuery,
+  CandidateResult,
+  EvaluatorBuffers,
+  EvaluatorSetup,
+  EvaluatorStats,
 } from './evaluator.js';
 import type { ChordSamples } from './chord-cache.js';
 
@@ -126,244 +124,58 @@ export interface ParallelEvaluatorOptions {
   onDispose?: () => void;
 }
 
+const EMPTY_SAMPLES: ChordSamples = {
+  idx: new Int32Array(0),
+  cov: new Float32Array(0),
+  count: 0,
+};
+
+/**
+ * Stub temporário de avaliação paralela JS (legado expurgado na Task 0.1).
+ */
 export class ParallelEvaluator implements CandidateEvaluator {
   readonly name = 'parallel' as const;
   readonly buffers: EvaluatorBuffers;
-  private readonly setup: EvaluatorSetup;
-  private readonly loom: Loom;
-  private readonly localEvaluator: JsEvaluator;
-  private readonly workerCount: number;
-  private readonly sharedControl: SharedControlState;
   private readonly onDispose?: () => void;
-  private isDisposed = false;
-
-  private readonly controlFloat: Float32Array;
 
   constructor(options: ParallelEvaluatorOptions) {
-    this.setup = options.setup;
     this.buffers = options.buffers;
-    this.workerCount = Math.max(1, options.workerCount);
-    this.sharedControl = options.sharedControl;
-    this.controlFloat = new Float32Array(options.sharedControl.descriptor.controlSab);
     this.onDispose = options.onDispose;
-
-    const N = this.setup.pegX.length;
-    const pegs: Peg[] = new Array(N);
-    for (let i = 0; i < N; i++) {
-      pegs[i] = {
-        index: i,
-        angle: 0,
-        x: this.setup.pegX[i],
-        y: this.setup.pegY[i],
-        nx: 0,
-        ny: 0,
-        edges: 0,
-      };
-    }
-    this.loom = {
-      pegs,
-      pegRadiusMm: this.setup.pegRadiusMm,
-      sides: this.setup.sides,
-      extentMm: this.setup.extentMm,
-      chordMask: this.setup.chordMask,
-    } as unknown as Loom;
-
-    const localCacheBytes = Math.floor(this.setup.rasterCacheBytes / this.workerCount);
-    const localSetup: EvaluatorSetup = {
-      ...this.setup,
-      rasterCacheBytes: localCacheBytes,
-    };
-    this.localEvaluator = new JsEvaluator(localSetup, this.buffers);
   }
 
-  waitUntilReady(): void {
-    if (this.workerCount <= 1) return;
-    const helperCount = this.workerCount - 1;
-    const { control } = this.sharedControl;
-    while (Atomics.load(control, CONTROL_READY_COUNT) < helperCount) {
-      const current = Atomics.load(control, CONTROL_READY_COUNT);
-      if (current < helperCount) {
-        Atomics.wait(control, CONTROL_READY_COUNT, current);
-      }
-    }
+  waitUntilReady(): void {}
+
+  bestForThread(_q: CandidateQuery): CandidateResult | null {
+    return null;
   }
 
-  bestForThread(q: CandidateQuery): CandidateResult | null {
-    if (this.workerCount <= 1) {
-      return this.localEvaluator.bestForThread(q);
-    }
-
-    const { control, resultsGain, resultsMeta } = this.sharedControl;
-    const N = this.setup.pegX.length;
-    const helperCount = this.workerCount - 1;
-
-    // Set query parameters in control buffer
-    Atomics.store(control, CONTROL_QUERY_THREAD, q.thread);
-    Atomics.store(control, CONTROL_QUERY_FROM_PEG, q.fromPeg);
-    Atomics.store(control, CONTROL_QUERY_FROM_SIDE, q.fromSide === null ? 0 : q.fromSide);
-    if (q.lastDirX !== undefined && q.lastDirY !== undefined) {
-      this.controlFloat[10] = q.lastDirX;
-      this.controlFloat[11] = q.lastDirY;
-      Atomics.store(control, CONTROL_QUERY_HAS_LAST_DIR, 1);
-    } else {
-      Atomics.store(control, CONTROL_QUERY_HAS_LAST_DIR, 0);
-    }
-    Atomics.store(control, CONTROL_COMMAND, CMD_EVALUATE);
-    Atomics.store(control, CONTROL_DONE_COUNT, 0);
-
-    // Increment epoch to wake up all helper workers
-    Atomics.add(control, CONTROL_EPOCH, 1);
-    Atomics.notify(control, CONTROL_EPOCH, helperCount);
-
-    // Worker 0 (main/coordinator thread) evaluates its own slice: [0, Math.floor(N / workerCount))
-    const start0 = 0;
-    const end0 = Math.floor(N / this.workerCount);
-    const best0 = this.localEvaluator.bestForThreadSlice(q, start0, end0);
-
-    // Wait for all helper workers (workers 1..W-1) to finish
-    while (Atomics.load(control, CONTROL_DONE_COUNT) < helperCount) {
-      const currentDone = Atomics.load(control, CONTROL_DONE_COUNT);
-      if (currentDone < helperCount) {
-        Atomics.wait(control, CONTROL_DONE_COUNT, currentDone);
-      }
-    }
-
-    // Reduce best candidate across worker 0 and workers 1..W-1
-    let best = best0;
-
-    for (let w = 1; w < this.workerCount; w++) {
-      const found = resultsMeta[w * 4 + 0];
-      if (found === 1) {
-        const gain = resultsGain[w];
-        if (!best || gain > best.gain) {
-          const to = resultsMeta[w * 4 + 1];
-          const fromSide = resultsMeta[w * 4 + 2] as PegSide;
-          const toSide = resultsMeta[w * 4 + 3] as PegSide;
-          const seg = tangentSegment(
-            this.loom.pegs[q.fromPeg],
-            fromSide,
-            this.loom.pegs[to],
-            toSide,
-            this.setup.pegRadiusMm,
-          );
-          best = {
-            thread: q.thread,
-            to,
-            fromSide,
-            toSide,
-            gain,
-            seg,
-          };
-        }
-      }
-    }
-
-    return best;
+  scoreChord(_q: CandidateQuery, _to: number, _toSide: PegSide): number {
+    return 0;
   }
 
-  scoreChord(q: CandidateQuery, to: number, toSide: PegSide): number {
-    return this.localEvaluator.scoreChord(q, to, toSide);
-  }
-
-  samples(from: number, fromSide: PegSide, to: number, toSide: PegSide, thread: number): ChordSamples {
-    return this.localEvaluator.samples(from, fromSide, to, toSide, thread);
+  samples(_from: number, _fromSide: PegSide, _to: number, _toSide: PegSide, _thread: number): ChordSamples {
+    return EMPTY_SAMPLES;
   }
 
   get stats(): EvaluatorStats {
-    return this.localEvaluator.stats;
+    return {
+      candidatesScored: 0,
+      candidatesSkipped: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      cacheBytes: 0,
+    };
   }
 
   dispose(): void {
-    if (this.isDisposed) return;
-    this.isDisposed = true;
-
-    if (this.workerCount > 1) {
-      const { control } = this.sharedControl;
-      const helperCount = this.workerCount - 1;
-      Atomics.store(control, CONTROL_COMMAND, CMD_TERMINATE);
-      Atomics.add(control, CONTROL_EPOCH, 1);
-      Atomics.notify(control, CONTROL_EPOCH, helperCount);
-    }
-
-    this.localEvaluator.dispose();
     this.onDispose?.();
   }
 }
 
-/**
- * Worker helper loop intended to run inside any thread/worker context
- * (Node worker_threads or browser Web Worker).
- */
 export function runHelperLoop(
-  workerIndex: number,
-  workerCount: number,
-  controlDesc: SharedControlDescriptor,
-  setup: EvaluatorSetup,
-  buffersDesc: SharedBuffersDescriptor,
-): void {
-  const { control, resultsGain, resultsMeta } = viewSharedControl(controlDesc, workerCount);
-  const controlFloat = new Float32Array(controlDesc.controlSab);
-  const buffers = viewSharedBuffers(buffersDesc);
-
-  const N = setup.pegX.length;
-  const startTo = Math.floor((workerIndex * N) / workerCount);
-  const endTo = Math.floor(((workerIndex + 1) * N) / workerCount);
-
-  const localCacheBytes = Math.floor(setup.rasterCacheBytes / workerCount);
-  const localSetup: EvaluatorSetup = {
-    ...setup,
-    rasterCacheBytes: localCacheBytes,
-  };
-  const evaluator = new JsEvaluator(localSetup, buffers);
-
-  // Signal that this worker is initialized and ready
-  Atomics.add(control, CONTROL_READY_COUNT, 1);
-  Atomics.notify(control, CONTROL_READY_COUNT, 1);
-
-  let localEpoch = 0;
-
-  while (true) {
-    let currentEpoch = Atomics.load(control, CONTROL_EPOCH);
-    while (currentEpoch === localEpoch) {
-      Atomics.wait(control, CONTROL_EPOCH, localEpoch);
-      currentEpoch = Atomics.load(control, CONTROL_EPOCH);
-    }
-    localEpoch = currentEpoch;
-
-    const cmd = Atomics.load(control, CONTROL_COMMAND);
-    if (cmd === CMD_TERMINATE) {
-      evaluator.dispose();
-      break;
-    }
-
-    if (cmd === CMD_EVALUATE) {
-      const thread = Atomics.load(control, CONTROL_QUERY_THREAD);
-      const fromPeg = Atomics.load(control, CONTROL_QUERY_FROM_PEG);
-      const rawSide = Atomics.load(control, CONTROL_QUERY_FROM_SIDE);
-      const fromSide = rawSide === 0 ? null : (rawSide as PegSide);
-      const hasLastDir = Atomics.load(control, CONTROL_QUERY_HAS_LAST_DIR) === 1;
-      const lastDirX = hasLastDir ? controlFloat[10] : undefined;
-      const lastDirY = hasLastDir ? controlFloat[11] : undefined;
-
-      const q: CandidateQuery = { thread, fromPeg, fromSide, lastDirX, lastDirY };
-      const best = evaluator.bestForThreadSlice(q, startTo, endTo);
-
-      if (best) {
-        resultsGain[workerIndex] = best.gain;
-        resultsMeta[workerIndex * 4 + 0] = 1;
-        resultsMeta[workerIndex * 4 + 1] = best.to;
-        resultsMeta[workerIndex * 4 + 2] = best.fromSide;
-        resultsMeta[workerIndex * 4 + 3] = best.toSide;
-      } else {
-        resultsGain[workerIndex] = -Infinity;
-        resultsMeta[workerIndex * 4 + 0] = 0;
-      }
-
-      const done = Atomics.add(control, CONTROL_DONE_COUNT, 1) + 1;
-      const helperCount = Atomics.load(control, CONTROL_HELPER_COUNT);
-      if (done === helperCount) {
-        Atomics.notify(control, CONTROL_DONE_COUNT, 1);
-      }
-    }
-  }
-}
+  _workerIndex: number,
+  _workerCount: number,
+  _controlDesc: SharedControlDescriptor,
+  _setup: EvaluatorSetup,
+  _buffersDesc: SharedBuffersDescriptor,
+): void {}

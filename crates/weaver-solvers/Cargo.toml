@@ -1,0 +1,9 @@
+[package]
+name = "weaver-solvers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camada 2 (Solvers): Solvers Greedy, Beam Search, Global NNLS/FISTA, 5 Estratégias de Carretel e SSIM Incremental."
+
+[dependencies]
+weaver-domain = { path = "../weaver-domain" }

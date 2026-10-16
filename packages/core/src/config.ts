@@ -82,18 +82,9 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
   maxLines: 4000,
   minPegGap: 12,
   maxChordRepeats: 1,
-  stopWhenNoImprovement: true,
   colorStrategy: 'layered',
-  lengthPenalty: 0,
   viewingDistanceM: 0,
-  refinePasses: 0,
-  halftoneMixing: false,
-  halftoneRadiusMm: 0.75,
-  rasterCacheMb: 128,
-  candidatePruning: 'none',
   highlightProtection: 0,
-  angularDiversity: 0,
-  centerDampRadiusMm: 0,
   preprocess: {
     grayscale: true,
     contrast: 1,
@@ -108,8 +99,6 @@ export const DEFAULT_OPTIONS: WeaveOptions = {
     perceptualBlurMm: 0,
     viewingDistanceM: 0,
     highlightProtection: 0,
-    angularDiversity: 0,
-    centerDampRadiusMm: 0,
     sharpenSigma: 0,
     torsoFeathering: 0,
   },
@@ -123,17 +112,13 @@ export const PRESETS = {
     maxLines: 4000,
     maxChordRepeats: 2,
     highlightProtection: 2.5,
-    angularDiversity: 0.35,
-    centerDampRadiusMm: 25,
     preprocess: {
       ...DEFAULT_OPTIONS.preprocess,
       grayscale: true,
       clahe: true,
       edgeEmphasis: 0.8,
       highlightProtection: 2.5,
-      angularDiversity: 0.35,
       shadowLift: 0.12,
-      centerDampRadiusMm: 25,
       sharpenSigma: 1.5,
       torsoFeathering: 0.25,
     },
@@ -147,17 +132,13 @@ export const PRESETS = {
     colorStrategy: 'layered',
     threadLineBudgets: [0.3, 0.05, 0.25, 0.4],
     highlightProtection: 2.5,
-    angularDiversity: 0.35,
-    centerDampRadiusMm: 25,
     preprocess: {
       ...DEFAULT_OPTIONS.preprocess,
       grayscale: false,
       clahe: true,
       edgeEmphasis: 0.8,
       highlightProtection: 2.5,
-      angularDiversity: 0.35,
       shadowLift: 0.12,
-      centerDampRadiusMm: 25,
       sharpenSigma: 1.5,
       torsoFeathering: 0.25,
     },
@@ -238,12 +219,6 @@ export function resolveOptions(
   }
   if (merged.highlightProtection !== undefined && overrides.preprocess?.highlightProtection === undefined) {
     merged.preprocess.highlightProtection = merged.highlightProtection;
-  }
-  if (merged.angularDiversity !== undefined && overrides.preprocess?.angularDiversity === undefined) {
-    merged.preprocess.angularDiversity = merged.angularDiversity;
-  }
-  if (merged.centerDampRadiusMm !== undefined && overrides.preprocess?.centerDampRadiusMm === undefined) {
-    merged.preprocess.centerDampRadiusMm = merged.centerDampRadiusMm;
   }
   validateOptions(merged);
   return merged;
@@ -351,8 +326,8 @@ export function validateOptions(o: WeaveOptions): void {
   }
   if (!Number.isInteger(o.maxChordRepeats) || o.maxChordRepeats < 1)
     errors.push('maxChordRepeats deve ser inteiro >= 1');
-  if (o.colorStrategy !== undefined && !['layered', 'interleaved-balanced', 'free'].includes(o.colorStrategy)) {
-    errors.push(`colorStrategy "${String(o.colorStrategy)}" inválida (use: layered, interleaved-balanced, free)`);
+  if (o.colorStrategy !== undefined && !['layered'].includes(o.colorStrategy)) {
+    errors.push(`colorStrategy "${String(o.colorStrategy)}" inválida (use: layered)`);
   }
   if (o.threadLineBudgets !== undefined) {
     if (!Array.isArray(o.threadLineBudgets) || o.threadLineBudgets.length !== o.threads.length) {
@@ -369,14 +344,8 @@ export function validateOptions(o: WeaveOptions): void {
   if (o.preprocess.edgeEmphasis !== undefined && (!(o.preprocess.edgeEmphasis >= 0) || o.preprocess.edgeEmphasis > 1)) {
     errors.push('preprocess.edgeEmphasis deve estar em [0, 1]');
   }
-  if (o.lengthPenalty !== undefined && (!(o.lengthPenalty >= 0) || o.lengthPenalty > 1)) {
-    errors.push('lengthPenalty deve estar em [0, 1]');
-  }
   if (o.viewingDistanceM !== undefined && !(o.viewingDistanceM >= 0)) {
     errors.push('viewingDistanceM deve ser >= 0');
-  }
-  if (o.refinePasses !== undefined && (!Number.isInteger(o.refinePasses) || o.refinePasses < 0)) {
-    errors.push('refinePasses deve ser inteiro >= 0');
   }
   if (o.preprocess.claheClipLimit !== undefined && !(o.preprocess.claheClipLimit > 0)) {
     errors.push('preprocess.claheClipLimit deve ser > 0');
@@ -393,35 +362,11 @@ export function validateOptions(o: WeaveOptions): void {
   if (o.preprocess.viewingDistanceM !== undefined && !(o.preprocess.viewingDistanceM >= 0)) {
     errors.push('preprocess.viewingDistanceM deve ser >= 0');
   }
-  if (o.halftoneMixing !== undefined && typeof o.halftoneMixing !== 'boolean') {
-    errors.push('halftoneMixing deve ser booleano');
-  }
-  if (o.halftoneRadiusMm !== undefined && (!(o.halftoneRadiusMm > 0) || o.halftoneRadiusMm > 20)) {
-    errors.push('halftoneRadiusMm deve ser número em (0, 20]');
-  }
-  if (o.rasterCacheMb !== undefined && (!(o.rasterCacheMb >= 0) || o.rasterCacheMb > 4096)) {
-    errors.push('rasterCacheMb deve estar em [0, 4096]');
-  }
-  if (o.candidatePruning !== undefined && !['none', 'lazy'].includes(o.candidatePruning)) {
-    errors.push(`candidatePruning "${String(o.candidatePruning)}" inválido (use: none, lazy)`);
-  }
   if (
     o.preprocess.highlightProtection !== undefined &&
     (!(o.preprocess.highlightProtection >= 0) || o.preprocess.highlightProtection > 10)
   ) {
     errors.push('preprocess.highlightProtection deve estar em [0, 10]');
-  }
-  if (
-    o.preprocess.angularDiversity !== undefined &&
-    (!(o.preprocess.angularDiversity >= 0) || o.preprocess.angularDiversity > 1)
-  ) {
-    errors.push('preprocess.angularDiversity deve estar em [0, 1]');
-  }
-  if (
-    o.preprocess.centerDampRadiusMm !== undefined &&
-    (!(o.preprocess.centerDampRadiusMm >= 0) || o.preprocess.centerDampRadiusMm > 500)
-  ) {
-    errors.push('preprocess.centerDampRadiusMm deve estar em [0, 500]');
   }
   if (
     o.preprocess.sharpenSigma !== undefined &&

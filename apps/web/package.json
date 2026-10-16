@@ -6,9 +6,10 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ../../scripts/ensure-wasm.mjs && vite",
     "build": "vite build",
     "preview": "vite preview",
+    "build:wasm": "node ../../scripts/build-wasm.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

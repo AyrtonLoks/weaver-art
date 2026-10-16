@@ -1,8 +1,10 @@
 node_modules
 dist
+target
 coverage
 output
 package-lock.json
 packages/wasm/src/generated/**
 packages/wasm/rust/target/**
+**/pkg/**
 

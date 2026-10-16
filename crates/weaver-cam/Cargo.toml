@@ -1,0 +1,9 @@
+[package]
+name = "weaver-cam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Camada 2 (CAM): Paginador de Gabarito PDF/SVG A4 1:1, Tabela CSV Mecânica e Gerador G-Code CNC G81/G83."
+
+[dependencies]
+weaver-domain = { path = "../weaver-domain" }

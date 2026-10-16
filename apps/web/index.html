@@ -12,6 +12,14 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='%23e8e4dc' stroke-width='4'/%3E%3Cpath d='M50 4L96 50L50 96L4 50Z M20 18L82 78 M80 20L18 80' stroke='%23e8e4dc' stroke-width='2' fill='none'/%3E%3C/svg%3E"
     />
+    <!-- Fallback de Cross-Origin Isolation para hospedagens sem headers HTTP customizáveis (GitHub Pages) -->
+    <script>
+      if (typeof window !== 'undefined' && window.crossOriginIsolated === false && 'serviceWorker' in navigator) {
+        const s = document.createElement('script');
+        s.src = './coi-serviceworker.js';
+        document.head.appendChild(s);
+      }
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -21,12 +29,13 @@
       </div>
       <nav class="tabs" role="tablist">
         <button class="tab active" data-tab="studio" role="tab">Estúdio</button>
-        <button class="tab" data-tab="knit" role="tab">Modo tecelagem</button>
+        <button class="tab" data-tab="blueprint" role="tab">Gabarito &amp; Furação (CAM)</button>
+        <button class="tab" data-tab="knit" role="tab">Modo Tecelagem</button>
       </nav>
     </header>
 
     <main>
-      <!-- ============================ ESTÚDIO ============================ -->
+      <!-- ============================ VISTA 1: ESTÚDIO ============================ -->
       <section id="studio" class="view active">
         <aside class="panel">
           <label class="drop" id="drop">
@@ -34,8 +43,9 @@
             <span id="drop-label">Arraste uma foto aqui<br /><small>ou clique para escolher</small></span>
           </label>
 
+          <!-- ENQUADRAMENTO HÍBRIDO -->
           <fieldset id="framingFieldset">
-            <legend>Enquadramento & Guia Facial</legend>
+            <legend>Enquadramento &amp; Guia Facial</legend>
             <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem">
               <button
                 type="button"
@@ -44,7 +54,7 @@
                 style="flex: 1"
                 title="Ajusta o zoom e posição para o rosto preencher 80% do círculo (estilo Petros Vrellis)"
               >
-                Enquadrar Rosto (80%)
+                Enquadrar Rosto Automaticamente (80%)
               </button>
               <button
                 type="button"
@@ -58,78 +68,104 @@
             <div class="grid2">
               <label
                 >Zoom <output id="cropZoom-out">1.00x</output>
-                <input type="range" id="cropZoom" min="0.8" max="2.5" step="0.05" value="1.0" />
+                <input type="range" id="cropZoom" min="0.8" max="3.0" step="0.05" value="1.0" />
               </label>
               <label
                 >Pan Y (Vertical) <output id="cropPanY-out">0%</output>
-                <input type="range" id="cropPanY" min="-40" max="40" step="1" value="0" />
+                <input type="range" id="cropPanY" min="-50" max="50" step="1" value="0" />
               </label>
             </div>
-            <label
-              >Pan X (Horizontal) <output id="cropPanX-out">0%</output>
-              <input type="range" id="cropPanX" min="-40" max="40" step="1" value="0" />
-            </label>
+            <div class="grid2">
+              <label
+                >Pan X (Horizontal) <output id="cropPanX-out">0%</output>
+                <input type="range" id="cropPanX" min="-50" max="50" step="1" value="0" />
+              </label>
+              <label
+                >Rotação <output id="cropRotation-out">0°</output>
+                <input type="range" id="cropRotation" min="-180" max="180" step="1" value="0" />
+              </label>
+            </div>
             <p class="hint" style="font-size: 0.78rem; color: var(--muted); margin-top: 0.25rem">
-              Para fidelidade Petros Vrellis, enquadre a cabeça preenchendo 75% a 85% do círculo.
+              Arraste diretamente sobre a foto para mover (Pan X/Y) ou use a roda do mouse para Zoom.
             </p>
           </fieldset>
 
+          <!-- PRESETS REATIVOS -->
           <fieldset>
-            <legend>Tear</legend>
+            <div style="display: flex; justify-content: space-between; align-items: center">
+              <legend style="padding: 0">Motor de Presets</legend>
+              <button
+                type="button"
+                id="btnResetPresetDefaults"
+                class="button-text"
+                hidden
+                style="
+                  font-size: 0.75rem;
+                  color: var(--accent-2);
+                  cursor: pointer;
+                  background: transparent;
+                  border: none;
+                  text-decoration: underline;
+                "
+              >
+                Restaurar padrão do modo
+              </button>
+            </div>
             <label
               >Preset
               <select id="preset">
-                <option value="portrait-mono">Retrato Vrellis · monocromático (alta fidelidade)</option>
-                <option value="portrait-cmyk">Retrato Vrellis · CMYK (pele humana calibrada)</option>
-                <option value="vrellis-mono">Vrellis · monocromático clássico (preto)</option>
-                <option value="vrellis-color">Vrellis · 5 cores (amarelo, magenta, azul, verde, preto)</option>
-                <option value="cmyk">CMYK · clássico (ciano, magenta, amarelo, preto)</option>
-                <option value="custom" disabled id="opt-custom">Personalizado (extraído da imagem)</option>
+                <option value="PORTRAIT_HIGH_SHARPNESS_EPOCHS">
+                  Retrato Vrellis · Alta Fidelidade (Épocas Coarse-to-Fine)
+                </option>
+                <option value="VRELLIS_CLASSIC_MONO">Vrellis Clássico · Monocromático (Preto)</option>
+                <option value="CMYK_DYNAMIC_HYSTERESIS">CMYK · Histerese Dinâmica de Trocas</option>
+                <option value="GLOBAL_RADON_FISTA">Otimização Global · NNLS / Radon (FISTA)</option>
+                <option value="portrait-mono">Retrato Mono (Legado)</option>
+                <option value="portrait-cmyk">Retrato CMYK (Legado)</option>
+                <option value="vrellis-color">Vrellis 5 Cores (Legado)</option>
+                <option value="cmyk">CMYK Clássico (Legado)</option>
               </select>
             </label>
-            <div id="paletteExtractor" style="margin-top: 0.5rem">
-              <div class="grid2">
-                <label>Cores da paleta <input type="number" id="paletteK" min="2" max="8" step="1" value="4" /></label>
-                <button type="button" id="btnExtractPalette" class="button" style="margin-top: 1.25rem" disabled>
-                  Extrair cores
-                </button>
-              </div>
-              <div
-                id="palettePreview"
-                hidden
-                style="margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem"
-              ></div>
-            </div>
+          </fieldset>
 
-            <label style="margin-top: 0.5rem"
+          <!-- SUBSISTEMA: TEAR & GEOMETRIA -->
+          <fieldset>
+            <legend>Tear &amp; Geometria</legend>
+            <label
               >Formato do tear
               <select id="loomShape">
-                <option value="circle">Circular (Petros Vrellis)</option>
-                <option value="square">Quadrado</option>
-                <option value="rectangle">Retangular</option>
+                <option value="CIRCULAR">Circular (Petros Vrellis)</option>
+                <option value="ELLIPTICAL">Elíptico</option>
+                <option value="RECTANGULAR">Retangular</option>
+                <option value="REGULAR_POLYGON">Poligonal Regular</option>
                 <option value="custom">Personalizado (CSV)</option>
               </select>
             </label>
 
-            <div id="loomCircleControls">
+            <!-- Dimensões Circulares -->
+            <div id="control-diameterMm">
               <div class="grid2">
-                <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" /></label>
-                <label>Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" /></label>
-              </div>
-            </div>
-
-            <div id="loomSquareControls" hidden>
-              <div class="grid2">
+                <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" value="200" /></label>
                 <label
-                  >Lado (mm) <input type="number" id="squareSide" min="50" max="3000" step="0.1" value="500"
-                /></label>
-                <label
-                  >Pinos / lado <input type="number" id="squarePegsPerSide" min="3" max="250" step="1" value="41"
+                  >Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" value="600"
                 /></label>
               </div>
             </div>
 
-            <div id="loomRectControls" hidden>
+            <!-- Dimensões Polígono Regular -->
+            <div id="control-polygonSides" hidden>
+              <div class="grid2">
+                <label
+                  >Lados do Polígono <input type="number" id="polygonSides" min="3" max="16" step="1" value="6"
+                /></label>
+                <label
+                  >Pinos totais <input type="number" id="polyPegs" min="12" max="1000" step="1" value="240"
+                /></label>
+              </div>
+            </div>
+
+            <!-- Dimensões Retangulares e Elípticas -->
+            <div id="control-widthMm" hidden>
               <div class="grid2">
                 <label
                   >Largura (mm) <input type="number" id="rectWidth" min="50" max="3000" step="0.1" value="600"
@@ -142,7 +178,8 @@
               </div>
             </div>
 
-            <div id="loomCustomControls" hidden>
+            <!-- Pinos Custom CSV -->
+            <div id="control-customPegs" hidden>
               <label class="button" style="text-align: center; margin-top: 0.25rem">
                 Carregar CSV de pinos (.csv)
                 <input type="file" id="customPegsFile" accept=".csv,text/csv,text/plain" hidden />
@@ -153,9 +190,21 @@
             </div>
 
             <div class="grid2">
-              <label>Ø pino (mm) <input type="number" id="pegDiameter" min="0" max="10" step="0.1" /></label>
-              <label>Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" /></label>
+              <label
+                >Ø pino (mm) <input type="number" id="pegDiameter" min="0.5" max="10" step="0.1" value="2.0"
+              /></label>
+              <label
+                >Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" value="0.15"
+              /></label>
             </div>
+
+            <label
+              >Rasterizador de Linhas
+              <select id="rasterizer">
+                <option value="XIAOLIN_WU_ANTIALIASED">Xiaolin Wu Anti-aliased (Subpixel)</option>
+                <option value="BRESENHAM_BINARY">Bresenham (Binário clássico)</option>
+              </select>
+            </label>
 
             <div
               class="mini-loom-container"
@@ -163,7 +212,7 @@
                 display: flex;
                 align-items: center;
                 gap: 0.75rem;
-                margin-top: 0.5rem;
+                margin-top: 0.25rem;
                 padding: 0.5rem;
                 background: #181817;
                 border-radius: 6px;
@@ -180,9 +229,61 @@
                 >Tear: 200 pinos</span
               >
             </div>
+          </fieldset>
 
-            <label class="button" style="text-align: center; margin-top: 0.5rem">
-              Calibrar cor de meada
+          <!-- SUBSISTEMA: CORES & ESTADO -->
+          <fieldset>
+            <legend>Cores &amp; Modelo Óptico</legend>
+            <label
+              >Modo de Cor
+              <select id="paletteMode">
+                <option value="MONOCHROME">Monocromático (Preto / Luz Linear)</option>
+                <option value="CMYK_SUBTRACTIVE">CMYK (Subtrativo Petros Vrellis)</option>
+                <option value="RGB_OCCLUSIVE">RGB (Oclusivo)</option>
+                <option value="USER_CUSTOM">Paleta do Usuário (Customizada)</option>
+              </select>
+            </label>
+
+            <!-- Paleta Customizada do Usuário -->
+            <div
+              id="control-userCustomPalette"
+              hidden
+              style="background: #141414; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--line)"
+            >
+              <label style="margin-bottom: 0.4rem"
+                >Cor de Fundo:
+                <input type="color" id="customBgColor" value="#ffffff" style="height: 28px; padding: 2px" />
+              </label>
+              <div style="font-size: 0.78rem; color: var(--muted); margin-bottom: 0.3rem">Carretéis de Linha:</div>
+              <div style="display: flex; gap: 0.4rem; align-items: center">
+                <input type="color" id="customColor1" value="#ff0000" style="height: 28px; width: 40px; padding: 2px" />
+                <input type="color" id="customColor2" value="#00aa00" style="height: 28px; width: 40px; padding: 2px" />
+                <input type="color" id="customColor3" value="#0044ff" style="height: 28px; width: 40px; padding: 2px" />
+                <input type="color" id="customColor4" value="#111111" style="height: 28px; width: 40px; padding: 2px" />
+              </div>
+            </div>
+
+            <div class="grid2">
+              <label
+                >Modelo Óptico
+                <select id="opticalMixModel">
+                  <option value="LINEAR_SUBTRACTIVE">Linear Subtrativo</option>
+                  <option value="PORTER_DUFF_OCCLUSION">Oclusão Porter-Duff</option>
+                  <option value="BEER_LAMBERT">Beer-Lambert</option>
+                </select>
+              </label>
+              <label
+                >Métrica de Cor
+                <select id="errorMetric">
+                  <option value="CIELAB_DELTA_E2000">CIELAB ΔE 2000</option>
+                  <option value="REDMEAN_WEIGHTED">Redmean</option>
+                  <option value="LINEAR_RGB">RGB Linear</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="button" style="text-align: center; margin-top: 0.25rem">
+              Calibrar cor de meada real
               <input type="file" id="calibrateFile" accept="image/*" hidden />
             </label>
             <div
@@ -205,178 +306,167 @@
             </div>
           </fieldset>
 
+          <!-- SUBSISTEMA: SOLVER & CARRETÉIS -->
           <fieldset>
-            <legend>Fabricação e Gabarito</legend>
+            <legend>Solver &amp; Estratégia de Carretéis</legend>
             <div class="grid2">
               <label
-                >Papel
-                <select id="paperSize">
-                  <option value="A4">A4 (210×297 mm)</option>
-                  <option value="A3">A3 (297×420 mm)</option>
-                  <option value="Letter">Carta (Letter)</option>
+                >Algoritmo Solver
+                <select id="solver">
+                  <option value="ITERATIVE_GREEDY">Guloso Iterativo (Vrellis)</option>
+                  <option value="BEAM_SEARCH">Beam Search</option>
+                  <option value="GLOBAL_NNLS_FISTA">Global NNLS / FISTA</option>
                 </select>
               </label>
-              <label
-                >Broca (mm) <input type="number" id="drillDiameter" min="0.5" max="10" step="0.5" value="2"
-              /></label>
-            </div>
-            <div class="grid2" style="margin-top: 0.25rem">
-              <button type="button" id="btnTemplateSVG" class="button">Gabarito SVG (1:1)</button>
-              <button type="button" id="btnTemplatePDF" class="button">Gabarito PDF</button>
-            </div>
-            <div class="grid2" style="margin-top: 0.25rem">
-              <button type="button" id="btnPegsCSV" class="button">Pinos (.csv)</button>
-              <button
-                type="button"
-                id="btnExportGcode"
-                class="button"
-                disabled
-                title="Gera G-code após calcular o padrão"
-              >
-                G-code CNC
-              </button>
-            </div>
-            <details style="margin-top: 0.5rem; font-size: 0.82rem">
-              <summary style="cursor: pointer; color: var(--muted)">Opções CNC / G-code</summary>
-              <div class="grid2" style="margin-top: 0.5rem">
-                <label
-                  >Folga pino (mm) <input type="number" id="gcodeClearance" min="0" max="10" step="0.5" value="1.5"
-                /></label>
-                <label
-                  >Avanço (mm/min) <input type="number" id="gcodeFeed" min="100" max="20000" step="500" value="3000"
-                /></label>
-                <label style="grid-column: span 2"
-                  >Origem CNC
-                  <select id="gcodeOrigin">
-                    <option value="bottom-left">Inferior esquerdo (0,0)</option>
-                    <option value="top-left">Superior esquerdo</option>
-                    <option value="center">Centro do tear</option>
-                  </select>
-                </label>
-              </div>
-            </details>
-          </fieldset>
-
-          <fieldset>
-            <legend>Algoritmo</legend>
-            <label
-              >Estratégia de cor
-              <select id="colorStrategy">
-                <option value="layered">Camadas sequenciais (recomendado)</option>
-                <option value="interleaved-balanced">Intercalado balanceado</option>
-                <option value="free">Livre (concorrência total)</option>
-              </select>
-            </label>
-            <div class="grid2">
-              <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" /></label>
-              <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" /></label>
-              <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" /></label>
-              <label>Resolução (px) <input type="number" id="resolution" min="128" max="2048" step="50" /></label>
-            </div>
-            <label title="Prioriza cordas mais curtas para economizar fio. 0 = sem penalidade (padrão)"
-              >Penalidade comp. fio <output id="lengthPenalty-out">0.00</output>
-              <input type="range" id="lengthPenalty" min="0" max="0.5" step="0.01" value="0" />
-            </label>
-            <label
-              title="Aplica deságio em cordas consecutivas na mesma direção (<15°) para quebrar a venda horizontal sobre os olhos"
-            >
-              Dispersão angular <output id="angularDiversity-out">0.00</output>
-              <input type="range" id="angularDiversity" min="0" max="0.8" step="0.05" value="0" />
-            </label>
-            <label
-              title="Atenua cordas muito próximas ao centro do tear para eliminar moiré caústico de diamante no nariz"
-            >
-              Damping central (mm) <output id="centerDamp-out">0</output>
-              <input type="range" id="centerDamp" min="0" max="60" step="1" value="0" />
-            </label>
-            <div class="grid2">
-              <label title="Passes de refinamento pós-guloso mantendo continuidade (0 = desativado)"
-                >Refinamento global <input type="number" id="refinePasses" min="0" max="5" step="1" value="0"
-              /></label>
-            </div>
-            <label class="check"
-              ><input type="checkbox" id="stopImprovement" checked /> Parar se não houver melhoria</label
-            >
-            <label class="check" title="Modela a fusão óptica de cores vizinhas a distância (Birsak et al., 2018)">
-              <input type="checkbox" id="halftoneMixing" /> Mistura óptica por meio-tom
-            </label>
-            <div id="halftone-controls" hidden>
-              <label title="Raio de dispersão óptica em milímetros (padrão 0.75 mm)">
-                Raio de meio-tom (mm) <output id="halftoneRadius-out">0.75</output>
-                <input type="range" id="halftoneRadius" min="0.2" max="2.5" step="0.05" value="0.75" />
+              <label id="control-spoolStrategy"
+                >Estratégia de Carretel
+                <select id="colorStrategy">
+                  <option value="COARSE_TO_FINE_EPOCHS">Épocas Coarse-to-Fine</option>
+                  <option value="HYSTERESIS_PENALTY">Histerese Dinâmica (λ)</option>
+                  <option value="MIN_RUN_LENGTH">Run-Length Mínimo</option>
+                  <option value="SEPARATED_CHANNELS">Canais Separados</option>
+                  <option value="FREE_GREEDY">Guloso Livre</option>
+                </select>
               </label>
+            </div>
+
+            <!-- Parâmetros Beam Search -->
+            <div id="control-beamWidth" hidden>
+              <div class="grid2">
+                <label
+                  >Largura Feixe (Beam) <input type="number" id="beamWidth" min="2" max="32" step="1" value="8"
+                /></label>
+                <label>Profundidade <input type="number" id="beamDepth" min="2" max="8" step="1" value="3" /></label>
+              </div>
+            </div>
+
+            <!-- Parâmetros FISTA -->
+            <div id="control-fistaIterations" hidden>
+              <div class="grid2">
+                <label
+                  >Iterações FISTA <input type="number" id="fistaIterations" min="20" max="500" step="10" value="100"
+                /></label>
+                <label
+                  >Regularização L1 (λ)
+                  <input type="number" id="l1RegularizationLambda" min="0.001" max="0.5" step="0.01" value="0.05"
+                /></label>
+              </div>
+            </div>
+
+            <!-- Parâmetros Histerese / Run-Length -->
+            <div id="control-switchPenaltyLambda" hidden>
+              <label
+                >Penalidade de Troca (λ) <output id="switchPenaltyLambda-out">0.25</output>
+                <input type="range" id="switchPenaltyLambda" min="0" max="1" step="0.05" value="0.25" />
+              </label>
+            </div>
+            <div id="control-minRunLength" hidden>
+              <label
+                >Run-Length Mínimo (cordas)
+                <input type="number" id="minRunLength" min="1" max="500" step="5" value="50"
+              /></label>
+            </div>
+
+            <div class="grid2">
+              <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" value="3500" /></label>
+              <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" value="12" /></label>
+              <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" value="2" /></label>
+              <label
+                >Resolução (px) <input type="number" id="resolution" min="128" max="2048" step="50" value="500"
+              /></label>
             </div>
             <p class="hint" id="repeats-hint" hidden style="margin-top: 0.5rem; font-size: 0.8rem; color: #ff8c42">
               Dica: Para mais de 5.000 linhas, use Repetições = 2 ou 3 para atingir a meta sem esgotar cordas.
             </p>
           </fieldset>
 
+          <!-- SUBSISTEMA: PIPELINE DSP & VISÃO -->
           <fieldset>
-            <legend>Desempenho & Aceleração</legend>
+            <legend>Pipeline DSP &amp; Visão Computacional</legend>
             <div class="grid2">
               <label
-                >Aceleração
-                <select id="accel">
-                  <option value="js">JavaScript (padrão)</option>
-                  <option value="wasm">WebAssembly SIMD</option>
-                  <option value="parallel">Paralelo (Web Workers)</option>
-                </select>
-              </label>
-              <label id="threads-container"
-                >Threads
-                <input type="number" id="threads" min="1" max="32" value="4" />
-              </label>
-            </div>
-            <div class="grid2" style="margin-top: 0.5rem">
-              <label
-                >Poda de candidatos
-                <select id="candidatePruning">
-                  <option value="none">Nenhuma (busca exata)</option>
-                  <option value="lazy">Lazy Greedy (Minoux 1978)</option>
+                >Morfologia Matemática
+                <select id="morphologyOp">
+                  <option value="NONE">Nenhuma</option>
+                  <option value="EROSION">Erosão</option>
+                  <option value="DILATION">Dilatação</option>
+                  <option value="OPENING">Abertura</option>
+                  <option value="CLOSING">Fechamento</option>
+                  <option value="GRADIENT">Gradiente Morfológico</option>
                 </select>
               </label>
               <label
-                >Cache de cordas (MB)
-                <input type="number" id="rasterCacheMb" min="0" max="1024" step="32" value="128" />
+                >Detecção de Bordas
+                <select id="edgeDetector">
+                  <option value="NONE">Nenhuma</option>
+                  <option value="SOBEL">Sobel</option>
+                  <option value="CANNY">Canny</option>
+                </select>
               </label>
             </div>
-          </fieldset>
 
-          <fieldset>
-            <legend>Imagem</legend>
+            <div id="control-edgeBlendWeight" hidden>
+              <label
+                >Peso de Fusão de Bordas <output id="edgeBlendWeight-out">0.20</output>
+                <input type="range" id="edgeBlendWeight" min="0" max="1" step="0.05" value="0.2" />
+              </label>
+            </div>
+
+            <!-- Foco Facial & Pincel Manual -->
             <label
-              >Contraste <output id="contrast-out"></output>
-              <input type="range" id="contrast" min="0.5" max="2.5" step="0.05" />
+              >Peso de Foco Facial (Importance Map) <output id="faceImportanceWeight-out">3.0</output>
+              <input type="range" id="faceImportanceWeight" min="0" max="10" step="0.5" value="3.0" />
+            </label>
+            <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.25rem">
+              <button type="button" id="btnToggleBrush" class="button" style="flex: 1; font-size: 0.8rem">
+                Pincel de Foco Manual
+              </button>
+              <button
+                type="button"
+                id="btnBrushMode"
+                class="button"
+                style="font-size: 0.8rem"
+                title="Alternar entre reforçar nitidez e reduzir peso"
+              >
+                + Reforçar Nitidez
+              </button>
+              <button type="button" id="btnClearBrush" class="button" style="font-size: 0.8rem">Limpar</button>
+            </div>
+
+            <!-- Controles Clássicos Preservados -->
+            <label
+              >Contraste <output id="contrast-out">1.00</output>
+              <input type="range" id="contrast" min="0.5" max="2.5" step="0.05" value="1.0" />
             </label>
             <label
-              >Brilho <output id="brightness-out"></output>
-              <input type="range" id="brightness" min="-0.5" max="0.5" step="0.01" />
+              >Brilho <output id="brightness-out">0.00</output>
+              <input type="range" id="brightness" min="-0.5" max="0.5" step="0.01" value="0" />
             </label>
             <label
-              >Gama <output id="gamma-out"></output>
-              <input type="range" id="gamma" min="0.4" max="2.5" step="0.05" />
+              >Gama <output id="gamma-out">1.00</output>
+              <input type="range" id="gamma" min="0.4" max="2.5" step="0.05" value="1.0" />
             </label>
             <label
-              >Elevação de sombras <output id="shadowLift-out"></output>
+              >Elevação de sombras <output id="shadowLift-out">0.00</output>
               <input type="range" id="shadowLift" min="0" max="0.3" step="0.01" value="0" />
             </label>
             <label
-              >Foco em detalhes/feições <output id="edgeEmphasis-out"></output>
+              >Foco em detalhes/feições <output id="edgeEmphasis-out">0.00</output>
               <input type="range" id="edgeEmphasis" min="0" max="1" step="0.05" value="0" />
             </label>
             <label title="Penaliza o sobre-escurecimento irreversível de tons claros e pele humana">
               Proteção de realces <output id="highlightProtection-out">0.00</output>
               <input type="range" id="highlightProtection" min="0" max="5" step="0.1" value="0" />
             </label>
-            <label title="Simula desfoque retiniano à distância configurada (Birsak et al., 2018). 0 = desativado"
+            <label title="Simula desfoque retiniano à distância configurada. 0 = desativado"
               >Distância de observação (m) <output id="viewingDistance-out">0.00</output>
               <input type="range" id="viewingDistance" min="0" max="5" step="0.25" value="0" />
             </label>
             <label class="check"><input type="checkbox" id="clahe" /> Equalização local (CLAHE)</label>
             <div id="clahe-controls" hidden>
               <label
-                >Limite de corte CLAHE <output id="claheClip-out">2.00</output>
-                <input type="range" id="claheClip" min="1" max="8" step="0.5" value="2" />
+                >Limite de corte CLAHE <output id="claheClip-out">2.50</output>
+                <input type="range" id="claheClip" min="1" max="8" step="0.5" value="2.5" />
               </label>
             </div>
             <label class="check"><input type="checkbox" id="invert" /> Inverter (fio claro em fundo escuro)</label>
@@ -388,16 +478,42 @@
           </div>
         </aside>
 
+        <!-- COLUNA DIREITA: STAGE & INSPEÇÃO MULTI-ESTÁGIO -->
         <div class="stage">
           <div class="canvases">
             <figure class="main-figure">
               <canvas id="sim" width="700" height="700"></canvas>
-              <figcaption>Simulação física</figcaption>
+              <figcaption>Simulação física em luz linear</figcaption>
             </figure>
-            <figure class="thumb">
-              <canvas id="target" width="700" height="700"></canvas>
-              <figcaption>Alvo (após preparo)</figcaption>
-            </figure>
+
+            <div class="thumb-wrapper">
+              <!-- Abas de Inspeção Multi-Estágio -->
+              <div class="stage-tabs" role="tablist">
+                <button type="button" class="stage-pill active" data-stage="prepared" title="Alvo processado final">
+                  1. Alvo
+                </button>
+                <button
+                  type="button"
+                  class="stage-pill"
+                  data-stage="importance"
+                  title="Mapa de importância facial W(x,y)"
+                >
+                  2. Mapa W(x,y)
+                </button>
+                <button type="button" class="stage-pill" data-stage="edges" title="Bordas Sobel/Canny">
+                  3. Bordas
+                </button>
+                <button type="button" class="stage-pill" data-stage="radon" title="Sinograma de Radon">4. Radon</button>
+                <button type="button" class="stage-pill" data-stage="residual" title="Erro residual |T - S|">
+                  5. Erro
+                </button>
+              </div>
+
+              <figure class="thumb">
+                <canvas id="target" width="700" height="700"></canvas>
+                <figcaption id="targetCaption">Alvo (após preparo)</figcaption>
+              </figure>
+            </div>
           </div>
 
           <div class="progress"><div id="bar"></div></div>
@@ -409,6 +525,10 @@
             <div>
               <dt>Fio</dt>
               <dd id="s-length">—</dd>
+            </div>
+            <div>
+              <dt>Trocas / Nós</dt>
+              <dd id="s-switches">—</dd>
             </div>
             <div>
               <dt>RMSE</dt>
@@ -467,7 +587,173 @@
         </div>
       </section>
 
-      <!-- ========================= MODO TECELAGEM ========================= -->
+      <!-- ================= VISTA 2: GABARITO & FURAÇÃO CAM ================= -->
+      <section id="blueprint" class="view">
+        <div class="blueprint-stage">
+          <div class="blueprint-toolbar">
+            <div style="display: flex; gap: 0.4rem; align-items: center">
+              <button type="button" id="bpZoomIn" class="button" title="Zoom In">+</button>
+              <button type="button" id="bpZoomOut" class="button" title="Zoom Out">−</button>
+              <button type="button" id="bpZoomFit" class="button" title="Ajustar à Tela">Ajustar</button>
+              <button
+                type="button"
+                id="bpZoomWall"
+                class="button primary"
+                title="Amplia a folga entre dois pinos adjacentes"
+              >
+                Inspecionar Parede Livre
+              </button>
+            </div>
+            <div style="display: flex; gap: 0.75rem; align-items: center; font-size: 0.8rem">
+              <label class="check"><input type="checkbox" id="bpToggleGrid" checked /> Grade 1:1 (Folhas)</label>
+              <label class="check"><input type="checkbox" id="bpToggleDimensions" checked /> Cotas Técnicas</label>
+              <label class="check"><input type="checkbox" id="bpTogglePegNumbers" checked /> Numeração Pinos</label>
+            </div>
+          </div>
+
+          <!-- Canvas Técnico CAD de Engenharia -->
+          <div class="blueprint-canvas-container">
+            <canvas id="blueprintCanvas" width="900" height="900"></canvas>
+          </div>
+        </div>
+
+        <!-- Painel Lateral Mecânico -->
+        <aside class="panel">
+          <fieldset>
+            <legend>Parâmetros Mecânicos CAM</legend>
+            <div class="grid2">
+              <label
+                >Tamanho do Papel
+                <select id="bpPaperSize">
+                  <option value="A4">A4 (210×297 mm)</option>
+                  <option value="A3">A3 (297×420 mm)</option>
+                  <option value="Letter">Carta (Letter)</option>
+                </select>
+              </label>
+              <label
+                >Broca Ø (mm)
+                <input type="number" id="bpDrillDiameter" min="0.5" max="10" step="0.1" value="2.0" />
+              </label>
+            </div>
+            <div class="grid2">
+              <label
+                >Margem Aro (mm)
+                <input type="number" id="bpMargin" min="5" max="100" step="1" value="15.0" />
+              </label>
+              <label
+                >Sobreposição (mm)
+                <input type="number" id="bpOverlap" min="0" max="50" step="1" value="10.0" />
+              </label>
+            </div>
+          </fieldset>
+
+          <!-- Card de Diagnóstico Mecânico -->
+          <div class="diagnostic-card">
+            <legend
+              style="padding: 0; color: var(--accent-2); font-weight: 600; font-size: 0.8rem; text-transform: uppercase"
+            >
+              Diagnóstico Mecânico do Aro
+            </legend>
+            <div class="diagnostic-row">
+              <span style="color: var(--muted)">Passo Linear entre Furos:</span>
+              <strong id="bpLinearPitch">—</strong>
+            </div>
+            <div class="diagnostic-row">
+              <span style="color: var(--muted)">Espessura de Parede Livre:</span>
+              <strong id="bpFreeWall">—</strong>
+            </div>
+            <div class="diagnostic-row" style="margin-top: 0.25rem">
+              <span style="color: var(--muted)">Integridade Mecânica:</span>
+              <span id="bpStatusBadge" class="badge badge-success">Seguro</span>
+            </div>
+          </div>
+
+          <!-- Tabela de Coordenadas dos Pinos -->
+          <fieldset style="flex: 1; display: flex; flex-direction: column">
+            <legend>Coordenadas dos Pinos (X, Y mm)</legend>
+            <div class="pegs-table-container">
+              <table class="pegs-table">
+                <thead>
+                  <tr>
+                    <th style="text-align: left">Pino #</th>
+                    <th>Ângulo</th>
+                    <th>X (mm)</th>
+                    <th>Y (mm)</th>
+                  </tr>
+                </thead>
+                <tbody id="bpPegsTableBody">
+                  <!-- Gerado dinamicamente -->
+                </tbody>
+              </table>
+            </div>
+            <p class="hint" style="font-size: 0.75rem; margin: 0.4rem 0 0 0">
+              Clique em uma linha para focalizar o pino no canvas técnico.
+            </p>
+          </fieldset>
+
+          <!-- Ações de Exportação CAM / Furação -->
+          <fieldset>
+            <legend>Exportações Técnicas</legend>
+            <button type="button" id="bpBtnExportPdf" class="button primary" style="width: 100%">
+              Gabarito PDF (1:1 Paginado)
+            </button>
+            <div class="grid2" style="margin-top: 0.4rem">
+              <button type="button" id="bpBtnExportSvg" class="button">Gabarito SVG (1:1)</button>
+              <button type="button" id="bpBtnExportCsv" class="button">Tabela Pinos (.csv)</button>
+            </div>
+            <button type="button" id="bpBtnExportGcode" class="button" style="width: 100%; margin-top: 0.4rem">
+              G-Code CNC (G81/G83)
+            </button>
+            <details id="bpCncOptionsDetails" style="margin-top: 0.4rem; font-size: 0.8rem">
+              <summary style="cursor: pointer; color: var(--accent-2); font-weight: 600; padding: 0.2rem 0">
+                Opções de Usinagem CNC
+              </summary>
+              <div style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem">
+                <div class="grid2">
+                  <label
+                    >RPM do Spindle
+                    <input type="number" id="bpCncSpindleRpm" min="1000" max="30000" step="500" value="12000" />
+                  </label>
+                  <label
+                    >Avanço Mergulho (mm/min)
+                    <input type="number" id="bpCncPlungeFeed" min="50" max="2000" step="50" value="300" />
+                  </label>
+                </div>
+                <div class="grid2">
+                  <label
+                    >Profundidade Z (mm)
+                    <input type="number" id="bpCncDrillDepth" min="1" max="50" step="1" value="10.0" />
+                  </label>
+                  <label
+                    >Passo Peck Q (mm)
+                    <input
+                      type="number"
+                      id="bpCncPeckDepth"
+                      min="0"
+                      max="20"
+                      step="0.5"
+                      value="2.0"
+                      title="Defina 0 para ciclo simples G81"
+                    />
+                  </label>
+                </div>
+                <div class="grid2">
+                  <label
+                    >Z Seguro (mm)
+                    <input type="number" id="bpCncSafeZ" min="1" max="50" step="1" value="5.0" />
+                  </label>
+                  <label
+                    >Plano Retração R (mm)
+                    <input type="number" id="bpCncRetractR" min="0.5" max="20" step="0.5" value="1.0" />
+                  </label>
+                </div>
+              </div>
+            </details>
+          </fieldset>
+        </aside>
+      </section>
+
+      <!-- ========================= VISTA 3: MODO TECELAGEM ========================= -->
       <section id="knit" class="view">
         <div class="knit-layout">
           <div class="knit-loom">
@@ -481,6 +767,18 @@
               /></label>
             </div>
             <div class="knit-live" id="knit-live" hidden>
+              <!-- Card de Alerta de Troca de Carretel -->
+              <div id="k-spool-alert" class="knit-spool-alert" hidden>
+                <div class="spool-alert-icon">⚠️</div>
+                <div class="spool-alert-content">
+                  <strong>Troca de Carretel Necessária</strong>
+                  <p id="k-spool-alert-text">Troca de Carretel: Amarre e finalize o fio...</p>
+                  <button type="button" id="k-spool-alert-dismiss" class="button primary" style="font-size: 0.8rem; margin-top: 0.35rem">
+                    Entendido / Carretel Trocado
+                  </button>
+                </div>
+              </div>
+
               <p class="knit-step">Passo <strong id="k-step">0</strong> de <span id="k-total">0</span></p>
               <p class="knit-thread"><span class="swatch" id="k-swatch"></span><span id="k-thread"></span></p>
               <p class="knit-from">do pino <span id="k-from">—</span></p>
@@ -502,7 +800,7 @@
                 <label>Ir para o passo <input type="number" id="k-goto" min="1" step="1" /></label>
               </div>
               <div class="progress"><div id="k-bar"></div></div>
-              <p class="hint">Espaço/→ avança · ← volta · o progresso fica salvo neste navegador.</p>
+              <p class="hint">Espaço/→ avança · ← volta · P pausa/retoma auto · o progresso fica salvo neste navegador.</p>
 
               <div
                 class="knit-sync"
@@ -544,8 +842,63 @@
                     Salvar retomada
                   </button>
                 </div>
+                <button
+                  type="button"
+                  id="k-btn-qr"
+                  class="button primary"
+                  style="
+                    width: 100%;
+                    margin-top: 0.5rem;
+                    font-size: 0.85rem;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0.4rem;
+                  "
+                >
+                  📱 Abrir no Celular (QR Code)
+                </button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Modal QR Code para sincronização móvel -->
+        <div id="k-qr-modal" class="modal-overlay" hidden>
+          <div class="modal-content" style="max-width: 380px; text-align: center">
+            <h3 style="margin-top: 0; color: var(--accent-2)">Sincronizar com Celular</h3>
+            <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem">
+              Aponte a câmera do celular ou tablet para continuar a tecer exatamente do passo atual.
+            </p>
+            <div
+              id="k-qr-container"
+              style="
+                width: 220px;
+                height: 220px;
+                margin: 0 auto;
+                background: #ffffff;
+                padding: 10px;
+                border-radius: 8px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+              "
+            ></div>
+            <p
+              id="k-qr-url"
+              style="
+                font-size: 0.72rem;
+                word-break: break-all;
+                color: var(--muted);
+                margin-top: 1rem;
+                font-family: monospace;
+              "
+            ></p>
+            <div style="display: flex; gap: 0.5rem; margin-top: 1rem">
+              <button type="button" id="k-qr-close" class="button primary" style="flex: 1">
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
           </div>
         </div>
       </section>

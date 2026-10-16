@@ -15,8 +15,9 @@
     "apps/web"
   ],
   "scripts": {
-    "build": "npm run build --workspace @weaver-art/core && npm run build --workspace @weaver-art/wasm && npm run build --workspace @weaver-art/cli && npm run build --workspace @weaver-art/web",
-    "dev": "npm run dev --workspace @weaver-art/web",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build": "node scripts/build-wasm.mjs && npm run build --workspace @weaver-art/core && npm run build --workspace @weaver-art/wasm && npm run build --workspace @weaver-art/cli && npm run build --workspace @weaver-art/web && node scripts/sync-dist.mjs",
+    "dev": "node scripts/ensure-wasm.mjs && npm run dev --workspace @weaver-art/web",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -24,7 +25,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "weave": "node packages/cli/dist/index.js",
-    "build:wasm": "node packages/wasm/scripts/build-wasm.mjs",
+    "build:wasm": "wasm-pack build crates/weaver-wasm-adapter --target web --out-dir ../../src/core-bridge/pkg --release",
+    "build:wasm:kernel": "node packages/wasm/scripts/build-wasm.mjs",
     "bench": "node scripts/bench.mjs",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
   },

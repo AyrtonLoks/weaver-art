@@ -78,7 +78,7 @@ export class WasmEvaluator implements CandidateEvaluator {
       setup.pegRadiusMm,
       setup.scale,
       setup.extentMm,
-      setup.lengthPenalty ?? 0,
+      0,
     );
 
     if (initRes !== 0) {

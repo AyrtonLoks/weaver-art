@@ -3,19 +3,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import sharp from 'sharp';
-import os from 'node:os';
-import { Worker } from 'node:worker_threads';
 import {
   calibrateThreadColor,
-  createSharedBuffers,
-  createSharedControl,
   describeLoom,
   estimateWeave,
   extractPalette,
   formatDuration,
   gcodePathLengthMm,
   loomPegCount,
-  ParallelEvaluator,
   parsePegsCSV,
   PRESETS,
   resolveOptions,
@@ -480,18 +475,9 @@ async function main(): Promise<void> {
       maxChordRepeats: num(values.repeats, 'repeats'),
       resolutionPx: num(values.resolution, 'resolution'),
       background: values.background,
-      stopWhenNoImprovement: values.stop,
       colorStrategy: values['color-strategy'] as WeaveOptions['colorStrategy'],
-      lengthPenalty: num(values['length-penalty'], 'length-penalty'),
       viewingDistanceM: num(values['viewing-distance'], 'viewing-distance'),
-      refinePasses: num(values.refine, 'refine'),
-      candidatePruning: (values.pruning as WeaveOptions['candidatePruning']) ?? 'none',
-      rasterCacheMb: num(values['cache-mb'], 'cache-mb'),
-      halftoneMixing: values.halftone ? true : undefined,
-      halftoneRadiusMm: num(values['halftone-radius'], 'halftone-radius'),
       highlightProtection: num(values['highlight-protection'], 'highlight-protection'),
-      angularDiversity: num(values['angular-diversity'], 'angular-diversity'),
-      centerDampRadiusMm: num(values['center-damp'], 'center-damp'),
       threads: threadWidth === undefined ? undefined : options.threads.map((t) => ({ ...t, widthMm: threadWidth })),
       preprocess: {
         contrast: num(values.contrast, 'contrast'),
@@ -500,8 +486,6 @@ async function main(): Promise<void> {
         shadowLift: num(values['shadow-lift'], 'shadow-lift'),
         edgeEmphasis: num(values['edge-emphasis'], 'edge-emphasis'),
         highlightProtection: num(values['highlight-protection'], 'highlight-protection'),
-        angularDiversity: num(values['angular-diversity'], 'angular-diversity'),
-        centerDampRadiusMm: num(values['center-damp'], 'center-damp'),
         sharpenSigma: num(values['sharpen-sigma'], 'sharpen-sigma'),
         torsoFeathering: num(values['torso-feathering'], 'torso-feathering'),
         clahe: values.clahe,
@@ -525,8 +509,7 @@ async function main(): Promise<void> {
     options.preprocess.grayscale = false;
   }
   const importance = values.importance ? await loadRaster(values.importance) : undefined;
-  const accel = (values.accel as string | undefined) ?? 'js';
-  const workerThreads: Worker[] = [];
+  const accel = (values.accel as string | undefined) ?? 'wasm';
 
   let engine: WeaveEngine;
   if (accel === 'wasm') {
@@ -535,44 +518,12 @@ async function main(): Promise<void> {
         return instantiateWasmKernel(setup);
       },
     });
-  } else if (accel === 'parallel') {
-    const threadCount = num(values.threads, 'threads') ?? Math.max(1, os.cpus().length);
-    const sharedCtrl = createSharedControl(threadCount);
-    engine = await WeaveEngine.createAsync(image, options, importance, {
-      evaluator: (setup: EvaluatorSetup) => {
-        const { buffers, descriptor: buffersDesc } = createSharedBuffers(setup, Boolean(options.halftoneMixing));
-        for (let w = 1; w < threadCount; w++) {
-          const worker = new Worker(new URL('./helper.js', import.meta.url));
-          worker.postMessage({
-            type: 'start',
-            workerIndex: w,
-            workerCount: threadCount,
-            controlDesc: sharedCtrl.descriptor,
-            setup,
-            buffersDesc,
-          });
-          workerThreads.push(worker);
-        }
-        const parEval = new ParallelEvaluator({
-          workerCount: threadCount,
-          setup,
-          buffers,
-          sharedControl: sharedCtrl,
-          onDispose: () => {
-            workerThreads.forEach((w) => w.terminate());
-            workerThreads.length = 0;
-          },
-        });
-        parEval.waitUntilReady();
-        return parEval;
-      },
-    });
   } else {
     engine = new WeaveEngine(image, options, importance);
   }
 
   process.stderr.write(
-    `${describeLoom(options.loom)} · grade ${options.resolutionPx}px · aceleração: ${accel} · poda: ${options.candidatePruning ?? 'none'} · ` +
+    `${describeLoom(options.loom)} · grade ${options.resolutionPx}px · aceleração: ${accel} · ` +
       `${options.threads.map((t) => t.name).join(', ')}\n`,
   );
 

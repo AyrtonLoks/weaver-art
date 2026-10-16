@@ -9,6 +9,7 @@ export default defineConfig({
       '@weaver-art/wasm': fileURLToPath(new URL('../../packages/wasm/src/index.ts', import.meta.url)),
     },
   },
+  assetsInclude: ['**/*.wasm'],
   worker: {
     format: 'es',
   },
