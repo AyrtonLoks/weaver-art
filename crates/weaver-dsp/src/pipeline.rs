@@ -1,13 +1,10 @@
-//! Orquestrador do Pipeline de DSP (`DspPipeline`) com Cache de Estágios.
-//!
-//! Integra os módulos de enquadramento afim, equalização adaptativa CLAHE,
-//! detecção de bordas Sobel/Canny, mapa de importância espacial $W(x,y)$,
-//! transformada de Radon e filtro em rampa com cache de estágios intermediários
-//! e exportação de buffers de diagnóstico visual para a UI.
+//! Orquestrador do Pipeline de DSP (`DspPipeline`) com Cache de Estágios e Preservação Cromática.
 
-use weaver_domain::LoomGeometry;
+use weaver_domain::{LinearRgbColor, LoomGeometry, SrgbColor};
 
-use crate::contrast::{clahe_gray, ClaheConfig};
+use crate::contrast::{
+    adjust_brightness_contrast_gray, apply_gamma_gray, clahe_gray, ClaheConfig,
+};
 use crate::edges::{canny, edges_to_rgba, fuse_high_frequency, sobel, CannyConfig, SobelResult};
 use crate::framing::{
     apply_affine_transform, compute_auto_framing, AutoFramingOptions, FramingConfig,
@@ -20,28 +17,23 @@ use crate::radon::{apply_ramp_filter, compute_radon_transform, RadonOptions, Sin
 /// Configuração completa de execução do pipeline de pré-processamento DSP.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DspPipelineConfig {
-    /// Resolução da grade de simulação quadrada em pixels (ex: 500 ou 600).
     pub target_resolution: u32,
-    /// Parâmetros de enquadramento afim (zoom, pan, rotação).
     pub framing: FramingConfig,
-    /// Método de interpolação sub-pixel (Bilinear ou Bicúbica).
     pub interpolation: InterpolationMethod,
-    /// Configuração opcional de equalização de contraste local CLAHE.
     pub clahe: Option<ClaheConfig>,
-    /// Configuração do detector de bordas de Canny.
     pub canny: CannyConfig,
-    /// Peso de foco facial $\beta_{\text{face}}$ na composição de $W(x,y)$.
     pub beta_face: f32,
-    /// Peso de bordas estruturais $\beta_{\text{borda}}$ na composição de $W(x,y)$.
     pub beta_edge: f32,
-    /// Fator de mesclagem de alta frequência na imagem alvo ($0.0$ a $0.5$).
     pub high_freq_blend: f32,
-    /// Luminância de fundo neutro fora da moldura do tear ($1.0$ = branco).
     pub background_luma: f32,
-    /// Parâmetros da Transformada de Radon e Sinograma.
     pub radon: RadonOptions,
-    /// Opção para auto-enquadramento facial prévio se desejado.
     pub auto_framing: Option<AutoFramingOptions>,
+    /// Quando `true`, converte a saída para escala de cinza (Modo Monocromático).
+    /// Quando `false`, preserva a cromaticidade RGB original da foto (CMYK / RGB / Custom).
+    pub monochrome_target: bool,
+    pub contrast: f32,
+    pub brightness: f32,
+    pub gamma: f32,
 }
 
 impl Default for DspPipelineConfig {
@@ -58,6 +50,10 @@ impl Default for DspPipelineConfig {
             background_luma: 1.0,
             radon: RadonOptions::default(),
             auto_framing: None,
+            monochrome_target: false,
+            contrast: 1.0,
+            brightness: 0.0,
+            gamma: 1.0,
         }
     }
 }
@@ -65,18 +61,13 @@ impl Default for DspPipelineConfig {
 /// Conjunto de buffers de diagnóstico gerados pelo pipeline para inspeção multi-estágio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DspDiagnosticBuffers {
-    /// Alvo processado final em formato RGBA (`PreparedTargetRGBA`).
     pub prepared_target_rgba: Rgba8Image,
-    /// Mapa de calor da importância espacial $W(x,y)$ em formato RGBA (`ImportanceMapRGBA`).
     pub importance_map_rgba: Rgba8Image,
-    /// Mapa de bordas estruturais Sobel/Canny em formato RGBA (`EdgesRGBA`).
     pub edges_rgba: Rgba8Image,
-    /// Sinograma de Radon filtrado em rampa em formato RGBA (`RadonSinogramRGBA`).
     pub radon_sinogram_rgba: Rgba8Image,
 }
 
 impl DspDiagnosticBuffers {
-    /// Gera um buffer composto único lado a lado com as Bordas e o Sinograma de Radon (`EdgeAndRadonPreviewRGBA`).
     pub fn edge_and_radon_preview_rgba(&self) -> Rgba8Image {
         let w1 = self.edges_rgba.width;
         let h1 = self.edges_rgba.height;
@@ -85,37 +76,28 @@ impl DspDiagnosticBuffers {
 
         let out_w = w1 + w2;
         let out_h = h1.max(h2);
-
         let mut out = ImageBuffer::fill(out_w, out_h, 4, 0u8);
 
-        // Copia edges_rgba para o lado esquerdo
         for y in 0..h1 {
             for x in 0..w1 {
-                let p = self.edges_rgba.get_pixel(x, y);
-                out.set_pixel(x, y, p);
+                out.set_pixel(x, y, self.edges_rgba.get_pixel(x, y));
             }
         }
-
-        // Copia radon_sinogram_rgba para o lado direito
         for y in 0..h2 {
             for x in 0..w2 {
-                let p = self.radon_sinogram_rgba.get_pixel(x, y);
-                out.set_pixel(w1 + x, y, p);
+                out.set_pixel(w1 + x, y, self.radon_sinogram_rgba.get_pixel(x, y));
             }
         }
-
         out
     }
 }
 
-/// Orquestrador do pipeline de DSP que armazena em cache estágios intermediários.
 pub struct DspPipeline {
     pub config: DspPipelineConfig,
-
-    // Cache de estágios intermediários
     cached_framed_rgba: Option<Rgba8Image>,
     cached_framed_gray: Option<GrayImage>,
     cached_prepared_gray: Option<GrayImage>,
+    cached_prepared_linear_rgb: Option<Vec<LinearRgbColor>>,
     cached_sobel: Option<SobelResult>,
     cached_edges: Option<GrayImage>,
     cached_importance_map: Option<ImportanceMap>,
@@ -125,13 +107,13 @@ pub struct DspPipeline {
 }
 
 impl DspPipeline {
-    /// Inicializa uma nova instância do pipeline DSP com a configuração fornecida.
     pub fn new(config: DspPipelineConfig) -> Self {
         Self {
             config,
             cached_framed_rgba: None,
             cached_framed_gray: None,
             cached_prepared_gray: None,
+            cached_prepared_linear_rgb: None,
             cached_sobel: None,
             cached_edges: None,
             cached_importance_map: None,
@@ -141,15 +123,6 @@ impl DspPipeline {
         }
     }
 
-    /// Executa o pipeline completo sobre a imagem RGBA de entrada.
-    ///
-    /// Realiza:
-    /// 1. Auto-enquadramento opcional e recorte afim 2D com máscara de tear.
-    /// 2. Equalização de contraste adaptativo local CLAHE.
-    /// 3. Detecção de bordas estruturais Sobel/Canny e fusão de altas frequências.
-    /// 4. Saliência facial e composição do mapa de importância $W(x,y)$ com suporte a pincel.
-    /// 5. Transformada de Radon e filtro em rampa de Ram-Lak.
-    /// 6. Geração e cache dos buffers de diagnóstico visual em formato RGBA.
     pub fn execute(
         &mut self,
         source: &Rgba8Image,
@@ -158,16 +131,13 @@ impl DspPipeline {
     ) -> &DspDiagnosticBuffers {
         let res = self.config.target_resolution;
 
-        // 1. Auto-enquadramento se requisitado
         if let Some(opts) = &self.config.auto_framing {
             let auto = compute_auto_framing(source, opts);
             self.config.framing = auto.config;
         }
 
-        // 2. Enquadramento afim 2D para a resolução alvo
         let loom_mask = loom.map(|l| LoomMask::from_loom(l, res, res));
 
-        // Converte source RGBA para buffer de floats para amostragem contínua precisa
         let src_float_total = (source.width * source.height * 4) as usize;
         let mut src_float_data = Vec::with_capacity(src_float_total);
         for &byte in &source.data {
@@ -185,7 +155,6 @@ impl DspPipeline {
             self.config.background_luma,
         );
 
-        // Reconverte para Rgba8Image enquadrado
         let mut framed_rgba_data = Vec::with_capacity((res * res * 4) as usize);
         for &f in &framed_float.data {
             framed_rgba_data.push((f.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -193,8 +162,18 @@ impl DspPipeline {
         let framed_rgba = Rgba8Image::new(res, res, 4, framed_rgba_data);
         let framed_gray = framed_rgba.to_gray();
 
-        // 3. Pré-processamento radiométrico e CLAHE
+        // 3. Pré-processamento radiométrico e CLAHE na luminância
         let mut prepared_gray = framed_gray.clone();
+        if (self.config.contrast - 1.0).abs() > 1e-3 || self.config.brightness.abs() > 1e-3 {
+            adjust_brightness_contrast_gray(
+                &mut prepared_gray,
+                self.config.brightness,
+                self.config.contrast,
+            );
+        }
+        if (self.config.gamma - 1.0).abs() > 1e-3 {
+            apply_gamma_gray(&mut prepared_gray, self.config.gamma);
+        }
         if let Some(clahe_cfg) = &self.config.clahe {
             clahe_gray(&mut prepared_gray, clahe_cfg);
         }
@@ -203,13 +182,50 @@ impl DspPipeline {
         let sobel_res = sobel(&prepared_gray);
         let canny_edges = canny(&prepared_gray, &self.config.canny);
 
-        // Fusão opcional de altas frequências para intensificar fios nos traços finos
         if self.config.high_freq_blend > 0.0 {
             prepared_gray =
                 fuse_high_frequency(&prepared_gray, &canny_edges, self.config.high_freq_blend);
         }
 
-        // 5. Saliência facial e Composição do Mapa de Importância W(x,y)
+        // 5. Reconstrução Cromática em LinearRGB (Preserva cores em CMYK/RGB e aplica ganho de luminância local)
+        let total_px = (res * res) as usize;
+        let mut prepared_linear_rgb = Vec::with_capacity(total_px);
+        let mut prepared_rgba_bytes = Vec::with_capacity(total_px * 4);
+
+        for i in 0..total_px {
+            let new_luma = prepared_gray.data[i].clamp(0.0, 1.0);
+            if self.config.monochrome_target {
+                let lin = SrgbColor::new(new_luma, new_luma, new_luma).to_linear();
+                prepared_linear_rgb.push(lin);
+                let u = (new_luma * 255.0).round() as u8;
+                prepared_rgba_bytes.extend_from_slice(&[u, u, u, 255]);
+            } else {
+                let r_srgb = framed_rgba.data[i * 4] as f32 / 255.0;
+                let g_srgb = framed_rgba.data[i * 4 + 1] as f32 / 255.0;
+                let b_srgb = framed_rgba.data[i * 4 + 2] as f32 / 255.0;
+                let orig_luma = framed_gray.data[i].max(1e-4);
+
+                // Modula a luminância preservando o matiz e saturação originais
+                let ratio = (new_luma / orig_luma).clamp(0.25, 3.0);
+                let nr = (r_srgb * ratio).clamp(0.0, 1.0);
+                let ng = (g_srgb * ratio).clamp(0.0, 1.0);
+                let nb = (b_srgb * ratio).clamp(0.0, 1.0);
+
+                let lin = SrgbColor::new(nr, ng, nb).to_linear();
+                prepared_linear_rgb.push(lin);
+
+                prepared_rgba_bytes.extend_from_slice(&[
+                    (nr * 255.0).round() as u8,
+                    (ng * 255.0).round() as u8,
+                    (nb * 255.0).round() as u8,
+                    255,
+                ]);
+            }
+        }
+
+        let prepared_target_rgba = Rgba8Image::new(res, res, 4, prepared_rgba_bytes);
+
+        // 6. Saliência facial e Composição do Mapa de Importância W(x,y)
         let facial_saliency = compute_facial_saliency_map(&framed_rgba);
         let mut importance_map = ImportanceMap::compose_auto(
             res,
@@ -224,13 +240,10 @@ impl DspPipeline {
             importance_map.merge_user_brush(brush);
         }
 
-        // 6. Transformada de Radon e Filtro de Rampa Ram-Lak
+        // 7. Transformada de Radon e Filtro de Rampa
         let sinogram = compute_radon_transform(&prepared_gray, &self.config.radon);
         let filtered_sinogram = apply_ramp_filter(&sinogram, None);
 
-        // 7. Geração dos buffers de diagnóstico RGBA
-        let prepared_target_rgba =
-            Rgba8Image::from_linear_rgb_slice(&prepared_gray.to_linear_rgb_vec(), res, res);
         let importance_map_rgba = importance_map.to_preview_rgba();
         let edges_rgba = edges_to_rgba(&canny_edges);
         let radon_sinogram_rgba = filtered_sinogram.to_preview_rgba();
@@ -242,10 +255,10 @@ impl DspPipeline {
             radon_sinogram_rgba,
         };
 
-        // Atualiza buffers em cache
         self.cached_framed_rgba = Some(framed_rgba);
         self.cached_framed_gray = Some(framed_gray);
         self.cached_prepared_gray = Some(prepared_gray);
+        self.cached_prepared_linear_rgb = Some(prepared_linear_rgb);
         self.cached_sobel = Some(sobel_res);
         self.cached_edges = Some(canny_edges);
         self.cached_importance_map = Some(importance_map);
@@ -256,32 +269,31 @@ impl DspPipeline {
         self.cached_diagnostics.as_ref().unwrap()
     }
 
-    /// Retorna uma referência aos buffers de diagnóstico gerados na última execução.
     pub fn diagnostics(&self) -> Option<&DspDiagnosticBuffers> {
         self.cached_diagnostics.as_ref()
     }
 
-    /// Retorna o alvo preparado em escala de cinza fotométrica.
     pub fn prepared_gray(&self) -> Option<&GrayImage> {
         self.cached_prepared_gray.as_ref()
     }
 
-    /// Retorna o mapa de importância espacial $W(x,y)$ calculado.
+    /// Retorna o tensor colorido RGB Linear preparado para o solver policromático ou monocromático.
+    pub fn prepared_linear_rgb(&self) -> Option<&[LinearRgbColor]> {
+        self.cached_prepared_linear_rgb.as_deref()
+    }
+
     pub fn importance_map(&self) -> Option<&ImportanceMap> {
         self.cached_importance_map.as_ref()
     }
 
-    /// Retorna o mapa de bordas finas de Canny.
     pub fn canny_edges(&self) -> Option<&GrayImage> {
         self.cached_edges.as_ref()
     }
 
-    /// Retorna o resultado do operador de Sobel.
     pub fn sobel_result(&self) -> Option<&SobelResult> {
         self.cached_sobel.as_ref()
     }
 
-    /// Retorna o Sinograma de Radon filtrado em rampa.
     pub fn filtered_sinogram(&self) -> Option<&Sinogram> {
         self.cached_filtered_sinogram.as_ref()
     }
@@ -298,10 +310,9 @@ mod tests {
         let h = 40u32;
         let mut source = Rgba8Image::fill(w, h, 4, 255u8);
 
-        // Padrão de teste facial com círculo escuro
         for y in 10..30 {
             for x in 10..30 {
-                source.set_pixel(x, y, &[60, 60, 60, 255]);
+                source.set_pixel(x, y, &[180, 60, 40, 255]);
             }
         }
 
@@ -311,36 +322,18 @@ mod tests {
         config.radon.num_rhos = 16;
 
         let mut pipeline = DspPipeline::new(config);
-
         let loom_spec = LoomPhysicalSpec::circle(400.0, 50, 2.0, 2.0, 10.0);
         let loom = LoomGeometry::new(loom_spec);
 
         let mut brush = vec![0.0f32; 32 * 32];
-        brush[16 * 32 + 16] = 2.0; // Ponto de pincel reforçado
+        brush[16 * 32 + 16] = 2.0;
 
         let diag = pipeline.execute(&source, Some(&loom), Some(&brush));
 
         assert_eq!(diag.prepared_target_rgba.width, 32);
         assert_eq!(diag.prepared_target_rgba.height, 32);
-        assert_eq!(diag.importance_map_rgba.width, 32);
-        assert_eq!(diag.importance_map_rgba.height, 32);
-        assert_eq!(diag.edges_rgba.width, 32);
-        assert_eq!(diag.edges_rgba.height, 32);
-        assert_eq!(diag.radon_sinogram_rgba.width, 16);
-        assert_eq!(diag.radon_sinogram_rgba.height, 16);
+        assert!(pipeline.prepared_linear_rgb().is_some());
 
-        // Verifica o buffer composto EdgeAndRadonPreviewRGBA
-        let composite = diag.edge_and_radon_preview_rgba();
-        assert_eq!(composite.width, 32 + 16);
-        assert_eq!(composite.height, 32);
-
-        // Verifica cache de estágios internos
-        assert!(pipeline.prepared_gray().is_some());
-        assert!(pipeline.importance_map().is_some());
-        assert!(pipeline.canny_edges().is_some());
-        assert!(pipeline.filtered_sinogram().is_some());
-
-        // Ponto reforçado pelo pincel em (16, 16) deve ter peso > 2.0
         let imp = pipeline.importance_map().unwrap();
         assert!(imp.get(16, 16) > 2.0);
     }

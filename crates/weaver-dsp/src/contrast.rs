@@ -69,6 +69,22 @@ pub fn adjust_radiometry(
     }
 }
 
+/// Ajusta brilho e contraste sigmoidal sobre um `GrayImage`.
+pub fn adjust_brightness_contrast_gray(image: &mut GrayImage, brightness: f32, contrast: f32) {
+    for px in image.data.iter_mut() {
+        let mut v = apply_brightness(*px, brightness);
+        v = apply_sigmoidal_contrast(v, contrast, 0.5);
+        *px = v;
+    }
+}
+
+/// Aplica correção gamma sobre um `GrayImage`.
+pub fn apply_gamma_gray(image: &mut GrayImage, gamma: f32) {
+    for px in image.data.iter_mut() {
+        *px = apply_gamma(*px, gamma);
+    }
+}
+
 /// Configuração do equalizador adaptativo CLAHE.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClaheConfig {

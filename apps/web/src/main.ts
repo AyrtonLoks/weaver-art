@@ -15,7 +15,7 @@ import {
   type WeaveStep,
   type ThreadSummary,
 } from '@weaver-art/core';
-import { WeaverEngineClient, type FromWorker, type ToWorker } from './core-bridge/index.js';
+import { WeaverEngineClient } from './core-bridge/index.js';
 import type {
   ColorPaletteMode,
   LoomConfig,
@@ -47,7 +47,6 @@ let isWasmRunning = false;
 let animFrameId: number | null = null;
 let solverStartTime = 0;
 let customPegsList: { x: number; y: number }[] | null = null;
-const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
 // Preset Store (ADR-005)
 const presetStore = new ReactivePresetStore('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
@@ -67,7 +66,6 @@ const exportButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-ex
 
 const num = (id: string): HTMLInputElement => $<HTMLInputElement>(id);
 
-// Subsystem selectors
 const loomShape = $<HTMLSelectElement>('loomShape');
 const rasterizerSelect = $<HTMLSelectElement>('rasterizer');
 const paletteModeSelect = $<HTMLSelectElement>('paletteMode');
@@ -78,7 +76,6 @@ const colorStrategy = $<HTMLSelectElement>('colorStrategy');
 const morphologyOpSelect = $<HTMLSelectElement>('morphologyOp');
 const edgeDetectorSelect = $<HTMLSelectElement>('edgeDetector');
 
-// Shape containers
 const controlDiameterMm = $('control-diameterMm');
 const controlPolygonSides = $('control-polygonSides');
 const controlWidthMm = $('control-widthMm');
@@ -94,7 +91,6 @@ const customPegsSummary = $('customPegsSummary');
 const miniLoomCanvas = $<HTMLCanvasElement>('miniLoom');
 const miniLoomSummary = $('miniLoomSummary');
 
-// Contextual algorithm control containers
 const controlUserCustomPalette = $('control-userCustomPalette');
 const controlSpoolStrategy = $('control-spoolStrategy');
 const controlBeamWidth = $('control-beamWidth');
@@ -103,7 +99,6 @@ const controlSwitchPenaltyLambda = $('control-switchPenaltyLambda');
 const controlMinRunLength = $('control-minRunLength');
 const controlEdgeBlendWeight = $('control-edgeBlendWeight');
 
-// Dynamic inputs
 const beamWidthInput = num('beamWidth');
 const beamDepthInput = num('beamDepth');
 const fistaIterationsInput = num('fistaIterations');
@@ -115,11 +110,9 @@ const faceImportanceWeightInput = num('faceImportanceWeight');
 const cropRotationInput = num('cropRotation');
 const repeatsHint = $('repeats-hint');
 
-// Framing buttons
 const btnSmartFrame = $<HTMLButtonElement>('btnSmartFrame');
 const btnResetCrop = $<HTMLButtonElement>('btnResetCrop');
 
-// Stats & spool
 const sEstTime = $('s-est-time');
 const spoolBreakdown = $('spoolBreakdown');
 const spoolTableContainer = $('spoolTableContainer');
@@ -147,6 +140,29 @@ const fields = {
   claheClip: num('claheClip'),
   invert: num('invert'),
 };
+
+// Expurgo automático de elementos legados duplicados no DOM
+function purgeLegacyDuplicateDomElements(): void {
+  const legacyInputsToHide = [
+    fields.shadowLift,
+    fields.edgeEmphasis,
+    fields.highlightProtection,
+    fields.viewingDistance,
+    fields.invert,
+  ];
+  for (const input of legacyInputsToHide) {
+    const parentLabel = input?.closest('label') ?? input?.parentElement;
+    if (parentLabel) {
+      (parentLabel as HTMLElement).style.display = 'none';
+    }
+  }
+  // Oculta o mini preview redundante da sidebar esquerda (pois temos a aba Gabarito & Furação CAM)
+  const miniCard = miniLoomCanvas?.parentElement;
+  if (miniCard) {
+    miniCard.style.display = 'none';
+  }
+}
+purgeLegacyDuplicateDomElements();
 
 const calibrateFileInput = $<HTMLInputElement>('calibrateFile');
 const calibrateOutput = $('calibrateOutput');
@@ -203,6 +219,13 @@ const studioManager = new StudioViewManager(
     targetCaption: document.getElementById('targetCaption') as HTMLElement | undefined,
   },
   () => {
+    presetStore.setParam('framing', {
+      zoom: Number(fields.cropZoom.value) || 1.0,
+      panXPercent: Number(fields.cropPanX.value) || 0,
+      panYPercent: Number(fields.cropPanY.value) || 0,
+      rotationDeg: Number(cropRotationInput.value) || 0,
+      autoFaceTargetRatio: 0,
+    });
     updateOutputs();
     updateTargetPreview();
   },
@@ -279,7 +302,7 @@ engineClient
     });
   })
   .catch((err) => {
-    console.warn('Wasm solver engine worker indisponível, operando com fallback padrão:', err);
+    console.error('Erro ao inicializar motor Wasm:', err);
   });
 
 // ------------------------------------------------------------------- Geometry
@@ -364,16 +387,7 @@ export function getCurrentLoomConfig(): LoomConfig {
     };
   }
 
-  if (shape === 'custom') {
-    if (!customPegsList || customPegsList.length < 3) {
-      return {
-        shape: 'circle',
-        diameterMm: Number(fields.diameter.value) || 600,
-        pegCount: Math.max(3, Math.round(Number(fields.pegs.value) || 200)),
-        pegDiameterMm,
-        startAngleDeg: -90,
-      };
-    }
+  if (shape === 'custom' && customPegsList && customPegsList.length >= 3) {
     return {
       shape: 'custom',
       pegs: customPegsList,
@@ -381,7 +395,6 @@ export function getCurrentLoomConfig(): LoomConfig {
     };
   }
 
-  // Padrão: Círculo
   return {
     shape: 'circle',
     diameterMm: Number(fields.diameter.value) || 600,
@@ -397,47 +410,6 @@ function updateLoomPreview(): void {
     const loom = createLoom(cfg);
     loomRenderer.setLoom(loom);
     miniLoomSummary.textContent = describeLoom(cfg);
-
-    const ctx = miniLoomCanvas.getContext('2d');
-    if (!ctx) return;
-    const W = miniLoomCanvas.width;
-    const margin = 5;
-    const extent = loom.extentMm;
-    const k = (W - 2 * margin) / extent;
-    const X = (mm: number): number => margin + mm * k;
-
-    ctx.clearRect(0, 0, W, W);
-
-    // Borda do tear
-    ctx.fillStyle = '#1e1e1e';
-    ctx.strokeStyle = '#444';
-    ctx.lineWidth = 1;
-
-    if (loom.config.shape === 'circle') {
-      const cx = loom.extentMm / 2;
-      const cy = loom.extentMm / 2;
-      ctx.beginPath();
-      ctx.arc(X(cx), X(cy), loom.radiusMm * k, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    } else if (loom.outline && loom.outline.length > 2) {
-      ctx.beginPath();
-      loom.outline.forEach((pt, i) => {
-        if (i === 0) ctx.moveTo(X(pt.x), X(pt.y));
-        else ctx.lineTo(X(pt.x), X(pt.y));
-      });
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    // Pinos
-    ctx.fillStyle = '#ff5a36';
-    for (const p of loom.pegs) {
-      ctx.fillRect(X(p.x) - 0.75, X(p.y) - 0.75, 1.5, 1.5);
-    }
-
-    // Atualiza também a visualização CAM
     blueprintView.setLoomConfig(cfg, Number(fields.pegDiameter.value));
   } catch {
     miniLoomSummary.textContent = 'Configuração incompleta.';
@@ -446,7 +418,6 @@ function updateLoomPreview(): void {
 
 // ------------------------------------------------------------- Preset Store Reactivity
 function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
-  // Sync shape
   loomShape.value = cfg.shape;
   document.body.dataset.loomShape = cfg.shape;
 
@@ -460,20 +431,18 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   fields.pegDiameter.value = String(cfg.pinDiameterMm);
   fields.threadWidth.value = String(cfg.threadThicknessMm);
 
-  // Sync mode & models
   rasterizerSelect.value = cfg.rasterizer;
   paletteModeSelect.value = cfg.paletteMode;
+  loomRenderer.setPalette(cfg.paletteMode);
   controlUserCustomPalette.hidden = cfg.paletteMode !== 'USER_CUSTOM';
   opticalMixModelSelect.value = cfg.opticalMixModel;
   errorMetricSelect.value = cfg.errorMetric;
 
-  // Sync solver & spool
   solverSelect.value = cfg.solver;
   colorStrategy.value = cfg.spoolStrategy;
   fields.lines.value = String(cfg.maxLines);
   fields.repeats.value = String(cfg.maxChordRepeats);
 
-  // Sync algorithm contextual visibility
   controlSpoolStrategy.hidden = cfg.paletteMode === 'MONOCHROME';
   controlBeamWidth.hidden = cfg.solver !== 'BEAM_SEARCH';
   controlFistaIterations.hidden = cfg.solver !== 'GLOBAL_NNLS_FISTA';
@@ -489,7 +458,6 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   switchPenaltyLambdaInput.value = String(cfg.switchPenaltyLambda);
   minRunLengthInput.value = String(cfg.minRunLength);
 
-  // Sync DSP
   fields.claheClip.value = String(cfg.claheClipLimit);
   faceImportanceWeightInput.value = String(cfg.faceImportanceWeight);
   edgeDetectorSelect.value = cfg.edgeDetector;
@@ -497,13 +465,11 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   edgeBlendWeightInput.value = String(cfg.edgeBlendWeight);
   morphologyOpSelect.value = cfg.morphologyOp;
 
-  // Sync Framing
   fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
   fields.cropPanX.value = String(cfg.framing.panXPercent);
   fields.cropPanY.value = String(cfg.framing.panYPercent);
   cropRotationInput.value = String(cfg.framing.rotationDeg);
 
-  // Dirty state reset button
   btnResetPresetDefaults.hidden = !isDirty;
 
   updateOutputs();
@@ -515,20 +481,13 @@ presetStore.subscribe((cfg, isDirty) => {
   syncUIWithConfig(cfg, isDirty);
 });
 
-// Preset Select Event
 preset.addEventListener('change', () => {
   const selected = preset.value;
   if (selected in WEAVER_PRESET_PROFILES) {
     presetStore.loadPreset(selected as WeaverPresetProfileId);
-  } else if (selected === 'portrait-mono') {
-    presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
-    presetStore.setParam('paletteMode', 'MONOCHROME');
-  } else if (selected === 'portrait-cmyk' || selected === 'cmyk') {
-    presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
-    presetStore.setParam('paletteMode', 'CMYK_SUBTRACTIVE');
-  } else if (selected === 'vrellis-mono') {
+  } else if (selected === 'portrait-mono' || selected === 'vrellis-mono') {
     presetStore.loadPreset('VRELLIS_CLASSIC_MONO');
-  } else if (selected === 'vrellis-color') {
+  } else if (selected === 'portrait-cmyk' || selected === 'cmyk' || selected === 'vrellis-color') {
     presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
   }
   updateTargetPreview();
@@ -539,7 +498,6 @@ btnResetPresetDefaults.addEventListener('click', () => {
   updateTargetPreview();
 });
 
-// Shape selection
 loomShape.addEventListener('change', () => {
   const s = loomShape.value;
   document.body.dataset.loomShape = s;
@@ -601,7 +559,6 @@ errorMetricSelect.addEventListener('change', () => {
   presetStore.setParam('errorMetric', errorMetricSelect.value as WeaverConfig['errorMetric']);
 });
 
-// Shape dimension listeners
 for (const el of [
   fields.pegs,
   fields.diameter,
@@ -615,13 +572,16 @@ for (const el of [
   polyPegsInput,
 ]) {
   el.addEventListener('input', () => {
-    loomRenderer.setThreadThickness(Number(fields.threadWidth.value) || 0.2);
+    presetStore.setParam('pinCount', Number(fields.pegs.value) || 200);
+    presetStore.setParam('diameterMm', Number(fields.diameter.value) || 600);
+    presetStore.setParam('pinDiameterMm', Number(fields.pegDiameter.value) || 2.0);
+    presetStore.setParam('threadThicknessMm', Number(fields.threadWidth.value) || 0.18);
+    loomRenderer.setThreadThickness(Number(fields.threadWidth.value) || 0.18);
     updateLoomPreview();
     updateTargetPreview();
   });
 }
 
-// Algorithm slider dirty trackers
 beamWidthInput.addEventListener('input', () => presetStore.setParam('beamWidth', Number(beamWidthInput.value)));
 beamDepthInput.addEventListener('input', () => presetStore.setParam('beamDepth', Number(beamDepthInput.value)));
 fistaIterationsInput.addEventListener('input', () =>
@@ -671,16 +631,7 @@ function checkRepeatsHint(): void {
 }
 
 function updateOutputs(): void {
-  for (const id of [
-    'contrast',
-    'brightness',
-    'gamma',
-    'shadowLift',
-    'edgeEmphasis',
-    'highlightProtection',
-    'viewingDistance',
-    'claheClip',
-  ] as const) {
+  for (const id of ['contrast', 'brightness', 'gamma', 'claheClip'] as const) {
     const el = document.getElementById(`${id}-out`);
     if (el) el.textContent = Number(fields[id].value).toFixed(2);
   }
@@ -719,94 +670,128 @@ function computeActiveCrop(): { x: number; y: number; size: number } | undefined
   return { x: cropX, y: cropY, size: cropSize };
 }
 
+function buildRuntimeWasmConfig(): Record<string, unknown> {
+  const cfg = presetStore.getConfig();
+  return {
+    ...cfg,
+    pinCount: Number(fields.pegs.value) || cfg.pinCount,
+    diameterMm: Number(fields.diameter.value) || cfg.diameterMm,
+    pinDiameterMm: Number(fields.pegDiameter.value) || cfg.pinDiameterMm,
+    threadThicknessMm: Number(fields.threadWidth.value) || cfg.threadThicknessMm,
+    maxLines: Number(fields.lines.value) || cfg.maxLines,
+    minPegGap: Number(fields.gap.value) || 12,
+    maxChordRepeats: Number(fields.repeats.value) || cfg.maxChordRepeats,
+    targetResolution: Number(fields.resolution.value) || 500,
+    claheClipLimit: fields.clahe.checked ? Number(fields.claheClip.value) || 2.0 : 0.0,
+    contrast: Number(fields.contrast.value) || 1.0,
+    brightness: Number(fields.brightness.value) || 0.0,
+    gamma: Number(fields.gamma.value) || 1.0,
+    framing: {
+      zoom: Number(fields.cropZoom.value) || 1.0,
+      panXPercent: Number(fields.cropPanX.value) || 0,
+      panYPercent: Number(fields.cropPanY.value) || 0,
+      rotationDeg: Number(cropRotationInput.value) || 0,
+      autoFaceTargetRatio: 0.0,
+    },
+  };
+}
+
 function updateTargetPreview(): void {
   if (!image) return;
   try {
-    const opts = readOptions();
-    const previewSize = 256;
-    const tgt = prepareTarget(
-      { width: image.width, height: image.height, data: image.data },
-      previewSize,
-      opts.preprocess,
-      opts.preprocess.grayscale ? 1 : 3,
-      undefined,
-      createLoom(getCurrentLoomConfig()),
-    );
-    const rgba = toRGBA(tgt.data, tgt.channels, tgt.mask);
-    studioManager.updateTargetData(rgba.buffer as ArrayBuffer, previewSize, previewSize);
-
+    const runtimeCfg = buildRuntimeWasmConfig();
     if (engineClient.isReady()) {
-      const cfg = presetStore.getConfig();
       engineClient
-        .loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, cfg)
+        .loadAndPrepareImage(
+          image.data.slice().buffer,
+          image.width,
+          image.height,
+          JSON.stringify(runtimeCfg),
+        )
         .then((res) => {
           studioManager.setDiagnosticBuffers(res);
         })
         .catch((err) => {
-          console.warn('Wasm DSP preview indisponível:', err);
+          console.warn('Wasm DSP preview erro:', err);
         });
+    } else {
+      const opts = readOptions();
+      const previewSize = 256;
+      const isMono = paletteModeSelect.value === 'MONOCHROME';
+      const tgt = prepareTarget(
+        { width: image.width, height: image.height, data: image.data },
+        previewSize,
+        { ...opts.preprocess, grayscale: isMono },
+        isMono ? 1 : 3,
+        undefined,
+        createLoom(getCurrentLoomConfig()),
+      );
+      const rgba = toRGBA(tgt.data, tgt.channels, tgt.mask);
+      studioManager.updateTargetData(rgba.buffer as ArrayBuffer, previewSize, previewSize);
     }
   } catch {
     // Non-fatal
   }
 }
 
+/**
+ * Retorna a paleta de fios correspondente ao modo selecionado (evitando o bug de sempre retornar Preto).
+ */
+function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions['threads'] {
+  const mode = paletteModeSelect.value as ColorPaletteMode;
+  if (mode === 'CMYK_SUBTRACTIVE') {
+    return [
+      { id: 'cmyk-y', name: 'Amarelo', color: '#f5dd05', widthMm, opacity: 0.22, startPeg: 0 },
+      { id: 'cmyk-m', name: 'Magenta', color: '#d90a75', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 4) },
+      { id: 'cmyk-c', name: 'Ciano', color: '#0594d9', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 2) },
+      { id: 'cmyk-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+    ];
+  }
+  if (mode === 'RGB_OCCLUSIVE') {
+    return [
+      { id: 'rgb-r', name: 'Vermelho', color: '#e01010', widthMm, opacity: 0.28, startPeg: 0 },
+      { id: 'rgb-g', name: 'Verde', color: '#10c020', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 4) },
+      { id: 'rgb-b', name: 'Azul', color: '#1030e0', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 2) },
+      { id: 'rgb-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+    ];
+  }
+  return [{ id: 'mono-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: 0 }];
+}
+
 function readOptions(): WeaveOptions {
   const base = PRESETS['portrait-mono'];
   const loom = getCurrentLoomConfig();
   const totalPegs = loomPegCount(loom);
-  const width = Number(fields.threadWidth.value);
+  const width = Number(fields.threadWidth.value) || 0.18;
+  const isMono = paletteModeSelect.value === 'MONOCHROME';
+  const activeThreads = getActiveThreadsSpec(totalPegs, width);
 
   return resolveOptions(
     {
       loom,
-      threads: base.threads.map((t, i) => ({
-        ...t,
-        widthMm: width,
-        startPeg: Math.floor((i * totalPegs) / base.threads.length),
-      })),
-      threadLineBudgets: base.threadLineBudgets,
+      threads: activeThreads,
       maxLines: Number(fields.lines.value),
       minPegGap: Number(fields.gap.value),
       maxChordRepeats: Number(fields.repeats.value),
       resolutionPx: Number(fields.resolution.value),
       colorStrategy: 'layered',
-      viewingDistanceM: Number(fields.viewingDistance.value),
-      highlightProtection: Number(fields.highlightProtection.value),
       preprocess: {
+        ...base.preprocess,
+        grayscale: isMono,
         contrast: Number(fields.contrast.value),
         brightness: Number(fields.brightness.value),
         gamma: Number(fields.gamma.value),
-        shadowLift: Number(fields.shadowLift.value),
-        edgeEmphasis: Number(fields.edgeEmphasis.value),
-        highlightProtection: Number(fields.highlightProtection.value),
-        sharpenSigma: base.preprocess.sharpenSigma,
-        torsoFeathering: base.preprocess.torsoFeathering,
         crop: computeActiveCrop(),
         clahe: fields.clahe.checked,
         claheClipLimit: Number(fields.claheClip.value),
-        viewingDistanceM: Number(fields.viewingDistance.value),
-        invert: fields.invert.checked,
+        invert: false,
       },
     },
     base,
   );
 }
 
-// Framing slider inputs
-for (const id of [
-  'contrast',
-  'brightness',
-  'gamma',
-  'shadowLift',
-  'edgeEmphasis',
-  'highlightProtection',
-  'cropZoom',
-  'cropPanX',
-  'cropPanY',
-  'viewingDistance',
-  'claheClip',
-] as const) {
+for (const id of ['contrast', 'brightness', 'gamma', 'cropZoom', 'cropPanX', 'cropPanY', 'claheClip'] as const) {
   fields[id].addEventListener('input', () => {
     updateOutputs();
     updateTargetPreview();
@@ -821,9 +806,14 @@ fields.clahe.addEventListener('change', () => {
   $('clahe-controls').hidden = !fields.clahe.checked;
   updateTargetPreview();
 });
-fields.invert.addEventListener('change', () => updateTargetPreview());
-fields.lines.addEventListener('input', checkRepeatsHint);
-fields.repeats.addEventListener('input', checkRepeatsHint);
+fields.lines.addEventListener('input', () => {
+  presetStore.setParam('maxLines', Number(fields.lines.value));
+  checkRepeatsHint();
+});
+fields.repeats.addEventListener('input', () => {
+  presetStore.setParam('maxChordRepeats', Number(fields.repeats.value));
+  checkRepeatsHint();
+});
 
 calibrateFileInput.addEventListener('change', async () => {
   const f = calibrateFileInput.files?.[0];
@@ -892,39 +882,17 @@ drop.addEventListener('drop', (e) => {
 });
 
 // ------------------------------------------------------------------- Solver Execution
-function paint(canvas: HTMLCanvasElement, size: number, rgba: ArrayBuffer): void {
-  if (canvas === simCanvas && loomRenderer.isWebGL2Supported()) {
-    loomRenderer.renderScreenPass();
-    return;
-  }
-  if (canvas.width !== size) {
-    canvas.width = size;
-    canvas.height = size;
-  }
-  const ctx = canvas.getContext('2d');
-  ctx?.putImageData(new ImageData(new Uint8ClampedArray(rgba), size, size), 0, 0);
-}
-
 function setStats(
   lines: number,
   lengthMm: number,
   rmse: number | null,
   ms: number,
-  currentThread?: string,
-  currentLayer?: number,
   deltaE?: number | null,
   ssim?: number | null,
   switches?: number | null,
   manualEstTime?: string | null,
 ): void {
-  const isLayered = colorStrategy.value === 'COARSE_TO_FINE_EPOCHS' || colorStrategy.value === 'layered';
-  const threadInfo = currentThread
-    ? isLayered
-      ? ` · Camada ${currentLayer ?? 1}: ${currentThread}`
-      : ` · Fio: ${currentThread}`
-    : '';
-  $('s-lines').textContent = `${lines.toLocaleString('pt-BR')}${threadInfo}`;
-  $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
+  $('s-lines').textContent = lines.toLocaleString('pt-BR');$('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
   const switchesEl = document.getElementById('s-switches');
   if (switchesEl) {
     switchesEl.textContent = switches !== undefined && switches !== null ? switches.toLocaleString('pt-BR') : '0';
@@ -1009,55 +977,6 @@ function renderSpoolTableFromBom(bom: BomDataPayload): void {
   spoolBreakdown.hidden = false;
 }
 
-function renderSpoolTable(res: WeaveResult): void {
-  const est = estimateWeave(res);
-  sEstTime.textContent = formatDuration(est.totalSeconds);
-
-  let html = `
-    <table class="spool-table" style="width: 100%; border-collapse: collapse; font-size: 0.82rem">
-      <thead>
-        <tr style="border-bottom: 1px solid var(--line); color: var(--muted)">
-          <th style="padding: 6px 8px; text-align: left">Cor</th>
-          <th style="padding: 6px 8px; text-align: right">Linhas</th>
-          <th style="padding: 6px 8px; text-align: right">Fio</th>
-          <th style="padding: 6px 8px; text-align: right">Com margem</th>
-          <th style="padding: 6px 8px; text-align: right">Carretéis</th>
-          <th style="padding: 6px 8px; text-align: right">Uso</th>
-        </tr>
-      </thead>
-      <tbody>
-  `;
-
-  for (const t of est.threads) {
-    const lenM = (t.lengthMm / 1000).toFixed(1) + ' m';
-    const reqM = (t.requiredMm / 1000).toFixed(1) + ' m';
-    html += `
-      <tr style="border-bottom: 1px solid #232321">
-        <td style="padding: 6px 8px; display: flex; align-items: center; gap: 0.5rem">
-          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 2px; background: ${t.color}; border: 1px solid #fff"></span>
-          <span>${escapeHtml(t.name)}</span>
-        </td>
-        <td style="padding: 6px 8px; text-align: right">${t.lines.toLocaleString('pt-BR')}</td>
-        <td style="padding: 6px 8px; text-align: right">${lenM}</td>
-        <td style="padding: 6px 8px; text-align: right">${reqM}</td>
-        <td style="padding: 6px 8px; text-align: right"><strong>${t.spools}</strong></td>
-        <td style="padding: 6px 8px; text-align: right">${t.spoolUsagePct.toFixed(1)}%</td>
-      </tr>
-    `;
-  }
-
-  html += `
-      </tbody>
-    </table>
-    <p style="margin: 0.5rem 0 0; font-size: 0.78rem; color: var(--muted)">
-      Tempo tecendo: ${formatDuration(est.weavingSeconds)} · Nós e trocas: ${formatDuration(est.overheadSeconds)} (${est.tieOns} nós, ${est.switches} trocas)
-    </p>
-  `;
-
-  spoolTableContainer.innerHTML = html;
-  spoolBreakdown.hidden = false;
-}
-
 function setRunning(on: boolean): void {
   running = on;
   runBtn.disabled = on || !image;
@@ -1089,8 +1008,6 @@ function start60HzTelemetryLoop(): void {
       totalMeters * 1000,
       rmse > 0 ? rmse : null,
       elapsedMs,
-      undefined,
-      undefined,
       deltaE > 0 ? deltaE : null,
       ssim > 0 ? ssim : null,
       switches,
@@ -1117,11 +1034,21 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   const mem = engineClient.memory;
   const currentStep = mem.getCurrentStepIndex();
   const totalMeters = mem.getTotalThreadMeters();
-  const switches = mem.getTotalSpoolSwitches();
   const rmse = mem.getCurrentRMSE();
   const deltaE = mem.getCurrentDeltaE();
   const ssim = mem.getCurrentSSIM();
   const durationMs = performance.now() - solverStartTime;
+
+  const rawSteps = mem.readSteps(0, currentStep);
+  const options = readOptions();
+
+  // Conta trocas reais diretamente da sequência gerada (Fonte Única de Verdade)
+  let actualSwitches = 0;
+  for (let i = 1; i < rawSteps.length; i++) {
+    if (rawSteps[i].spoolId !== rawSteps[i - 1].spoolId) {
+      actualSwitches++;
+    }
+  }
 
   let bomLoaded = false;
   try {
@@ -1129,6 +1056,8 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
     if (typeof bomJsonStr === 'string' && bomJsonStr.includes('bom')) {
       const parsed = JSON.parse(bomJsonStr) as { bom?: BomDataPayload };
       if (parsed.bom) {
+        parsed.bom.total_switches = actualSwitches;
+        parsed.bom.tie_ons = actualSwitches + 1;
         renderSpoolTableFromBom(parsed.bom);
         bomLoaded = true;
       }
@@ -1136,9 +1065,6 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   } catch (err) {
     console.warn('Falha ao obter BOM do weaver-cam:', err);
   }
-
-  const rawSteps = mem.readSteps(0, currentStep);
-  const options = readOptions();
 
   const weaveSteps: WeaveStep[] = rawSteps.map((st, i) => ({
     index: i,
@@ -1193,7 +1119,8 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   };
 
   if (!bomLoaded) {
-    renderSpoolTable(result);
+    const est = estimateWeave(result);
+    sEstTime.textContent = formatDuration(est.totalSeconds);
   }
 
   setStats(
@@ -1201,28 +1128,15 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
     totalMeters * 1000,
     rmse > 0 ? rmse : null,
     durationMs,
-    undefined,
-    undefined,
     deltaE > 0 ? deltaE : null,
     ssim > 0 ? ssim : null,
-    switches,
+    actualSwitches,
     sEstTime.textContent,
   );
 
   bar.style.width = isCompleted ? '100%' : `${Math.min(100, (currentStep / currentMaxLines) * 100)}%`;
   exportButtons.forEach((b) => (b.disabled = false));
   player.load(result);
-}
-
-function runJsFallback(options: WeaveOptions): void {
-  if (!image) return;
-  const data = image.data.slice().buffer;
-  const msg: ToWorker = {
-    type: 'start',
-    image: { width: image.width, height: image.height, data },
-    options,
-  };
-  worker.postMessage(msg, [data]);
 }
 
 let currentMaxLines = 1;
@@ -1246,95 +1160,31 @@ runBtn.addEventListener('click', async () => {
   setRunning(true);
   solverStartTime = performance.now();
 
-  if (engineClient.isReady()) {
-    try {
-      isWasmRunning = true;
-      const cfg = presetStore.getConfig();
-      const configWithLines: WeaverConfig = {
-        ...cfg,
-        maxLines: options.maxLines,
-        maxChordRepeats: options.maxChordRepeats,
-      };
-      await engineClient.loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, configWithLines);
-      await engineClient.initSolver(configWithLines);
-      engineClient.startSolver(50);
-      start60HzTelemetryLoop();
-    } catch (err) {
-      console.warn('Erro ao executar solver Wasm, utilizando fallback JS:', err);
-      isWasmRunning = false;
-      runJsFallback(options);
-    }
-  } else {
+  try {
+    isWasmRunning = true;
+    const runtimeCfgJson = JSON.stringify(buildRuntimeWasmConfig());
+    const prepRes = await engineClient.loadAndPrepareImage(
+      image.data.slice().buffer,
+      image.width,
+      image.height,
+      runtimeCfgJson,
+    );
+    studioManager.setDiagnosticBuffers(prepRes);
+    await engineClient.initSolver(runtimeCfgJson);
+    engineClient.startSolver(50);
+    start60HzTelemetryLoop();
+  } catch (err) {
     isWasmRunning = false;
-    runJsFallback(options);
+    setRunning(false);
+    showError(err);
   }
 });
 
 stopBtn.addEventListener('click', () => {
   if (isWasmRunning && engineClient.isReady()) {
     engineClient.pauseSolver();
-  } else {
-    worker.postMessage({ type: 'stop' } satisfies ToWorker);
   }
 });
-
-worker.onmessage = (ev: MessageEvent<FromWorker>) => {
-  const msg = ev.data;
-  switch (msg.type) {
-    case 'target':
-      studioManager.updateTargetData(msg.rgba, msg.size, msg.size);
-      break;
-    case 'progress':
-      paint(simCanvas, msg.size, msg.rgba);
-      studioManager.setCachedSimulation(msg.rgba);
-      bar.style.width = `${(msg.lines / currentMaxLines) * 100}%`;
-      setStats(msg.lines, msg.lengthMm, null, msg.elapsedMs, msg.currentThread, msg.currentLayer, null, null, 0);
-      break;
-    case 'done': {
-      result = msg.result;
-      if (!result) break;
-      if (loomRenderer.isWebGL2Supported() && result.steps) {
-        loomRenderer.reset();
-        loomRenderer.renderSteps(
-          result.steps.map((st) => ({
-            fromPin: st.from,
-            toPin: st.to,
-            spoolId: st.thread ?? 0,
-            departureWinding: st.fromSide === 1 ? 'CCW' : 'CW',
-            arrivalWinding: st.toSide === 1 ? 'CCW' : 'CW',
-            scoreNormalized: 1.0,
-          })),
-        );
-      } else {
-        paint(simCanvas, msg.size, msg.rgba);
-      }
-      studioManager.setCachedSimulation(msg.rgba);
-      bar.style.width = '100%';
-      const activeResult = result;
-      const switches = activeResult.steps.filter((st, i) => i > 0 && st.thread !== activeResult.steps[i - 1].thread).length;
-      setStats(
-        activeResult.steps.length,
-        activeResult.totalLengthMm,
-        activeResult.rmse,
-        activeResult.durationMs,
-        undefined,
-        undefined,
-        activeResult.metrics?.deltaELab,
-        activeResult.metrics?.ssim,
-        switches,
-      );
-      renderSpoolTable(activeResult);
-      exportButtons.forEach((b) => (b.disabled = false));
-      setRunning(false);
-      player.load(activeResult);
-      break;
-    }
-    case 'error':
-      setRunning(false);
-      showError(new Error(msg.message));
-      break;
-  }
-};
 
 // ---------------------------------------------------------------- Export Utilities
 function download(name: string, data: BlobPart | Uint8Array, type: string): void {
@@ -1362,17 +1212,6 @@ for (const btn of exportButtons) {
     const base = `${imageName}.weave`;
     switch (btn.dataset.export) {
       case 'json':
-        if (engineClient.isReady()) {
-          try {
-            const bomJson = await engineClient.exportCam('bom_json');
-            if (typeof bomJson === 'string' && bomJson.includes('schema_version')) {
-              download(`${base}.json`, bomJson, 'application/json');
-              break;
-            }
-          } catch {
-            // fallback below
-          }
-        }
         download(`${base}.json`, JSON.stringify(result, null, 2), 'application/json');
         break;
       case 'txt':
@@ -1382,17 +1221,6 @@ for (const btn of exportButtons) {
         download(`${base}.csv`, toCSV(result), 'text/csv;charset=utf-8');
         break;
       case 'svg':
-        if (engineClient.isReady()) {
-          try {
-            const svgArt = await engineClient.exportCam('artwork_svg');
-            if (typeof svgArt === 'string' && svgArt.startsWith('<svg')) {
-              download(`${base}.svg`, svgArt, 'image/svg+xml');
-              break;
-            }
-          } catch {
-            // fallback below
-          }
-        }
         download(`${base}.svg`, toSVG(result), 'image/svg+xml');
         break;
       case 'png':
@@ -1421,7 +1249,6 @@ document.addEventListener('keydown', (e) => {
   if ($('knit').classList.contains('active')) player.handleKey(e);
 });
 
-// Knit player JSON open
 $<HTMLInputElement>('open-json').addEventListener('change', async (e) => {
   const f = (e.target as HTMLInputElement).files?.[0];
   if (!f) return;

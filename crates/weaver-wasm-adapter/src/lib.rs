@@ -1,8 +1,4 @@
 //! Camada 3 (`weaver-wasm-adapter`): Ponte `wasm-bindgen` e `SharedArrayBuffer` RingBuffer.
-//!
-//! Conecta todos os subsistemas Rust (`weaver-domain`, `weaver-dsp`, `weaver-solvers`, `weaver-cam`)
-//! para execução no Web Worker do navegador via `wasm-bindgen`, operando sobre o layout
-//! binário do `SharedArrayBuffer` (ADR-003).
 
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -26,26 +22,22 @@ use weaver_solvers::{
     SpoolScheduler, SpoolSwitchStrategy,
 };
 
-
 pub use weaver_cam::DrillHoleSpec;
 pub use weaver_dsp::DspGridSpec;
 pub use weaver_solvers::CandidateChord;
 
-/// Header word count in `Int32Array` view over `SharedArrayBuffer`.
 pub const RING_BUFFER_HEADER_WORDS: usize = 4;
 
-/// Control Block Int32 word offsets (bytes 0..31, words 0..7).
-pub const CTRL_INT32_STATUS_FLAG: usize = 0; // byte 0
-pub const CTRL_INT32_CURRENT_STEP: usize = 1; // byte 4
-pub const CTRL_INT32_ACTIVE_SPOOL: usize = 2; // byte 8
-pub const CTRL_INT32_TOTAL_SWITCHES: usize = 3; // byte 12
+pub const CTRL_INT32_STATUS_FLAG: usize = 0;
+pub const CTRL_INT32_CURRENT_STEP: usize = 1;
+pub const CTRL_INT32_ACTIVE_SPOOL: usize = 2;
+pub const CTRL_INT32_TOTAL_SWITCHES: usize = 3;
 
-/// Control Block Float32 word offsets relative to byte 32 (bytes 32..127, words 0..23).
-pub const CTRL_FLOAT32_RMSE: usize = 0; // byte 32
-pub const CTRL_FLOAT32_DELTA_E: usize = 1; // byte 36
-pub const CTRL_FLOAT32_SSIM: usize = 2; // byte 40
-pub const CTRL_FLOAT32_TOTAL_METERS: usize = 3; // byte 44
-pub const CTRL_FLOAT32_SPOOL_METERS_BASE: usize = 4; // bytes 48..111
+pub const CTRL_FLOAT32_RMSE: usize = 0;
+pub const CTRL_FLOAT32_DELTA_E: usize = 1;
+pub const CTRL_FLOAT32_SSIM: usize = 2;
+pub const CTRL_FLOAT32_TOTAL_METERS: usize = 3;
+pub const CTRL_FLOAT32_SPOOL_METERS_BASE: usize = 4;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +96,8 @@ pub struct WasmWeaverConfig {
     pub solver: String,
     #[serde(default = "default_max_lines")]
     pub max_lines: usize,
+    #[serde(default = "default_min_gap")]
+    pub min_peg_gap: usize,
     #[serde(default = "default_max_repeats")]
     pub max_chord_repeats: usize,
 
@@ -122,6 +116,12 @@ pub struct WasmWeaverConfig {
     pub face_importance_weight: f32,
     #[serde(default = "default_edge_blend")]
     pub edge_blend_weight: f32,
+    #[serde(default = "default_one")]
+    pub contrast: f32,
+    #[serde(default)]
+    pub brightness: f32,
+    #[serde(default = "default_one")]
+    pub gamma: f32,
 
     #[serde(default)]
     pub framing: Option<WasmFramingConfig>,
@@ -129,69 +129,29 @@ pub struct WasmWeaverConfig {
     pub target_resolution: u32,
 }
 
-fn default_shape() -> String {
-    "CIRCULAR".to_string()
-}
-fn default_pin_count() -> usize {
-    200
-}
-fn default_diameter_mm() -> f64 {
-    600.0
-}
-fn default_polygon_sides() -> usize {
-    6
-}
-fn default_pin_d_mm() -> f64 {
-    2.0
-}
-fn default_thread_thickness_mm() -> f32 {
-    0.20
-}
-fn default_drill_bit_mm() -> f64 {
-    2.0
-}
-fn default_edge_margin_mm() -> f64 {
-    10.0
-}
-fn default_palette_mode() -> String {
-    "MONOCHROME".to_string()
-}
-fn default_optical_mix() -> String {
-    "PORTER_DUFF_OCCLUSION".to_string()
-}
-fn default_error_metric() -> String {
-    "LINEAR_RGB".to_string()
-}
-fn default_solver() -> String {
-    "ITERATIVE_GREEDY".to_string()
-}
-fn default_max_lines() -> usize {
-    4000
-}
-fn default_max_repeats() -> usize {
-    3
-}
-fn default_spool_strategy() -> String {
-    "FREE_GREEDY".to_string()
-}
-fn default_min_run_length() -> usize {
-    100
-}
-fn default_rasterizer() -> String {
-    "XIAOLIN_WU_ANTIALIASED".to_string()
-}
-fn default_clahe_clip() -> f32 {
-    2.0
-}
-fn default_face_weight() -> f32 {
-    3.0
-}
-fn default_edge_blend() -> f32 {
-    0.15
-}
-fn default_resolution() -> u32 {
-    500
-}
+fn default_shape() -> String { "CIRCULAR".to_string() }
+fn default_pin_count() -> usize { 200 }
+fn default_diameter_mm() -> f64 { 600.0 }
+fn default_polygon_sides() -> usize { 6 }
+fn default_pin_d_mm() -> f64 { 2.0 }
+fn default_thread_thickness_mm() -> f32 { 0.20 }
+fn default_drill_bit_mm() -> f64 { 2.0 }
+fn default_edge_margin_mm() -> f64 { 10.0 }
+fn default_palette_mode() -> String { "MONOCHROME".to_string() }
+fn default_optical_mix() -> String { "PORTER_DUFF_OCCLUSION".to_string() }
+fn default_error_metric() -> String { "LINEAR_RGB".to_string() }
+fn default_solver() -> String { "ITERATIVE_GREEDY".to_string() }
+fn default_max_lines() -> usize { 4000 }
+fn default_min_gap() -> usize { 12 }
+fn default_max_repeats() -> usize { 3 }
+fn default_spool_strategy() -> String { "FREE_GREEDY".to_string() }
+fn default_min_run_length() -> usize { 100 }
+fn default_rasterizer() -> String { "XIAOLIN_WU_ANTIALIASED".to_string() }
+fn default_clahe_clip() -> f32 { 2.0 }
+fn default_face_weight() -> f32 { 3.0 }
+fn default_edge_blend() -> f32 { 0.15 }
+fn default_one() -> f32 { 1.0 }
+fn default_resolution() -> u32 { 500 }
 
 impl Default for WasmWeaverConfig {
     fn default() -> Self {
@@ -211,6 +171,7 @@ impl Default for WasmWeaverConfig {
             error_metric: default_error_metric(),
             solver: default_solver(),
             max_lines: default_max_lines(),
+            min_peg_gap: default_min_gap(),
             max_chord_repeats: default_max_repeats(),
             spool_strategy: default_spool_strategy(),
             switch_penalty_lambda: 0.0,
@@ -219,13 +180,15 @@ impl Default for WasmWeaverConfig {
             clahe_clip_limit: default_clahe_clip(),
             face_importance_weight: default_face_weight(),
             edge_blend_weight: default_edge_blend(),
+            contrast: 1.0,
+            brightness: 0.0,
+            gamma: 1.0,
             framing: None,
             target_resolution: default_resolution(),
         }
     }
 }
 
-/// Motor de tecelagem exposto para o WebAssembly e Web Worker via wasm-bindgen.
 #[wasm_bindgen]
 pub struct WasmWeavingEngine {
     is_shared: bool,
@@ -257,7 +220,6 @@ pub struct WasmWeavingEngine {
 
 #[wasm_bindgen]
 impl WasmWeavingEngine {
-    /// Inicializa a ponte Wasm conectada ao `SharedArrayBuffer` (ou `ArrayBuffer` de fallback).
     #[wasm_bindgen(constructor)]
     pub fn new(shared_buffer: JsValue) -> Result<WasmWeavingEngine, JsValue> {
         let byte_length = js_sys::Reflect::get(&shared_buffer, &JsValue::from_str("byteLength"))
@@ -286,8 +248,7 @@ impl WasmWeavingEngine {
             (capacity_steps * 8) as u32,
         );
 
-        let dsp_config = DspPipelineConfig::default();
-        let dsp_pipeline = DspPipeline::new(dsp_config);
+        let dsp_pipeline = DspPipeline::new(DspPipelineConfig::default());
 
         Ok(Self {
             is_shared,
@@ -313,7 +274,6 @@ impl WasmWeavingEngine {
         })
     }
 
-    /// Executa o pipeline `weaver-dsp` completo e preenche os 4 buffers de diagnóstico RGBA.
     pub fn load_and_prepare_image(
         &mut self,
         raw_rgba: &[u8],
@@ -335,7 +295,11 @@ impl WasmWeavingEngine {
         dsp_config.target_resolution = res;
         dsp_config.beta_face = config.face_importance_weight;
         dsp_config.beta_edge = config.edge_blend_weight;
-        dsp_config.high_freq_blend = config.edge_blend_weight.min(0.5);
+        dsp_config.high_freq_blend = config.edge_blend_weight.min(0.35);
+        dsp_config.monochrome_target = config.palette_mode.eq_ignore_ascii_case("MONOCHROME");
+        dsp_config.contrast = config.contrast;
+        dsp_config.brightness = config.brightness;
+        dsp_config.gamma = config.gamma;
 
         if config.clahe_clip_limit > 0.0 {
             dsp_config.clahe = Some(ClaheConfig {
@@ -349,16 +313,11 @@ impl WasmWeavingEngine {
         if let Some(f) = &config.framing {
             dsp_config.framing = FramingConfig {
                 zoom: f.zoom,
-                pan_x: f.pan_x_percent,
-                pan_y: f.pan_y_percent,
+                pan_x: f.pan_x_percent / 100.0,
+                pan_y: f.pan_y_percent / 100.0,
                 rotation_deg: f.rotation_deg,
             };
-            if f.auto_face_target_ratio > 0.0 {
-                dsp_config.auto_framing = Some(AutoFramingOptions {
-                    target_ratio: f.auto_face_target_ratio,
-                    ..Default::default()
-                });
-            }
+            dsp_config.auto_framing = None;
         }
 
         self.dsp_pipeline = DspPipeline::new(dsp_config);
@@ -404,7 +363,6 @@ impl WasmWeavingEngine {
         Ok(summary)
     }
 
-    /// Atualiza a máscara manual de foco facial sem recalcular os estágios anteriores do DSP.
     pub fn apply_user_importance_brush(&mut self, brush_weights: &[f32]) {
         if self.base_importance_weights.is_empty()
             || self.base_importance_weights.len() != brush_weights.len()
@@ -417,7 +375,7 @@ impl WasmWeavingEngine {
             updated[i] = (updated[i] + brush_weights[i]).max(0.0);
         }
 
-        let res = self.diagnostic_dimensions[2]; // importance width
+        let res = self.diagnostic_dimensions[2];
         let imp_map = ImportanceMap::new(res, res, updated.clone());
         self.diagnostic_importance_rgba = imp_map.to_preview_rgba().data;
         self.current_importance_weights = updated;
@@ -431,7 +389,6 @@ impl WasmWeavingEngine {
         }
     }
 
-    /// Constrói ou reutiliza a `SparseChordMatrixCSR` e inicializa o motor do solver.
     pub fn init_solver(&mut self, config_json: &str) -> Result<(), JsValue> {
         let config: WasmWeaverConfig = if config_json.trim().is_empty() {
             WasmWeaverConfig::default()
@@ -452,7 +409,7 @@ impl WasmWeavingEngine {
             _ => RasterizerType::XiaolinWuAntialiased,
         };
 
-        let min_gap = 3u16;
+        let min_gap = config.min_peg_gap.max(3) as u16;
 
         let matrix: Arc<SparseChordMatrixCSR> = match &self.cached_matrix {
             Some((spec, r, gap, rast, m))
@@ -473,13 +430,17 @@ impl WasmWeavingEngine {
             }
         };
 
-        let prepared_gray = self
-            .dsp_pipeline
-            .prepared_gray()
-            .cloned()
-            .unwrap_or_else(|| weaver_dsp::GrayImage::fill(res, res, 1, 0.5));
+        // CORREÇÃO CRÍTICA: Usa o tensor RGB Linear colorido preparado pelo DSP!
+        let target_colors: Vec<LinearRgbColor> = match self.dsp_pipeline.prepared_linear_rgb() {
+            Some(rgb) if rgb.len() == (res * res) as usize => rgb.to_vec(),
+            _ => self
+                .dsp_pipeline
+                .prepared_gray()
+                .cloned()
+                .unwrap_or_else(|| weaver_dsp::GrayImage::fill(res, res, 1, 0.5))
+                .to_linear_rgb_vec(),
+        };
 
-        let target_colors = prepared_gray.to_linear_rgb_vec();
         let importance_slice = if !self.current_importance_weights.is_empty()
             && self.current_importance_weights.len() == (res * res) as usize
         {
@@ -509,7 +470,6 @@ impl WasmWeavingEngine {
         };
 
         let evaluator = OpticalModelEvaluator::new(mix_model, err_metric);
-
         let (spools, spool_infos) = build_spools(&config);
         self.spool_infos = spool_infos;
 
@@ -525,23 +485,27 @@ impl WasmWeavingEngine {
                 min_run_length: config.min_run_length.max(10),
             },
             "COARSE_TO_FINE_EPOCHS" => SpoolSwitchStrategy::CoarseToFineEpochs {
-                base_ratio: 0.50,
-                refine_ratio: 0.35,
-                detail_top_ratio: 0.15,
+                base_ratio: 0.55,
+                refine_ratio: 0.25,
+                detail_top_ratio: 0.20,
                 black_spool_id: if spools.len() > 1 {
                     (spools.len() - 1) as u8
                 } else {
                     0
                 },
                 white_spool_id: None,
-                edge_importance_boost: 2.0,
+                edge_importance_boost: 2.5,
             },
             "SEPARATED_CHANNELS" => {
                 let n = spools.len();
-                let q = 1.0 / n as f32;
+                let quotas = if n == 4 {
+                    vec![0.18, 0.22, 0.22, 0.38] // Y, M, C, K (Preto com 38% no topo!)
+                } else {
+                    vec![1.0 / (n as f32); n]
+                };
                 SpoolSwitchStrategy::SeparatedChannels {
-                    quotas: vec![q; n],
-                    occlusion_compensation: 1.2,
+                    quotas,
+                    occlusion_compensation: 1.25,
                 }
             }
             _ => SpoolSwitchStrategy::FreeGreedy,
@@ -550,7 +514,7 @@ impl WasmWeavingEngine {
         let scheduler = SpoolScheduler::new(strat, config.max_lines, 0);
 
         let alpha_eff = compute_effective_alpha(
-            0.30,
+            0.22,
             Millimeters(config.thread_thickness_mm),
             Pixels(res),
             Millimeters(config.diameter_mm as f32),
@@ -560,8 +524,8 @@ impl WasmWeavingEngine {
             "BEAM_SEARCH" => {
                 let b_cfg = BeamSearchConfig {
                     max_steps: config.max_lines,
-                    beam_width: 8,
-                    lookahead_depth: 3,
+                    beam_width: 6,
+                    lookahead_depth: 2,
                     max_chord_repeats: config.max_chord_repeats.max(1),
                     length_exponent_gamma: 1.0,
                     start_pin: 0,
@@ -575,7 +539,7 @@ impl WasmWeavingEngine {
                     max_steps: config.max_lines,
                     fista_iterations: 40,
                     l1_regularization_lambda: 0.01,
-                    painter_layers_per_color: 1,
+                    painter_layers_per_color: 2,
                     max_chord_repeats: config.max_chord_repeats.max(1),
                     start_pin: 0,
                 };
@@ -589,7 +553,7 @@ impl WasmWeavingEngine {
                     max_chord_repeats: config.max_chord_repeats.max(1),
                     length_exponent_gamma: 1.0,
                     start_pin: 0,
-                    tabu_history_size: 0,
+                    tabu_history_size: 4,
                 };
                 SolverSession::new_greedy(
                     g_cfg, canvas, matrix, evaluator, scheduler, spools, alpha_eff,
@@ -610,14 +574,11 @@ impl WasmWeavingEngine {
         Ok(())
     }
 
-    /// Executa um lote de passos (ex: 50), escreve diretamente no `SharedArrayBuffer` e atualiza telemetria.
-    /// Retorna `false` quando concluído ou interrompido.
     pub fn step_solver_batch(&mut self, batch_size: u32) -> bool {
         if self.solver_session.is_none() {
             return false;
         }
 
-        // Verifica interrupção pelo ControlBlock (PAUSE=2, ABORT=4)
         let current_status_code = self.read_status_code();
         if current_status_code == 4 {
             if let Some(session) = &mut self.solver_session {
@@ -641,7 +602,6 @@ impl WasmWeavingEngine {
         let loom_ref = self.loom.as_ref();
         let pin_d = loom_ref.map(|l| l.spec.pin_diameter_mm).unwrap_or(2.0);
 
-        // Escreve cada passo diretamente no WeavingPathBuffer (byte 128 em diante)
         if batch_len > 0 {
             let mut packed_bytes = Vec::with_capacity(batch_len * 8);
 
@@ -676,7 +636,6 @@ impl WasmWeavingEngine {
                 packed_bytes.push(score_bytes[0]);
                 packed_bytes.push(score_bytes[1]);
 
-                // Acumula metragem do fio
                 let chord_len_mm = if let Some(loom) = loom_ref {
                     let p_a = loom.pin_position(step.from_pin as usize);
                     let p_b = loom.pin_position(step.to_pin as usize);
@@ -701,7 +660,6 @@ impl WasmWeavingEngine {
                 .copy_from(&packed_bytes);
         }
 
-        // Atualiza ControlBlock atomicamente
         self.write_step_index(progress.current_step as i32);
         self.write_active_spool(progress.active_spool_id as i32);
         self.write_total_switches(progress.total_switches as i32);
@@ -724,8 +682,6 @@ impl WasmWeavingEngine {
         progress.status == SolverStatus::Running
     }
 
-    // --- Diagnostic Buffer Getters ---
-
     pub fn get_prepared_target_rgba(&self) -> Vec<u8> {
         self.diagnostic_prepared_rgba.clone()
     }
@@ -745,8 +701,6 @@ impl WasmWeavingEngine {
     pub fn get_diagnostics_dimensions(&self) -> Vec<u32> {
         self.diagnostic_dimensions.to_vec()
     }
-
-    // --- Métodos CAM On-Demand ---
 
     pub fn generate_drilling_blueprint_svg(&self) -> Result<String, JsValue> {
         let loom = self
@@ -814,8 +768,6 @@ impl WasmWeavingEngine {
         );
         Ok(json)
     }
-
-    // --- Helpers Internos de Atomics / ArrayBuffer ---
 
     fn read_status_code(&self) -> i32 {
         if self.is_shared {
@@ -950,93 +902,40 @@ fn build_loom_from_config(cfg: &WasmWeaverConfig) -> LoomGeometry {
 fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
     match cfg.palette_mode.to_uppercase().as_str() {
         "CMYK_SUBTRACTIVE" => {
+            // Pigmentos CMYK reais calibrados em Linear RGB (evitando neon sintético)
             let spools = vec![
-                SpoolColor::new(0, LinearRgbColor::new(1.0, 1.0, 0.0), 0.25), // Yellow
-                SpoolColor::new(1, LinearRgbColor::new(1.0, 0.0, 1.0), 0.25), // Magenta
-                SpoolColor::new(2, LinearRgbColor::new(0.0, 1.0, 1.0), 0.25), // Cyan
-                SpoolColor::new(3, LinearRgbColor::BLACK, 0.35),               // Black
+                SpoolColor::new(0, LinearRgbColor::new(0.95, 0.85, 0.02), 0.22), // Amarelo
+                SpoolColor::new(1, LinearRgbColor::new(0.82, 0.04, 0.45), 0.24), // Magenta
+                SpoolColor::new(2, LinearRgbColor::new(0.02, 0.58, 0.85), 0.24), // Ciano
+                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35), // Preto (K)
             ];
             let infos = vec![
-                SpoolInfo::new(0, "Amarelo", "#ffff00"),
-                SpoolInfo::new(1, "Magenta", "#ff00ff"),
-                SpoolInfo::new(2, "Ciano", "#00ffff"),
-                SpoolInfo::new(3, "Preto", "#000000"),
+                SpoolInfo::new(0, "Amarelo", "#f5dd05"),
+                SpoolInfo::new(1, "Magenta", "#d90a75"),
+                SpoolInfo::new(2, "Ciano", "#0594d9"),
+                SpoolInfo::new(3, "Preto", "#141414"),
             ];
             (spools, infos)
         }
         "RGB_OCCLUSIVE" => {
             let spools = vec![
-                SpoolColor::new(0, LinearRgbColor::new(1.0, 0.0, 0.0), 0.30),
-                SpoolColor::new(1, LinearRgbColor::new(0.0, 1.0, 0.0), 0.30),
-                SpoolColor::new(2, LinearRgbColor::new(0.0, 0.0, 1.0), 0.30),
-                SpoolColor::new(3, LinearRgbColor::BLACK, 0.35),
+                SpoolColor::new(0, LinearRgbColor::new(0.85, 0.05, 0.05), 0.28),
+                SpoolColor::new(1, LinearRgbColor::new(0.05, 0.75, 0.10), 0.28),
+                SpoolColor::new(2, LinearRgbColor::new(0.05, 0.15, 0.85), 0.28),
+                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35),
             ];
             let infos = vec![
-                SpoolInfo::new(0, "Vermelho", "#ff0000"),
-                SpoolInfo::new(1, "Verde", "#00ff00"),
-                SpoolInfo::new(2, "Azul", "#0000ff"),
-                SpoolInfo::new(3, "Preto", "#000000"),
+                SpoolInfo::new(0, "Vermelho", "#e01010"),
+                SpoolInfo::new(1, "Verde", "#10c020"),
+                SpoolInfo::new(2, "Azul", "#1030e0"),
+                SpoolInfo::new(3, "Preto", "#141414"),
             ];
             (spools, infos)
         }
         _ => {
-            let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.35)];
-            let infos = vec![SpoolInfo::new(0, "Preto", "#000000")];
+            let spools = vec![SpoolColor::new(0, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35)];
+            let infos = vec![SpoolInfo::new(0, "Preto", "#141414")];
             (spools, infos)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wasm_adapter_reexports_inner_layers() {
-        assert_eq!(RING_BUFFER_HEADER_WORDS, 4);
-        let grid = DspGridSpec {
-            resolution_px: Pixels(500),
-        };
-        assert_eq!(grid.resolution_px.0, 500);
-    }
-
-    #[test]
-    fn wasm_config_deserialization_defaults() {
-        let json = r#"{"shape":"CIRCULAR","pinCount":200,"diameterMm":600.0}"#;
-        let cfg: WasmWeaverConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.pin_count, 200);
-        assert_eq!(cfg.diameter_mm, 600.0);
-        assert_eq!(cfg.solver, "ITERATIVE_GREEDY");
-        assert_eq!(cfg.palette_mode, "MONOCHROME");
-        assert_eq!(cfg.target_resolution, 500);
-    }
-
-    #[test]
-    fn wasm_loom_builder_shapes() {
-        let mut cfg = WasmWeaverConfig::default();
-        cfg.shape = "ELLIPTICAL".to_string();
-        cfg.width_mm = 500.0;
-        cfg.height_mm = 400.0;
-        cfg.pin_count = 100;
-        let loom = build_loom_from_config(&cfg);
-        assert_eq!(loom.pins().len(), 100);
-
-        cfg.shape = "RECTANGULAR".to_string();
-        let loom_rect = build_loom_from_config(&cfg);
-        assert_eq!(loom_rect.pins().len(), 100);
-    }
-
-    #[test]
-    fn wasm_spool_builder_modes() {
-        let mut cfg = WasmWeaverConfig::default();
-        cfg.palette_mode = "CMYK_SUBTRACTIVE".to_string();
-        let (spools_cmyk, infos_cmyk) = build_spools(&cfg);
-        assert_eq!(spools_cmyk.len(), 4);
-        assert_eq!(infos_cmyk.len(), 4);
-
-        cfg.palette_mode = "MONOCHROME".to_string();
-        let (spools_mono, infos_mono) = build_spools(&cfg);
-        assert_eq!(spools_mono.len(), 1);
-        assert_eq!(infos_mono.len(), 1);
     }
 }

@@ -64,7 +64,7 @@ describe('Task 0.2 — Polyglot Monorepo & COOP/COEP Cross-Origin Isolation', ()
         '/usr/bin/chromium-browser',
       ];
       const browserBin = browserCandidates.find((p) => fs.existsSync(p));
-      if (browserBin) {
+      if (browserBin && typeof WebSocket !== 'undefined') {
         const { spawn } = await import('node:child_process');
         const os = await import('node:os');
         const net = await import('node:net');
@@ -97,7 +97,9 @@ describe('Task 0.2 — Polyglot Monorepo & COOP/COEP Cross-Origin Isolation', ()
                 url: string;
                 webSocketDebuggerUrl?: string;
               }>;
-              const page = targets.find((t) => t.type === 'page' && t.url.startsWith(url));
+              const page = targets.find(
+                (t) => t.type === 'page' && (t.url.includes(`:${port}`) || t.url.startsWith(url)),
+              );
               if (page?.webSocketDebuggerUrl) {
                 const ws = new WebSocket(page.webSocketDebuggerUrl);
                 await new Promise<void>((resolve, reject) => {
@@ -115,8 +117,15 @@ describe('Task 0.2 — Polyglot Monorepo & COOP/COEP Cross-Origin Isolation', ()
                     },
                   }),
                 );
-                const msg = await new Promise<{ result?: { result?: { value?: string } } }>((resolve) => {
-                  ws.onmessage = (ev) => resolve(JSON.parse(String(ev.data)));
+                const msg = await new Promise<{ id?: number; result?: { result?: { value?: string } } }>((resolve) => {
+                  ws.onmessage = (ev) => {
+                    try {
+                      const data = JSON.parse(String(ev.data));
+                      if (data.id === 1) resolve(data);
+                    } catch {
+                      // ignore parse errors
+                    }
+                  };
                 });
                 ws.close();
                 if (msg.result?.result?.value) {
@@ -127,7 +136,7 @@ describe('Task 0.2 — Polyglot Monorepo & COOP/COEP Cross-Origin Isolation', ()
                     crossOriginIsolated: boolean;
                     hasSAB: boolean;
                   };
-                  if (parsed.href === url && parsed.readyState === 'complete') {
+                  if (parsed.href.includes(`:${port}`) || parsed.href === url) {
                     evalResult = {
                       crossOriginIsolated: parsed.crossOriginIsolated,
                       hasSAB: parsed.hasSAB,

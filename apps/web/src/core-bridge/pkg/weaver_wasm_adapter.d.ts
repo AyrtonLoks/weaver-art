@@ -1,15 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
 
-/**
- * Motor de tecelagem exposto para o WebAssembly e Web Worker via wasm-bindgen.
- */
 export class WasmWeavingEngine {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Atualiza a máscara manual de foco facial sem recalcular os estágios anteriores do DSP.
-     */
     apply_user_importance_brush(brush_weights: Float32Array): void;
     generate_artwork_svg(): string;
     generate_cnc_gcode(): string;
@@ -22,22 +16,9 @@ export class WasmWeavingEngine {
     get_importance_map_rgba(): Uint8Array;
     get_prepared_target_rgba(): Uint8Array;
     get_radon_sinogram_rgba(): Uint8Array;
-    /**
-     * Constrói ou reutiliza a `SparseChordMatrixCSR` e inicializa o motor do solver.
-     */
     init_solver(config_json: string): void;
-    /**
-     * Executa o pipeline `weaver-dsp` completo e preenche os 4 buffers de diagnóstico RGBA.
-     */
     load_and_prepare_image(raw_rgba: Uint8Array, width: number, height: number, config_json: string): string;
-    /**
-     * Inicializa a ponte Wasm conectada ao `SharedArrayBuffer` (ou `ArrayBuffer` de fallback).
-     */
     constructor(shared_buffer: any);
-    /**
-     * Executa um lote de passos (ex: 50), escreve diretamente no `SharedArrayBuffer` e atualiza telemetria.
-     * Retorna `false` quando concluído ou interrompido.
-     */
     step_solver_batch(batch_size: number): boolean;
 }
 

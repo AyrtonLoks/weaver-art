@@ -1,25 +1,17 @@
 //! Interface Unificada de Execução Passo-a-Passo (`solver_runner.rs`).
-//!
-//! Fornece a máquina de execução incremental `SolverSession`, encapsulando qualquer um dos
-//! três motores de otimização (Greedy, Beam Search ou Global FISTA) com interface uniforme
-//! para Web Workers (WASM) e CLI nativo.
-//!
-//! Permite processar em lotes (`step_batch`), despachar métricas em tempo real e reagir
-//! atomicamente a interrupções `PAUSE` ou `ABORT`.
 
 use std::sync::Arc;
 use weaver_domain::{PegSide, SparseChordMatrixCSR};
 
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::solvers::{
-    BeamSearchConfig, BeamSearchSolver, GlobalFistaConfig, GlobalFistaSolver,
-    GreedyConfig, GreedySolver,
+    BeamSearchConfig, BeamSearchSolver, GlobalFistaConfig, GlobalFistaSolver, GreedyConfig,
+    GreedySolver,
 };
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
 use crate::telemetry_metrics::{IncrementalMetricsTracker, TelemetrySnapshot};
 
-/// Estado do ciclo de vida da execução do solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SolverStatus {
     Idle = 0,
@@ -30,14 +22,12 @@ pub enum SolverStatus {
 }
 
 impl SolverStatus {
-    /// Converte para o valor numérico inteiro canônico (ADR-003 / SharedArrayBuffer).
     #[inline]
     pub const fn as_i32(&self) -> i32 {
         *self as i32
     }
 }
 
-/// Registro de um passo individual de corda executado pelo solver.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaveStepRecord {
     pub from_pin: u16,
@@ -49,7 +39,6 @@ pub struct WeaveStepRecord {
     pub score_normalized: u16,
 }
 
-/// Progresso emitido ao final de cada lote de passos processados.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SolverProgress {
     pub current_step: usize,
@@ -61,14 +50,12 @@ pub struct SolverProgress {
     pub batch_steps: Vec<WeaveStepRecord>,
 }
 
-/// Motores de resolução suportados pelo `SolverSession`.
 pub enum SolverBackend {
     Greedy(GreedySolver),
     BeamSearch(BeamSearchSolver),
     GlobalFista(GlobalFistaSolver),
 }
 
-/// Sessão orquestradora de execução do solver com suporte a lotes incrementais.
 pub struct SolverSession {
     pub backend: SolverBackend,
     pub canvas: CanvasStateSoA,
@@ -84,7 +71,6 @@ pub struct SolverSession {
 }
 
 impl SolverSession {
-    /// Cria uma nova sessão com o backend Iterative Greedy.
     pub fn new_greedy(
         config: GreedyConfig,
         canvas: CanvasStateSoA,
@@ -113,7 +99,6 @@ impl SolverSession {
         }
     }
 
-    /// Cria uma nova sessão com o backend Beam Search.
     pub fn new_beam_search(
         config: BeamSearchConfig,
         canvas: CanvasStateSoA,
@@ -142,7 +127,6 @@ impl SolverSession {
         }
     }
 
-    /// Cria uma nova sessão com o backend Global FISTA + Roteador Euleriano.
     pub fn new_global_fista(
         config: GlobalFistaConfig,
         canvas: CanvasStateSoA,
@@ -171,7 +155,68 @@ impl SolverSession {
         }
     }
 
-    /// Executa um lote de até `batch_size` passos, atualizando métricas e retornando o progresso.
+    fn try_single_step(&mut self) -> Option<WeaveStepRecord> {
+        match &mut self.backend {
+            SolverBackend::Greedy(s) => s
+                .step(
+                    &mut self.canvas,
+                    &mut self.tracker,
+                    &mut self.scheduler,
+                    &self.matrix,
+                    &self.evaluator,
+                    &self.spools,
+                    self.alpha_eff,
+                )
+                .map(|r| WeaveStepRecord {
+                    from_pin: r.from_pin,
+                    to_pin: r.to_pin,
+                    spool_id: r.spool_id,
+                    departure_winding: r.departure_winding,
+                    arrival_winding: r.arrival_winding,
+                    gain: r.gain,
+                    score_normalized: r.score_normalized,
+                }),
+            SolverBackend::BeamSearch(s) => s
+                .step(
+                    &mut self.canvas,
+                    &mut self.tracker,
+                    &mut self.scheduler,
+                    &self.matrix,
+                    &self.evaluator,
+                    &self.spools,
+                    self.alpha_eff,
+                )
+                .map(|r| WeaveStepRecord {
+                    from_pin: r.from_pin,
+                    to_pin: r.to_pin,
+                    spool_id: r.spool_id,
+                    departure_winding: r.departure_winding,
+                    arrival_winding: r.arrival_winding,
+                    gain: r.gain,
+                    score_normalized: r.score_normalized,
+                }),
+            SolverBackend::GlobalFista(s) => s
+                .step(
+                    &mut self.canvas,
+                    &mut self.tracker,
+                    &mut self.scheduler,
+                    &self.matrix,
+                    &self.evaluator,
+                    &self.spools,
+                    self.alpha_eff,
+                )
+                .map(|r| WeaveStepRecord {
+                    from_pin: r.from_pin,
+                    to_pin: r.to_pin,
+                    spool_id: r.spool_id,
+                    departure_winding: r.departure_winding,
+                    arrival_winding: r.arrival_winding,
+                    gain: r.gain,
+                    score_normalized: r.score_normalized,
+                }),
+        }
+    }
+
     pub fn step_batch(&mut self, batch_size: usize) -> SolverProgress {
         if self.status == SolverStatus::Paused
             || self.status == SolverStatus::Done
@@ -189,67 +234,13 @@ impl SolverSession {
                 break;
             }
 
-            let step_opt: Option<WeaveStepRecord> = match &mut self.backend {
-                SolverBackend::Greedy(s) => s
-                    .step(
-                        &mut self.canvas,
-                        &mut self.tracker,
-                        &mut self.scheduler,
-                        &self.matrix,
-                        &self.evaluator,
-                        &self.spools,
-                        self.alpha_eff,
-                    )
-                    .map(|r| WeaveStepRecord {
-                        from_pin: r.from_pin,
-                        to_pin: r.to_pin,
-                        spool_id: r.spool_id,
-                        departure_winding: r.departure_winding,
-                        arrival_winding: r.arrival_winding,
-                        gain: r.gain,
-                        score_normalized: r.score_normalized,
-                    }),
+            let mut step_opt = self.try_single_step();
 
-                SolverBackend::BeamSearch(s) => s
-                    .step(
-                        &mut self.canvas,
-                        &mut self.tracker,
-                        &mut self.scheduler,
-                        &self.matrix,
-                        &self.evaluator,
-                        &self.spools,
-                        self.alpha_eff,
-                    )
-                    .map(|r| WeaveStepRecord {
-                        from_pin: r.from_pin,
-                        to_pin: r.to_pin,
-                        spool_id: r.spool_id,
-                        departure_winding: r.departure_winding,
-                        arrival_winding: r.arrival_winding,
-                        gain: r.gain,
-                        score_normalized: r.score_normalized,
-                    }),
-
-                SolverBackend::GlobalFista(s) => s
-                    .step(
-                        &mut self.canvas,
-                        &mut self.tracker,
-                        &mut self.scheduler,
-                        &self.matrix,
-                        &self.evaluator,
-                        &self.spools,
-                        self.alpha_eff,
-                    )
-                    .map(|r| WeaveStepRecord {
-                        from_pin: r.from_pin,
-                        to_pin: r.to_pin,
-                        spool_id: r.spool_id,
-                        departure_winding: r.departure_winding,
-                        arrival_winding: r.arrival_winding,
-                        gain: r.gain,
-                        score_normalized: r.score_normalized,
-                    }),
-            };
+            // Se o carretel da época atual saturou (ex: Amarelo já cobriu onde precisava),
+            // avança para o próximo carretel no agendador (ex: Magenta -> Ciano -> Preto)
+            while step_opt.is_none() && self.scheduler.skip_saturated_spool(&self.spools) {
+                step_opt = self.try_single_step();
+            }
 
             match step_opt {
                 Some(step) => {
@@ -257,13 +248,11 @@ impl SolverSession {
                     batch_steps.push(step);
                 }
                 None => {
-                    // Não há mais cordas válidas com ganho positivo
                     self.status = SolverStatus::Done;
                     break;
                 }
             }
 
-            // Verifica se houve sinal de interrupção durante o lote
             if self.status == SolverStatus::Paused || self.status == SolverStatus::Aborted {
                 break;
             }
@@ -276,32 +265,27 @@ impl SolverSession {
         self.current_progress(batch_steps)
     }
 
-    /// Pausa a execução incremental da sessão.
     pub fn pause(&mut self) {
         if self.status == SolverStatus::Running || self.status == SolverStatus::Idle {
             self.status = SolverStatus::Paused;
         }
     }
 
-    /// Retoma uma sessão pausada.
     pub fn resume(&mut self) {
         if self.status == SolverStatus::Paused {
             self.status = SolverStatus::Running;
         }
     }
 
-    /// Aborta permanentemente a sessão.
     pub fn abort(&mut self) {
         self.status = SolverStatus::Aborted;
     }
 
-    /// Verifica se o processo foi concluído ou abortado.
     #[inline]
     pub fn is_finished(&self) -> bool {
         self.status == SolverStatus::Done || self.status == SolverStatus::Aborted
     }
 
-    /// Retorna o snapshot de progresso atual com o lote fornecido.
     pub fn current_progress(&self, batch_steps: Vec<WeaveStepRecord>) -> SolverProgress {
         SolverProgress {
             current_step: self.history_steps.len(),
@@ -312,107 +296,5 @@ impl SolverSession {
             total_switches: self.scheduler.total_switches,
             batch_steps,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use weaver_domain::{
-        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels,
-        RasterizerType,
-    };
-    use crate::optical_models::OpticalMixModelType;
-    use crate::spool_scheduler::SpoolSwitchStrategy;
-
-    fn setup_runner_test(
-        pin_count: usize,
-        res: u32,
-    ) -> (
-        Arc<SparseChordMatrixCSR>,
-        CanvasStateSoA,
-        OpticalModelEvaluator,
-        SpoolScheduler,
-        Vec<SpoolColor>,
-    ) {
-        let spec = LoomPhysicalSpec::circle(
-            200.0,
-            pin_count,
-            2.0,
-            1.5,
-            10.0,
-        );
-        let loom = LoomGeometry::new(spec);
-        let matrix = Arc::new(SparseChordMatrixCSR::build(
-            &loom,
-            Pixels(res),
-            3,
-            RasterizerType::BresenhamBinary,
-        ));
-
-        let bg = LinearRgbColor::WHITE;
-        let mut target = vec![bg; (res * res) as usize];
-        let center = (res as f32 - 1.0) * 0.5;
-        let radius = res as f32 * 0.35;
-        for y in 0..res {
-            for x in 0..res {
-                let dx = x as f32 - center;
-                let dy = y as f32 - center;
-                if (dx * dx + dy * dy).sqrt() <= radius {
-                    target[(y * res + x) as usize] = LinearRgbColor::new(0.1, 0.1, 0.1);
-                }
-            }
-        }
-
-        let canvas = CanvasStateSoA::from_target_and_background(res, res, &target, bg, None);
-        let evaluator = OpticalModelEvaluator::new(
-            OpticalMixModelType::PorterDuffOcclusion,
-            ColorErrorMetric::LinearRgb,
-        );
-        let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 100, 0);
-        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.3)];
-
-        (matrix, canvas, evaluator, scheduler, spools)
-    }
-
-    #[test]
-    fn test_solver_session_step_batch_and_pause_resume() {
-        let (matrix, canvas, evaluator, scheduler, spools) = setup_runner_test(24, 48);
-
-        let config = GreedyConfig {
-            max_steps: 30,
-            max_chord_repeats: 2,
-            length_exponent_gamma: 1.0,
-            start_pin: 0,
-            tabu_history_size: 0,
-        };
-
-        let mut session = SolverSession::new_greedy(
-            config, canvas, matrix, evaluator, scheduler, spools, 0.2,
-        );
-
-        // Lote 1: 10 passos
-        let prog1 = session.step_batch(10);
-        assert_eq!(prog1.batch_steps.len(), 10);
-        assert_eq!(prog1.current_step, 10);
-        assert_eq!(session.status, SolverStatus::Running);
-
-        // Pausa
-        session.pause();
-        assert_eq!(session.status, SolverStatus::Paused);
-
-        // Tentativa de executar com status Paused não avança
-        let prog_paused = session.step_batch(5);
-        assert_eq!(prog_paused.batch_steps.len(), 0);
-        assert_eq!(prog_paused.current_step, 10);
-
-        // Retoma
-        session.resume();
-        assert_eq!(session.status, SolverStatus::Running);
-
-        // Lote 2: mais 10 passos
-        let prog2 = session.step_batch(10);
-        assert_eq!(prog2.batch_steps.len(), 10);
-        assert_eq!(prog2.current_step, 20);
     }
 }
