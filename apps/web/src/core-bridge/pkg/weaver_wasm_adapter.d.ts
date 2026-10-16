@@ -1,82 +1,95 @@
 /* tslint:disable */
 /* eslint-disable */
-/**
- * TypeScript definitions for weaver_wasm_adapter WebAssembly bindings.
- */
 
+/**
+ * Motor de tecelagem exposto para o WebAssembly e Web Worker via wasm-bindgen.
+ */
 export class WasmWeavingEngine {
-  free(): void;
-  /**
-   * Initializes the Wasm engine connected to a SharedArrayBuffer or ArrayBuffer.
-   */
-  constructor(shared_buffer: ArrayBufferLike);
-  /**
-   * Runs the complete DSP pipeline on the raw RGBA image.
-   */
-  load_and_prepare_image(raw_rgba: Uint8Array, width: number, height: number, config_json: string): string;
-  /**
-   * Applies manual focus brush without recomputing upstream DSP stages.
-   */
-  apply_user_importance_brush(brush_weights: Float32Array): void;
-  /**
-   * Initializes the solver session and CSR chord matrix.
-   */
-  init_solver(config_json: string): void;
-  /**
-   * Steps a batch of chords, directly writing binary records and atomic telemetry.
-   */
-  step_solver_batch(batch_size: number): boolean;
-  /**
-   * Returns the prepared target RGBA preview bytes.
-   */
-  get_prepared_target_rgba(): Uint8Array;
-  /**
-   * Returns the importance heatmap RGBA bytes.
-   */
-  get_importance_map_rgba(): Uint8Array;
-  /**
-   * Returns the Canny/Sobel structural edges RGBA bytes.
-   */
-  get_edges_rgba(): Uint8Array;
-  /**
-   * Returns the filtered Radon sinogram RGBA bytes.
-   */
-  get_radon_sinogram_rgba(): Uint8Array;
-  /**
-   * Returns the diagnostic dimensions [prepW, prepH, impW, impH, edgeW, edgeH, radonW, radonH].
-   */
-  get_diagnostics_dimensions(): Uint32Array;
-  /**
-   * Generates master drilling blueprint SVG.
-   */
-  generate_drilling_blueprint_svg(): string;
-  /**
-   * Generates multipage 1:1 drilling blueprint PDF.
-   */
-  generate_drilling_blueprint_pdf(): Uint8Array;
-  /**
-   * Generates technical mechanical drilling CSV.
-   */
-  generate_drilling_csv(): string;
-  /**
-   * Generates CNC G-Code (G81/G83 canned cycles).
-   */
-  generate_cnc_gcode(): string;
-  /**
-   * Generates artwork vector SVG in physical stacking order.
-   */
-  generate_artwork_svg(): string;
-  /**
-   * Generates Bill of Materials and project metadata JSON.
-   */
-  get_bom_summary_json(): string;
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Atualiza a máscara manual de foco facial sem recalcular os estágios anteriores do DSP.
+     */
+    apply_user_importance_brush(brush_weights: Float32Array): void;
+    generate_artwork_svg(): string;
+    generate_cnc_gcode(): string;
+    generate_drilling_blueprint_pdf(): Uint8Array;
+    generate_drilling_blueprint_svg(): string;
+    generate_drilling_csv(): string;
+    get_bom_summary_json(): string;
+    get_diagnostics_dimensions(): Uint32Array;
+    get_edges_rgba(): Uint8Array;
+    get_importance_map_rgba(): Uint8Array;
+    get_prepared_target_rgba(): Uint8Array;
+    get_radon_sinogram_rgba(): Uint8Array;
+    /**
+     * Constrói ou reutiliza a `SparseChordMatrixCSR` e inicializa o motor do solver.
+     */
+    init_solver(config_json: string): void;
+    /**
+     * Executa o pipeline `weaver-dsp` completo e preenche os 4 buffers de diagnóstico RGBA.
+     */
+    load_and_prepare_image(raw_rgba: Uint8Array, width: number, height: number, config_json: string): string;
+    /**
+     * Inicializa a ponte Wasm conectada ao `SharedArrayBuffer` (ou `ArrayBuffer` de fallback).
+     */
+    constructor(shared_buffer: any);
+    /**
+     * Executa um lote de passos (ex: 50), escreve diretamente no `SharedArrayBuffer` e atualiza telemetria.
+     * Retorna `false` quando concluído ou interrompido.
+     */
+    step_solver_batch(batch_size: number): boolean;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
-  readonly memory: WebAssembly.Memory;
-  readonly __wbg_wasmweavingengine_free: (a: number, b: number) => void;
+    readonly memory: WebAssembly.Memory;
+    readonly __wbg_wasmweavingengine_free: (a: number, b: number) => void;
+    readonly wasmweavingengine_apply_user_importance_brush: (a: number, b: number, c: number) => void;
+    readonly wasmweavingengine_generate_artwork_svg: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_generate_cnc_gcode: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_generate_drilling_blueprint_pdf: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_generate_drilling_blueprint_svg: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_generate_drilling_csv: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_get_bom_summary_json: (a: number) => [number, number, number, number];
+    readonly wasmweavingengine_get_diagnostics_dimensions: (a: number) => [number, number];
+    readonly wasmweavingengine_get_edges_rgba: (a: number) => [number, number];
+    readonly wasmweavingengine_get_importance_map_rgba: (a: number) => [number, number];
+    readonly wasmweavingengine_get_prepared_target_rgba: (a: number) => [number, number];
+    readonly wasmweavingengine_get_radon_sinogram_rgba: (a: number) => [number, number];
+    readonly wasmweavingengine_init_solver: (a: number, b: number, c: number) => [number, number];
+    readonly wasmweavingengine_load_and_prepare_image: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly wasmweavingengine_new: (a: any) => [number, number, number];
+    readonly wasmweavingengine_step_solver_batch: (a: number, b: number) => number;
+    readonly __wbindgen_malloc: (a: number, b: number) => number;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
+    readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __externref_table_dealloc: (a: number) => void;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_start: () => void;
 }
 
-export default function init(input?: InitInput | Promise<InitInput>): Promise<InitOutput>;
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+
+/**
+ * Instantiates the given `module`, which can either be bytes or
+ * a precompiled `WebAssembly.Module`.
+ *
+ * @param {{ module: SyncInitInput }} module - Passing `SyncInitInput` directly is deprecated.
+ *
+ * @returns {InitOutput}
+ */
+export function initSync(module: { module: SyncInitInput } | SyncInitInput): InitOutput;
+
+/**
+ * If `module_or_path` is {RequestInfo} or {URL}, makes a request and
+ * for everything else, calls `WebAssembly.instantiate` directly.
+ *
+ * @param {{ module_or_path: InitInput | Promise<InitInput> }} module_or_path - Passing `InitInput` directly is deprecated.
+ *
+ * @returns {Promise<InitOutput>}
+ */
+export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;

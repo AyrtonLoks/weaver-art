@@ -21,6 +21,11 @@ function findExecutable(name) {
   }
 }
 
+const cargoBin = path.join(os.homedir(), '.cargo', 'bin');
+if (fs.existsSync(cargoBin)) {
+  process.env.PATH = `${cargoBin}${path.delimiter}${process.env.PATH || ''}`;
+}
+
 const cargo = findExecutable('cargo');
 const wasmPack = findExecutable('wasm-pack');
 
@@ -31,7 +36,7 @@ const kernelScript = path.join(root, 'packages', 'wasm', 'scripts', 'build-wasm.
 if (fs.existsSync(kernelScript) && cargo) {
   try {
     console.log('[build-wasm] Compilando kernel @weaver-art/wasm...');
-    execSync(`node "${kernelScript}"`, { cwd: root, stdio: 'inherit' });
+    execSync(`node "${kernelScript}"`, { cwd: root, stdio: 'inherit', env: process.env });
   } catch (err) {
     console.warn('[build-wasm] Aviso ao compilar kernel wasm:', err.message);
   }
@@ -41,33 +46,35 @@ if (fs.existsSync(kernelScript) && cargo) {
 const cratePath = path.join(root, 'crates', 'weaver-wasm-adapter');
 const targetWasmFile = path.join(wasmPkgDir, 'weaver_wasm_adapter_bg.wasm');
 
-if (wasmPack) {
-  try {
-    console.log('[build-wasm] Compilando weaver-wasm-adapter com wasm-pack...');
-    execSync(`"${wasmPack}" build "${cratePath}" --target web --out-dir "${wasmPkgDir}" --release`, {
-      cwd: root,
-      stdio: 'inherit',
-    });
-  } catch (err) {
-    console.warn('[build-wasm] wasm-pack falhou, tentando fallback com cargo:', err.message);
-  }
-} else if (cargo) {
-  try {
-    console.log('[build-wasm] Compilando weaver-wasm-adapter com cargo (target: wasm32-unknown-unknown)...');
-    execSync(`"${cargo}" build --target wasm32-unknown-unknown --release -p weaver-wasm-adapter`, {
-      cwd: root,
-      stdio: 'inherit',
-    });
-    const builtWasm = path.join(root, 'target', 'wasm32-unknown-unknown', 'release', 'weaver_wasm_adapter.wasm');
-    if (fs.existsSync(builtWasm)) {
-      fs.mkdirSync(wasmPkgDir, { recursive: true });
-      if (!fs.existsSync(targetWasmFile)) {
-        fs.copyFileSync(builtWasm, targetWasmFile);
-        console.log(`[build-wasm] Copiado ${builtWasm} para ${targetWasmFile}`);
+try {
+  console.log('[build-wasm] Compilando weaver-wasm-adapter com wasm-pack...');
+  const cmd = wasmPack ? `"${wasmPack}"` : 'npx wasm-pack';
+  execSync(`${cmd} build "${cratePath}" --target web --out-dir "${wasmPkgDir}" --release`, {
+    cwd: root,
+    stdio: 'inherit',
+    env: process.env,
+  });
+} catch (err) {
+  console.warn('[build-wasm] wasm-pack falhou, tentando fallback com cargo:', err.message);
+  if (cargo) {
+    try {
+      console.log('[build-wasm] Compilando weaver-wasm-adapter com cargo (target: wasm32-unknown-unknown)...');
+      execSync(`"${cargo}" build --target wasm32-unknown-unknown --release -p weaver-wasm-adapter`, {
+        cwd: root,
+        stdio: 'inherit',
+        env: process.env,
+      });
+      const builtWasm = path.join(root, 'target', 'wasm32-unknown-unknown', 'release', 'weaver_wasm_adapter.wasm');
+      if (fs.existsSync(builtWasm)) {
+        fs.mkdirSync(wasmPkgDir, { recursive: true });
+        if (!fs.existsSync(targetWasmFile)) {
+          fs.copyFileSync(builtWasm, targetWasmFile);
+          console.log(`[build-wasm] Copiado ${builtWasm} para ${targetWasmFile}`);
+        }
       }
+    } catch (cargoErr) {
+      console.warn('[build-wasm] cargo wasm32 build aviso:', cargoErr.message);
     }
-  } catch (err) {
-    console.warn('[build-wasm] cargo wasm32 build aviso:', err.message);
   }
 }
 

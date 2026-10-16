@@ -497,4 +497,44 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_greedy_coarse_to_fine_cmyk() {
+        let (_loom, matrix, mut canvas, mut tracker, evaluator, _, _) =
+            setup_test_environment(32, 64);
+        let spools = vec![
+            SpoolColor::new(0, LinearRgbColor::new(1.0, 1.0, 0.0), 0.25),
+            SpoolColor::new(1, LinearRgbColor::new(1.0, 0.0, 1.0), 0.25),
+            SpoolColor::new(2, LinearRgbColor::new(0.0, 1.0, 1.0), 0.25),
+            SpoolColor::new(3, LinearRgbColor::BLACK, 0.35),
+        ];
+        let strat = SpoolSwitchStrategy::CoarseToFineEpochs {
+            base_ratio: 0.50,
+            refine_ratio: 0.35,
+            detail_top_ratio: 0.15,
+            black_spool_id: 3,
+            white_spool_id: None,
+            edge_importance_boost: 2.0,
+        };
+        let mut scheduler = SpoolScheduler::new(strat, 100, 0);
+        let config = GreedyConfig {
+            max_steps: 100,
+            max_chord_repeats: 3,
+            length_exponent_gamma: 1.0,
+            start_pin: 0,
+            tabu_history_size: 0,
+        };
+        let mut solver = GreedySolver::new(config, matrix.chord_count());
+        let mut steps_taken = 0;
+        for _ in 0..10 {
+            if let Some(_step) = solver.step(&mut canvas, &mut tracker, &mut scheduler, &matrix, &evaluator, &spools, 0.2) {
+                steps_taken += 1;
+            } else {
+                break;
+            }
+        }
+        println!("Steps taken: {}", steps_taken);
+        assert!(steps_taken > 0, "Deveria ter executado passos!");
+    }
 }
+
