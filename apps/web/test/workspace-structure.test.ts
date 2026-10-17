@@ -79,7 +79,10 @@ describe('Task 0.2 — Polyglot Monorepo & COOP/COEP Cross-Origin Isolation', ()
         const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weaver-cdp-'));
         const proc = spawn(browserBin, [
           '--headless=new',
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
           '--disable-gpu',
+          '--disable-dev-shm-usage',
           '--no-first-run',
           '--no-default-browser-check',
           `--user-data-dir=${userDataDir}`,
