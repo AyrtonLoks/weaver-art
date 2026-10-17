@@ -46,15 +46,23 @@
           <!-- ENQUADRAMENTO HÍBRIDO -->
           <fieldset id="framingFieldset">
             <legend>Enquadramento &amp; Guia Facial</legend>
-            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem">
+            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem">
+              <select
+                id="framingTarget"
+                title="Rosto: o rosto preenche ~95% do aro (corta topo do cabelo e orelhas). Cabeça e ombros: retrato mais aberto."
+                style="flex: 1 1 100%; min-width: 0"
+              >
+                <option value="face" selected>Alvo: Rosto (preenche o aro)</option>
+                <option value="head">Alvo: Cabeça e ombros</option>
+              </select>
               <button
                 type="button"
                 id="btnSmartFrame"
                 class="button primary"
-                style="flex: 1"
-                title="Ajusta o zoom e posição para o rosto preencher 80% do círculo (estilo Petros Vrellis)"
+                style="flex: 1; min-width: 0"
+                title="Detecta o rosto (Viola-Jones) e ajusta zoom/posição automaticamente. Clique de novo para alternar entre rostos."
               >
-                Enquadrar Rosto Automaticamente (80%)
+                Enquadrar rosto
               </button>
               <button
                 type="button"
@@ -68,17 +76,17 @@
             <div class="grid2">
               <label
                 >Zoom <output id="cropZoom-out">1.00x</output>
-                <input type="range" id="cropZoom" min="0.8" max="3.0" step="0.05" value="1.0" />
+                <input type="range" id="cropZoom" min="0.5" max="6.0" step="0.01" value="1.0" />
               </label>
               <label
                 >Pan Y (Vertical) <output id="cropPanY-out">0%</output>
-                <input type="range" id="cropPanY" min="-50" max="50" step="1" value="0" />
+                <input type="range" id="cropPanY" min="-200" max="200" step="1" value="0" />
               </label>
             </div>
             <div class="grid2">
               <label
                 >Pan X (Horizontal) <output id="cropPanX-out">0%</output>
-                <input type="range" id="cropPanX" min="-50" max="50" step="1" value="0" />
+                <input type="range" id="cropPanX" min="-200" max="200" step="1" value="0" />
               </label>
               <label
                 >Rotação <output id="cropRotation-out">0°</output>
@@ -86,7 +94,8 @@
               </label>
             </div>
             <p class="hint" style="font-size: 0.78rem; color: var(--muted); margin-top: 0.25rem">
-              Arraste diretamente sobre a foto para mover (Pan X/Y) ou use a roda do mouse para Zoom.
+              A foto é enquadrada pelo rosto automaticamente ao ser carregada. Arraste sobre a foto para mover (Pan X/Y)
+              ou use a roda do mouse para Zoom.
             </p>
           </fieldset>
 
@@ -147,7 +156,7 @@
               <div class="grid2">
                 <label>Pinos <input type="number" id="pegs" min="20" max="1000" step="1" value="200" /></label>
                 <label
-                  >Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" value="600"
+                  >Diâmetro (mm) <input type="number" id="diameter" min="50" max="3000" step="0.1" value="622"
                 /></label>
               </div>
             </div>
@@ -194,7 +203,7 @@
                 >Ø pino (mm) <input type="number" id="pegDiameter" min="0.5" max="10" step="0.1" value="2.0"
               /></label>
               <label
-                >Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" value="0.15"
+                >Fio (mm) <input type="number" id="threadWidth" min="0.02" max="3" step="0.01" value="0.18"
               /></label>
             </div>
 
@@ -368,7 +377,7 @@
             </div>
 
             <div class="grid2">
-              <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" value="3500" /></label>
+              <label>Linhas máx. <input type="number" id="lines" min="1" max="20000" step="100" value="6000" /></label>
               <label>Gap mínimo <input type="number" id="gap" min="1" max="100" step="1" value="12" /></label>
               <label>Repetições <input type="number" id="repeats" min="1" max="10" step="1" value="2" /></label>
               <label
@@ -415,7 +424,16 @@
             <!-- Foco Facial & Pincel Manual -->
             <label
               >Peso de Foco Facial (Importance Map) <output id="faceImportanceWeight-out">3.0</output>
-              <input type="range" id="faceImportanceWeight" min="0" max="10" step="0.5" value="3.0" />
+              <input type="range" id="faceImportanceWeight" min="0" max="10" step="0.5" value="2.0" />
+            </label>
+            <label
+              title="Reforça olhos, sobrancelhas, narinas e boca (feições escuras dentro da pele) no mapa de importância. 0 = desligado."
+              >Realce de feições <output id="featureEmphasisWeight-out">0.0</output>
+              <input type="range" id="featureEmphasisWeight" min="0" max="6" step="0.5" value="0" />
+            </label>
+            <label title="Clareia sombras suaves da pele (rugas, manchas) antes da otimização. 0 = desligado."
+              >Pele mais limpa <output id="skinLift-out">0.0</output>
+              <input type="range" id="skinLift" min="0" max="1" step="0.1" value="0" />
             </label>
             <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.25rem">
               <button type="button" id="btnToggleBrush" class="button" style="flex: 1; font-size: 0.8rem">
@@ -482,8 +500,38 @@
         <div class="stage">
           <div class="canvases">
             <figure class="main-figure">
-              <canvas id="sim" width="700" height="700"></canvas>
-              <figcaption>Simulação física em luz linear</figcaption>
+              <div class="view-toolbar" role="toolbar" aria-label="Modo de visualização">
+                <div class="stage-tabs">
+                  <button
+                    type="button"
+                    id="viewThreads"
+                    class="stage-pill active"
+                    title="Mostra os fios individuais (como vistos de perto)"
+                  >
+                    Fios (tamanho real)
+                  </button>
+                  <button
+                    type="button"
+                    id="viewDistance"
+                    class="stage-pill"
+                    title="Simula como a obra é vista na parede, à distância escolhida (acuidade visual ~2′)"
+                  >
+                    Vista à distância
+                  </button>
+                </div>
+                <label title="Distância de observação da obra"
+                  >Distância <output id="viewDistanceM-out">3,0 m</output>
+                  <input type="range" id="viewDistanceM" min="1" max="6" step="0.5" value="3" />
+                </label>
+                <label class="check" title="Mostra a foto enquadrada ao lado, com o mesmo desfoque"
+                  ><input type="checkbox" id="viewCompare" /> Comparar com a foto</label
+                >
+              </div>
+              <div class="sim-pair" id="simPair">
+                <canvas id="sim" width="700" height="700"></canvas>
+                <canvas id="simCompare" width="500" height="500" hidden></canvas>
+              </div>
+              <figcaption id="simCaption">Simulação física em luz linear</figcaption>
             </figure>
 
             <div class="thumb-wrapper">
@@ -773,7 +821,12 @@
                 <div class="spool-alert-content">
                   <strong>Troca de Carretel Necessária</strong>
                   <p id="k-spool-alert-text">Troca de Carretel: Amarre e finalize o fio...</p>
-                  <button type="button" id="k-spool-alert-dismiss" class="button primary" style="font-size: 0.8rem; margin-top: 0.35rem">
+                  <button
+                    type="button"
+                    id="k-spool-alert-dismiss"
+                    class="button primary"
+                    style="font-size: 0.8rem; margin-top: 0.35rem"
+                  >
                     Entendido / Carretel Trocado
                   </button>
                 </div>
@@ -800,7 +853,9 @@
                 <label>Ir para o passo <input type="number" id="k-goto" min="1" step="1" /></label>
               </div>
               <div class="progress"><div id="k-bar"></div></div>
-              <p class="hint">Espaço/→ avança · ← volta · P pausa/retoma auto · o progresso fica salvo neste navegador.</p>
+              <p class="hint">
+                Espaço/→ avança · ← volta · P pausa/retoma auto · o progresso fica salvo neste navegador.
+              </p>
 
               <div
                 class="knit-sync"
@@ -893,12 +948,8 @@
               "
             ></p>
             <div style="display: flex; gap: 0.5rem; margin-top: 1rem">
-              <button type="button" id="k-qr-close" class="button primary" style="flex: 1">
-                Fechar
-              </button>
+              <button type="button" id="k-qr-close" class="button primary" style="flex: 1">Fechar</button>
             </div>
-          </div>
-        </div>
           </div>
         </div>
       </section>

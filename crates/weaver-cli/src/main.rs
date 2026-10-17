@@ -15,15 +15,14 @@ use weaver_cam::{
     WeavingStep,
 };
 use weaver_domain::{
-    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Millimeters, PegSide,
-    Pixels, RasterizerType, SparseChordMatrixCSR, WindingDirection,
+    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Millimeters, PegSide, Pixels,
+    RasterizerType, SparseChordMatrixCSR, WindingDirection,
 };
 use weaver_dsp::{ClaheConfig, DspPipeline, DspPipelineConfig, Rgba8Image};
 use weaver_solvers::{
     compute_effective_alpha, CanvasStateSoA, GreedyConfig, OpticalMixModelType,
     OpticalModelEvaluator, SolverSession, SpoolColor, SpoolScheduler, SpoolSwitchStrategy,
 };
-
 
 fn generate_synthetic_portrait(width: u32, height: u32) -> Rgba8Image {
     let mut data = vec![255u8; (width * height * 4) as usize];
@@ -46,8 +45,10 @@ fn generate_synthetic_portrait(width: u32, height: u32) -> Rgba8Image {
                 let eye_y = cy - ry * 0.2;
                 let left_eye_x = cx - rx * 0.45;
                 let right_eye_x = cx + rx * 0.45;
-                let d_left_eye = ((x as f32 - left_eye_x).powi(2) + (y as f32 - eye_y).powi(2)).sqrt();
-                let d_right_eye = ((x as f32 - right_eye_x).powi(2) + (y as f32 - eye_y).powi(2)).sqrt();
+                let d_left_eye =
+                    ((x as f32 - left_eye_x).powi(2) + (y as f32 - eye_y).powi(2)).sqrt();
+                let d_right_eye =
+                    ((x as f32 - right_eye_x).powi(2) + (y as f32 - eye_y).powi(2)).sqrt();
 
                 if d_left_eye < 12.0 || d_right_eye < 12.0 {
                     data[idx] = 20;
@@ -71,7 +72,16 @@ fn generate_synthetic_portrait(width: u32, height: u32) -> Rgba8Image {
     Rgba8Image::new(width, height, 4, data)
 }
 
+mod bench;
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("bench") => return bench::run(&args[2..]),
+        Some("contact") => return bench::contact(&args[2..]),
+        _ => {}
+    }
+
     println!("================================================================================");
     println!(" WEAVER ART — BENCHMARK NATIVO DE ALTA PERFORMANCE (Sprint 3 / Task 3.3)");
     println!("================================================================================");
@@ -82,7 +92,10 @@ fn main() {
     let spec = LoomPhysicalSpec::circle(600.0, 200, 2.0, 2.0, 10.0);
     let loom = LoomGeometry::new(spec);
     let res = 300u32;
-    println!("[1/5] Tear configurado: D={:.1} mm, {} pinos, Grade={}x{} px", spec.diameter_mm, spec.peg_count, res, res);
+    println!(
+        "[1/5] Tear configurado: D={:.1} mm, {} pinos, Grade={}x{} px",
+        spec.diameter_mm, spec.peg_count, res, res
+    );
 
     // 2. DSP Pipeline
     let dsp_start = Instant::now();
@@ -144,15 +157,11 @@ fn main() {
         ColorErrorMetric::LinearRgb,
     );
     let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, max_lines, 0);
-    let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.35)];
+    let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
     let spool_infos = vec![SpoolInfo::new(0, "Preto", "#000000")];
 
-    let alpha_eff = compute_effective_alpha(
-        0.35,
-        Millimeters(0.20),
-        Pixels(res),
-        Millimeters(600.0),
-    );
+    let alpha_eff =
+        compute_effective_alpha(1.0, Millimeters(0.20), Pixels(res), Millimeters(600.0));
 
     let solver_config = GreedyConfig {
         max_steps: max_lines,
@@ -226,7 +235,8 @@ fn main() {
         })
         .collect();
 
-    let artwork_svg = export_artwork_svg(&loom, &steps, &spool_infos, &SvgArtworkOptions::default());
+    let artwork_svg =
+        export_artwork_svg(&loom, &steps, &spool_infos, &SvgArtworkOptions::default());
     let bom_json = export_project_json(
         &loom,
         &steps,
@@ -250,15 +260,26 @@ fn main() {
     let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
     println!("--------------------------------------------------------------------------------");
     println!(" RESUMO DO BENCHMARK:");
-    println!(" - Tempo Total:           {:.2} ms ({:.3} s)", total_ms, total_ms / 1000.0);
+    println!(
+        " - Tempo Total:           {:.2} ms ({:.3} s)",
+        total_ms,
+        total_ms / 1000.0
+    );
     println!(" - Tempo DSP:             {:.2} ms", dsp_ms);
     println!(" - Tempo CSR:             {:.2} ms", csr_ms);
-    println!(" - Tempo Solver (4.000):  {:.2} ms ({:.3} s)", solver_ms, solver_ms / 1000.0);
+    println!(
+        " - Tempo Solver (4.000):  {:.2} ms ({:.3} s)",
+        solver_ms,
+        solver_ms / 1000.0
+    );
     println!(" - Tempo CAM:             {:.2} ms", cam_ms);
     println!(" - Cordas Totais:         {}", progress.current_step);
     println!(" - Trocas de Carretel:    {}", progress.total_switches);
     println!(" - RMSE Final:            {:.5}", progress.telemetry.rmse);
-    println!(" - ΔE Final:              {:.4}", progress.telemetry.delta_e);
+    println!(
+        " - ΔE Final:              {:.4}",
+        progress.telemetry.delta_e
+    );
     println!(" - SSIM Final:            {:.4}", progress.telemetry.ssim);
     println!("--------------------------------------------------------------------------------");
 

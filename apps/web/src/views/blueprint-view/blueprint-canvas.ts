@@ -536,11 +536,7 @@ export class BlueprintCanvas {
           ctx.strokeRect(x0 + pad, y0 + pad, badgeW, badgeH);
 
           ctx.fillStyle = '#38bdf8';
-          ctx.fillText(
-            `${sheetCode} · ${pinCount} furos`,
-            x0 + pad + 4 / this.scale,
-            y0 + pad + 3 / this.scale,
-          );
+          ctx.fillText(`${sheetCode} · ${pinCount} furos`, x0 + pad + 4 / this.scale, y0 + pad + 3 / this.scale);
         }
       }
     }
@@ -658,13 +654,7 @@ export class BlueprintCanvas {
 
       ctx.beginPath();
       ctx.arc(wx, wy, drillR, 0, Math.PI * 2);
-      ctx.fillStyle = isHovered
-        ? '#0284c7'
-        : isHighlighted
-          ? '#f43f5e'
-          : isNeighbor
-            ? '#0369a1'
-            : '#1e293b';
+      ctx.fillStyle = isHovered ? '#0284c7' : isHighlighted ? '#f43f5e' : isNeighbor ? '#0369a1' : '#1e293b';
       ctx.fill();
 
       ctx.strokeStyle = isHovered
@@ -679,21 +669,12 @@ export class BlueprintCanvas {
       ctx.lineWidth = (isHovered || isHighlighted ? 2.0 : 0.8) / baseScale;
       ctx.stroke();
 
-      if (
-        this.options.showPegNumbers &&
-        (showAllNumbers || isMajor || isHovered || isHighlighted || isNeighbor)
-      ) {
+      if (this.options.showPegNumbers && (showAllNumbers || isMajor || isHovered || isHighlighted || isNeighbor)) {
         const dist = drillR + 10.0 / baseScale;
         const lx = wx + p.nx * dist;
         const ly = wy + p.ny * dist;
 
-        ctx.fillStyle = isHovered
-          ? '#38bdf8'
-          : isHighlighted
-            ? '#fda4af'
-            : isMajor
-              ? '#ff5a36'
-              : '#cbd5e1';
+        ctx.fillStyle = isHovered ? '#38bdf8' : isHighlighted ? '#fda4af' : isMajor ? '#ff5a36' : '#cbd5e1';
         ctx.fillText(String(p.index + 1), lx, ly);
       }
     }
@@ -732,8 +713,7 @@ export class BlueprintCanvas {
     const edge1x = w1x - ux * drillR;
     const edge1y = w1y - uy * drillR;
 
-    const wallColor =
-      info.status === 'safe' ? '#22c55e' : info.status === 'warning' ? '#eab308' : '#ef4444';
+    const wallColor = info.status === 'safe' ? '#22c55e' : info.status === 'warning' ? '#eab308' : '#ef4444';
 
     ctx.strokeStyle = wallColor;
     ctx.lineWidth = 2.5 / this.scale;

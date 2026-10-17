@@ -230,11 +230,20 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
   describe('3. Motor de Presets Reativos e Visibilidade Contextual (preset-engine / ADR-005)', () => {
     it('define os 4 Perfis de Preset Principais com parâmetros exigidos', () => {
       const mono = WEAVER_PRESET_PROFILES.VRELLIS_CLASSIC_MONO.config;
-      expect(mono.maxLines).toBe(3500);
-      expect(mono.threadThicknessMm).toBe(0.15);
-      expect(mono.claheClipLimit).toBe(2.5);
-      expect(mono.faceImportanceWeight).toBe(3.0);
-      expect(mono.edgeBlendWeight).toBe(0.15);
+      // Rodada "reconhecimento facial": 6000 linhas aproximam o brilho de fotos escuras;
+      // fio de 0,18 mm superou 0,15 mm em todas as fotos; tear = aro de bicicleta 28" (ISO 622).
+      expect(mono.maxLines).toBe(6000);
+      expect(mono.threadThicknessMm).toBe(0.18);
+      expect(mono.diameterMm).toBe(622);
+      expect(mono.pinCount).toBe(200);
+      // Padrões calibrados no benchmark com foto real (weaver-cli bench):
+      // CLAHE e reforço de bordas pioravam a fidelidade; foco facial moderado (2.0) ajuda retratos.
+      expect(mono.claheClipLimit).toBe(0);
+      expect(mono.faceImportanceWeight).toBe(2.0);
+      expect(mono.edgeBlendWeight).toBe(0);
+      // Realce de feições e "pele mais limpa" ficam disponíveis, mas desligados por padrão.
+      expect(mono.featureEmphasisWeight).toBe(0);
+      expect(mono.skinLift).toBe(0);
       expect(mono.rasterizer).toBe('XIAOLIN_WU_ANTIALIASED');
 
       const portrait = WEAVER_PRESET_PROFILES.PORTRAIT_HIGH_SHARPNESS_EPOCHS.config;
@@ -242,9 +251,9 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
       expect(portrait.spoolStrategy).toBe('COARSE_TO_FINE_EPOCHS');
       expect(portrait.opticalMixModel).toBe('PORTER_DUFF_OCCLUSION');
       expect(portrait.errorMetric).toBe('CIELAB_DELTA_E2000');
-      expect(portrait.faceImportanceWeight).toBe(4.5);
+      expect(portrait.faceImportanceWeight).toBe(2.0);
       expect(portrait.edgeDetector).toBe('SOBEL');
-      expect(portrait.edgeBlendWeight).toBe(0.25);
+      expect(portrait.edgeBlendWeight).toBe(0);
       expect(portrait.epochSchedule).toEqual({
         baseCmyRatio: 0.65,
         refineRatio: 0.2,
@@ -295,7 +304,7 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
 
       store.resetAllDirty();
       expect(store.isDirty()).toBe(false);
-      expect(store.getConfig().maxLines).toBe(3500);
+      expect(store.getConfig().maxLines).toBe(6000);
 
       // Carrega outro preset
       store.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');

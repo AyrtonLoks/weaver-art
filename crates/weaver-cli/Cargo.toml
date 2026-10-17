@@ -14,3 +14,5 @@ weaver-domain = { path = "../weaver-domain" }
 weaver-dsp = { path = "../weaver-dsp" }
 weaver-solvers = { path = "../weaver-solvers" }
 weaver-cam = { path = "../weaver-cam" }
+# Decodificação/gravação de imagens só no binário nativo (Camada 4)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

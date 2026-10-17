@@ -4,8 +4,8 @@
 //! (suavização gaussiana 5x5, supressão não-máxima e histerese) e rotinas de fusão
 //! e saliência multiescala para realce de feições estruturais (olhos, óculos, lábios).
 
-use std::f32::consts::PI;
 use crate::image::{GrayImage, ImageBuffer, Rgba8Image};
+use std::f32::consts::PI;
 
 /// Resultado da aplicação do operador de Sobel contendo magnitude, ângulos e gradientes direcionais.
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +160,46 @@ pub fn gaussian_blur_5x5(img: &GrayImage, sigma: f32) -> GrayImage {
     }
 
     GrayImage::new(w, h, 1, out)
+}
+
+/// Desfoque gaussiano separável de $\sigma$ arbitrário (raio $3\sigma$) com borda replicada.
+pub fn gaussian_blur_gray(img: &GrayImage, sigma: f32) -> GrayImage {
+    let w = img.width as i32;
+    let h = img.height as i32;
+    if w == 0 || h == 0 || sigma <= 0.0 {
+        return img.clone();
+    }
+    let r = (sigma * 3.0).ceil().max(1.0) as i32;
+    let mut kernel: Vec<f32> = (-r..=r)
+        .map(|i| (-0.5 * (i * i) as f32 / (sigma * sigma)).exp())
+        .collect();
+    let s: f32 = kernel.iter().sum();
+    kernel.iter_mut().for_each(|k| *k /= s);
+
+    let total = (w * h) as usize;
+    let mut temp = vec![0.0f32; total];
+    let mut out = vec![0.0f32; total];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0;
+            for (j, &kw) in kernel.iter().enumerate() {
+                let sx = (x + j as i32 - r).clamp(0, w - 1);
+                acc += img.data[(y * w + sx) as usize] * kw;
+            }
+            temp[(y * w + x) as usize] = acc;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0;
+            for (j, &kw) in kernel.iter().enumerate() {
+                let sy = (y + j as i32 - r).clamp(0, h - 1);
+                acc += temp[(sy * w + x) as usize] * kw;
+            }
+            out[(y * w + x) as usize] = acc;
+        }
+    }
+    GrayImage::new(img.width, img.height, 1, out)
 }
 
 /// Detector de Bordas de Canny completo:
@@ -355,11 +395,17 @@ mod tests {
         let gx_val = res.gx.get_pixel(7, 8)[0];
         assert!(gx_val > 0.0, "Gx deve detectar transição vertical");
         let gy_val = res.gy.get_pixel(7, 8)[0];
-        assert!(gy_val.abs() < 1e-4, "Gy deve ser nulo em degrau puramente vertical");
+        assert!(
+            gy_val.abs() < 1e-4,
+            "Gy deve ser nulo em degrau puramente vertical"
+        );
 
         // Direção deve ser próxima de 0 radianos
         let dir = res.direction.get_pixel(7, 8)[0];
-        assert!(dir.abs() < 1e-3, "Direção de gradiente horizontal deve ser 0 rad");
+        assert!(
+            dir.abs() < 1e-3,
+            "Direção de gradiente horizontal deve ser 0 rad"
+        );
 
         // Em regiões homogêneas (x=2, y=2), magnitude deve ser nula
         assert_eq!(res.magnitude.get_pixel(2, 2)[0], 0.0);

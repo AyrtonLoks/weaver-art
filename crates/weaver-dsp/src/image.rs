@@ -240,6 +240,30 @@ impl Rgba8Image {
         }
     }
 
+    /// Converte um buffer de bytes RGBA para `GrayImage` em luminância perceptual sRGB $[0.0, 1.0]$.
+    ///
+    /// Preserva a curva perceptual sRGB para operações radiométricas (CLAHE, contraste,
+    /// unsharp mask, fusão de bordas), evitando dupla conversão gama antes da linearização final.
+    pub fn to_perceptual_luma_gray(&self) -> GrayImage {
+        let count = (self.width * self.height) as usize;
+        let mut gray_data = Vec::with_capacity(count);
+
+        for chunk in self.data.chunks_exact(4) {
+            let r = chunk[0] as f32 / 255.0;
+            let g = chunk[1] as f32 / 255.0;
+            let b = chunk[2] as f32 / 255.0;
+            let y = LUMA_REC709_R * r + LUMA_REC709_G * g + LUMA_REC709_B * b;
+            gray_data.push(y.clamp(0.0, 1.0));
+        }
+
+        GrayImage {
+            width: self.width,
+            height: self.height,
+            channels: 1,
+            data: gray_data,
+        }
+    }
+
     /// Converte o buffer de bytes RGBA para um vetor de `LinearRgbColor`.
     pub fn to_linear_rgb_vec(&self) -> Vec<LinearRgbColor> {
         let count = (self.width * self.height) as usize;

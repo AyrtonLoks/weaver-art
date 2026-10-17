@@ -19,6 +19,8 @@ export const CTRL_INT32_STATUS_FLAG = 0; // byte 0
 export const CTRL_INT32_CURRENT_STEP = 1; // byte 4
 export const CTRL_INT32_ACTIVE_SPOOL = 2; // byte 8
 export const CTRL_INT32_TOTAL_SWITCHES = 3; // byte 12
+export const CTRL_INT32_PATH_REVISION = 4; // byte 16 (muda quando o refinamento reescreve passos)
+export const CTRL_INT32_SOLVER_PHASE = 5; // byte 20 (0 construção, 1 refinamento, 2 preenchimento, 3 concluído)
 export const CTRL_INT32_WORDS = 8; // 32 bytes
 
 /** Control Block Float32 word offsets relative to byte 32 (bytes 32..127, words 0..23). */
@@ -170,6 +172,20 @@ export class SharedWorkspaceMemory {
     return this.isShared
       ? Atomics.load(this.controlInt32, CTRL_INT32_TOTAL_SWITCHES)
       : this.controlInt32[CTRL_INT32_TOTAL_SWITCHES];
+  }
+
+  /** Revisão do caminho: muda quando passos já emitidos foram reescritos pelo refinamento. */
+  public getPathRevision(): number {
+    return this.isShared
+      ? Atomics.load(this.controlInt32, CTRL_INT32_PATH_REVISION)
+      : this.controlInt32[CTRL_INT32_PATH_REVISION];
+  }
+
+  /** Fase do solver: 0 construção, 1 refinamento, 2 preenchimento, 3 concluído. */
+  public getSolverPhase(): number {
+    return this.isShared
+      ? Atomics.load(this.controlInt32, CTRL_INT32_SOLVER_PHASE)
+      : this.controlInt32[CTRL_INT32_SOLVER_PHASE];
   }
 
   public setTotalSpoolSwitches(switches: number): void {

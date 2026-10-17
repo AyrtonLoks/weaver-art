@@ -69,11 +69,19 @@ pub fn adjust_radiometry(
     }
 }
 
-/// Ajusta brilho e contraste sigmoidal sobre um `GrayImage`.
+/// Ajusta brilho e contraste sobre um `GrayImage` onde `contrast == 1.0` é neutro.
 pub fn adjust_brightness_contrast_gray(image: &mut GrayImage, brightness: f32, contrast: f32) {
     for px in image.data.iter_mut() {
         let mut v = apply_brightness(*px, brightness);
-        v = apply_sigmoidal_contrast(v, contrast, 0.5);
+        if (contrast - 1.0).abs() > 1e-4 {
+            if contrast > 1.0 {
+                let slope = (contrast - 1.0) * 6.0;
+                v = apply_sigmoidal_contrast(v, slope, 0.5);
+            } else {
+                let factor = contrast.max(0.0);
+                v = (0.5 + (v - 0.5) * factor).clamp(0.0, 1.0);
+            }
+        }
         *px = v;
     }
 }
@@ -82,6 +90,66 @@ pub fn adjust_brightness_contrast_gray(image: &mut GrayImage, brightness: f32, c
 pub fn apply_gamma_gray(image: &mut GrayImage, gamma: f32) {
     for px in image.data.iter_mut() {
         *px = apply_gamma(*px, gamma);
+    }
+}
+
+/// Aplica filtro Unsharp Mask (máscara de nitidez gaussiana separável 1D) sobre um `GrayImage`.
+///
+/// Realça micro-feições faciais (íris, pálpebras, lábios) antes da otimização de cordas.
+pub fn apply_unsharp_mask(image: &mut GrayImage, sigma: f32, amount: f32) {
+    if sigma <= 0.05 || amount <= 1e-4 || image.width < 3 || image.height < 3 {
+        return;
+    }
+
+    let radius = ((sigma * 3.0).ceil() as i32).clamp(1, 12);
+    let mut kernel = Vec::with_capacity((2 * radius + 1) as usize);
+    let mut sum = 0.0f32;
+    let inv_two_sigma2 = 1.0 / (2.0 * sigma * sigma);
+    for r in -radius..=radius {
+        let w = (-(r as f32 * r as f32) * inv_two_sigma2).exp();
+        kernel.push(w);
+        sum += w;
+    }
+    if sum > 1e-6 {
+        for w in &mut kernel {
+            *w /= sum;
+        }
+    }
+
+    let w = image.width as i32;
+    let h = image.height as i32;
+    let len = (w * h) as usize;
+    let mut temp = vec![0.0f32; len];
+    let mut blurred = vec![0.0f32; len];
+
+    // Passo horizontal
+    for y in 0..h {
+        let row_offset = (y * w) as usize;
+        for x in 0..w {
+            let mut acc = 0.0f32;
+            for (k_idx, k_r) in (-radius..=radius).enumerate() {
+                let sx = (x + k_r).clamp(0, w - 1) as usize;
+                acc += image.data[row_offset + sx] * kernel[k_idx];
+            }
+            temp[row_offset + x as usize] = acc;
+        }
+    }
+
+    // Passo vertical
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0f32;
+            for (k_idx, k_r) in (-radius..=radius).enumerate() {
+                let sy = (y + k_r).clamp(0, h - 1) as usize;
+                acc += temp[sy * (w as usize) + (x as usize)] * kernel[k_idx];
+            }
+            blurred[(y * w + x) as usize] = acc;
+        }
+    }
+
+    for (px, &blur) in image.data.iter_mut().zip(blurred.iter()) {
+        let detail = *px - blur;
+        *px = (*px + amount * detail).clamp(0.0, 1.0);
     }
 }
 
@@ -258,7 +326,10 @@ pub fn clahe_lab(lab_pixels: &mut [LabColor], width: u32, height: u32, config: &
     assert_eq!(lab_pixels.len(), (width * height) as usize);
 
     // Extrai L* normalizado em [0.0, 1.0]
-    let mut l_channel: Vec<f32> = lab_pixels.iter().map(|c| (c.l / 100.0).clamp(0.0, 1.0)).collect();
+    let mut l_channel: Vec<f32> = lab_pixels
+        .iter()
+        .map(|c| (c.l / 100.0).clamp(0.0, 1.0))
+        .collect();
 
     // Aplica CLAHE
     clahe_channel(&mut l_channel, width, height, config);

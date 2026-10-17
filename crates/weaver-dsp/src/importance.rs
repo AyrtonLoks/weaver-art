@@ -3,8 +3,9 @@
 //! Implementa a matriz contígua $W(x,y)$, a composição automática com saliência facial
 //! e bordas estruturais, além da integração com o pincel interativo da UI (`user_brush_mask`).
 
-use crate::edges::compute_multiscale_saliency;
+use crate::edges::{compute_multiscale_saliency, gaussian_blur_gray};
 use crate::image::{GrayImage, Rgba8Image};
+use crate::morphology::{black_tophat, StructuringElement};
 
 /// Modo de mesclagem do buffer manual de pincel sobre o mapa de importância.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -238,10 +239,14 @@ pub fn compute_skin_probability(image: &Rgba8Image) -> Vec<f32> {
     skin
 }
 
-/// Calcula o mapa de saliência facial $M_{\text{saliência\_facial}}(x, y) \in [0.0, 1.0]$.
+/// Calcula o mapa de saliência facial $M(x, y) \in [0, 1]$ de forma genérica (sem zonas fixas):
 ///
-/// Integra altas frequências estruturais (bordas), probabilidade cromática de pele
-/// e prior elíptico central posicionado na zona áurea facial.
+/// $M = \text{norm}\big(G_\sigma * [\,S_{\text{bordas}} \cdot (0{,}35 + 0{,}65\,P_{\text{pele}}) \cdot \Pi_{\text{centro}}\,]\big)$
+///
+/// - $S_{\text{bordas}}$: saliência multiescala de alta frequência (olhos, boca, contornos);
+/// - $P_{\text{pele}}$: probabilidade cromática de pele (YCbCr);
+/// - $\Pi_{\text{centro}}$: prior gaussiano largo centrado no tear (o enquadramento já posiciona o rosto);
+/// - $G_\sigma$: desfoque gaussiano ($\sigma$ = 2 % do lado) que elimina bordas duras no mapa.
 pub fn compute_facial_saliency_map(rgba: &Rgba8Image) -> GrayImage {
     let w = rgba.width;
     let h = rgba.height;
@@ -249,47 +254,79 @@ pub fn compute_facial_saliency_map(rgba: &Rgba8Image) -> GrayImage {
         return GrayImage::zeros(w, h, 1);
     }
 
-    let gray = rgba.to_gray();
-    let edge_saliency = compute_multiscale_saliency(&gray, 0.70);
+    let perceptual_gray = rgba.to_perceptual_luma_gray();
+    let edge_saliency = compute_multiscale_saliency(&perceptual_gray, 0.65);
     let skin_prob = compute_skin_probability(rgba);
 
-    let cx = w as f32 * 0.50;
-    let cy = h as f32 * 0.45; // Olhos e nariz no terço superior
-    let inv_rx_sq = 1.0 / (0.38 * w as f32).max(1.0).powi(2);
-    let inv_ry_sq = 1.0 / (0.42 * h as f32).max(1.0).powi(2);
+    let cx = (w as f32 - 1.0) * 0.5;
+    let cy = (h as f32 - 1.0) * 0.5;
+    let inv_sx = 1.0 / (0.35 * w as f32).max(1.0).powi(2);
+    let inv_sy = 1.0 / (0.35 * h as f32).max(1.0).powi(2);
 
-    let total = (w * h) as usize;
-    let mut saliency = Vec::with_capacity(total);
-
+    let mut raw = GrayImage::zeros(w, h, 1);
     for y in 0..h {
         let dy = y as f32 - cy;
-        let dy_sq = dy * dy * inv_ry_sq;
-
         for x in 0..w {
             let dx = x as f32 - cx;
-            let dx_sq = dx * dx * inv_rx_sq;
-            let center_weight = (-0.5 * (dx_sq + dy_sq)).exp();
-
-            let idx = (y * w + x) as usize;
-            let edge = edge_saliency.data[idx];
-            let skin = skin_prob[idx];
-
-            let s = edge * (0.35 + 0.65 * skin) * center_weight;
-            saliency.push(s.clamp(0.0, 1.0));
+            let prior = (-0.5 * (dx * dx * inv_sx + dy * dy * inv_sy)).exp();
+            let i = (y * w + x) as usize;
+            raw.data[i] = edge_saliency.data[i] * (0.35 + 0.65 * skin_prob[i]) * prior;
         }
     }
 
-    // Normalização local pelo valor máximo para garantir uso pleno de [0.0, 1.0]
-    let max_s = saliency.iter().copied().fold(0.0f32, f32::max);
-    if max_s > 1e-4 {
-        for s in &mut saliency {
+    let sigma = (w.min(h) as f32 * 0.02).max(0.8);
+    let mut saliency = gaussian_blur_gray(&raw, sigma);
+    let max_s = saliency.data.iter().copied().fold(0.0f32, f32::max);
+    if max_s > 1e-6 {
+        for s in &mut saliency.data {
             *s = (*s / max_s).clamp(0.0, 1.0);
         }
     }
-
-    GrayImage::new(w, h, 1, saliency)
+    saliency
 }
-
+/// Mapa de **feições escuras pequenas** $F(x, y) \in [0, 1]$ (olhos, sobrancelhas, aro de óculos,
+/// narinas, boca) sem zonas fixas:
+///
+/// $F = \text{norm}_{p99}\big(G_\sigma * [\,\text{BlackTopHat}_{r}(L) \cdot (0{,}25 + 0{,}75\,P_{\text{pele}})\,]\big)$
+///
+/// - `BlackTopHat` (fechamento − imagem) com disco de raio ≈ 1,2 % do lado destaca estruturas
+///   escuras menores que o disco, ignorando sombras largas;
+/// - a probabilidade de pele (desfocada) concentra o mapa no rosto;
+/// - normalização pelo percentil 99 evita que um único ponto domine.
+pub fn compute_dark_feature_map(luma_perceptual: &GrayImage, rgba: &Rgba8Image) -> GrayImage {
+    let (w, h) = (luma_perceptual.width, luma_perceptual.height);
+    let n = (w * h) as usize;
+    if n == 0 || rgba.width != w || rgba.height != h {
+        return GrayImage::zeros(w, h, 1);
+    }
+    let radius = ((w.min(h) as f32) * 0.012).round().max(2.0) as u32;
+    let tophat = black_tophat(
+        &luma_perceptual.data,
+        w,
+        h,
+        &StructuringElement::disc(radius),
+    );
+    let skin = gaussian_blur_gray(
+        &GrayImage::new(w, h, 1, compute_skin_probability(rgba)),
+        w.min(h) as f32 * 0.03,
+    );
+    let raw: Vec<f32> = tophat
+        .iter()
+        .zip(&skin.data)
+        .map(|(t, s)| t * (0.25 + 0.75 * s.clamp(0.0, 1.0)))
+        .collect();
+    let mut map = gaussian_blur_gray(
+        &GrayImage::new(w, h, 1, raw),
+        (w.min(h) as f32 * 0.006).max(0.6),
+    );
+    let mut sorted = map.data.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p99 = sorted[((n - 1) as f32 * 0.99) as usize].max(1e-6);
+    map.data
+        .iter_mut()
+        .for_each(|v| *v = (*v / p99).clamp(0.0, 1.0));
+    map
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +391,52 @@ mod tests {
         let idx = (1 * 4 + 1) * 4;
         assert_eq!(preview.data[idx], 255);
         assert!(preview.data[idx + 1] > 200);
+    }
+
+    #[test]
+    fn dark_feature_map_highlights_small_dark_blobs_inside_skin() {
+        // Imagem pequena para que as feições ocupem uma fração realista (> 1 %) dos pixels
+        let (w, h) = (60u32, 60u32);
+        let mut rgba = Rgba8Image::fill(w, h, 4, 255u8);
+        let mut luma = GrayImage::fill(w, h, 1, 0.9);
+        for y in 0..h {
+            for x in 0..w {
+                let skin = (x as f32 - 30.0).powi(2) + (y as f32 - 30.0).powi(2) < 25.0f32.powi(2);
+                if skin {
+                    rgba.set_pixel(x, y, &[215, 165, 135, 255]);
+                    luma.set_pixel(x, y, &[0.75]);
+                }
+            }
+        }
+        // várias "feições" escuras pequenas dentro da pele e uma idêntica fora dela (no fundo)
+        for &(bx, by) in &[
+            (20u32, 22u32),
+            (35, 22),
+            (27, 30),
+            (22, 38),
+            (33, 38),
+            (27, 14),
+        ] {
+            for y in by..by + 4 {
+                for x in bx..bx + 5 {
+                    luma.set_pixel(x, y, &[0.1]);
+                }
+            }
+        }
+        for y in 22..26 {
+            for x in 1..6 {
+                luma.set_pixel(x, y, &[0.1]);
+            }
+        }
+        let f = compute_dark_feature_map(&luma, &rgba);
+        let eye = f.get_pixel(22, 24)[0];
+        let outside = f.get_pixel(3, 24)[0];
+        let cheek = f.get_pixel(44, 30)[0];
+        assert!(eye > 0.5, "olho deveria ser destacado: {eye}");
+        assert!(
+            eye > outside * 1.5,
+            "feição na pele deve pesar mais que no fundo: {eye} vs {outside}"
+        );
+        assert!(cheek < 0.1, "pele lisa não é feição: {cheek}");
     }
 }

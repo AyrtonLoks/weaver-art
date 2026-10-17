@@ -19,7 +19,6 @@ use weaver_domain::{LinearRgbColor, PegSide, SparseChordMatrixCSR};
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
-use crate::telemetry_metrics::IncrementalMetricsTracker;
 
 /// Configuração do Solver Global FISTA + Roteamento Euleriano.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,11 +71,7 @@ fn circular_pin_dist(a: usize, b: usize, pin_count: usize) -> usize {
 
 /// Operador direto matriz-livre $A w$: mapeia do espaço de cordas para o espaço de pixels
 /// lendo diretamente a `SparseChordMatrixCSR` sem alocações.
-pub fn matrix_free_forward(
-    matrix: &SparseChordMatrixCSR,
-    weights: &[f32],
-    out_image: &mut [f32],
-) {
+pub fn matrix_free_forward(matrix: &SparseChordMatrixCSR, weights: &[f32], out_image: &mut [f32]) {
     out_image.fill(0.0);
     let chord_count = matrix.chord_count();
     for k in 0..chord_count {
@@ -92,11 +87,7 @@ pub fn matrix_free_forward(
 
 /// Operador adjunto matriz-livre $A^T r$: retroprojeção (Radon discreto) do resíduo de imagem
 /// para o espaço de cordas lendo diretamente a `SparseChordMatrixCSR` sem alocações.
-pub fn matrix_free_adjoint(
-    matrix: &SparseChordMatrixCSR,
-    residual: &[f32],
-    out_grad: &mut [f32],
-) {
+pub fn matrix_free_adjoint(matrix: &SparseChordMatrixCSR, residual: &[f32], out_grad: &mut [f32]) {
     let chord_count = matrix.chord_count();
     for k in 0..chord_count {
         let (pixels, sub_weights) = matrix.chord_slice(k);
@@ -144,31 +135,32 @@ pub fn estimate_lipschitz_constant(
     norm * 1.10
 }
 
-/// Computa o vetor de densidade alvo $b \ge 0$ para um carretel específico a partir do canvas.
-pub fn compute_target_density(
-    canvas: &CanvasStateSoA,
-    spool: &SpoolColor,
-    out_b: &mut [f32],
-) {
+/// Computa o vetor de densidade óptica alvo $b \ge 0$ ($-\ln T$) para um carretel específico a partir do canvas.
+pub fn compute_target_density(canvas: &CanvasStateSoA, spool: &SpoolColor, out_b: &mut [f32]) {
     let num_pixels = canvas.num_pixels;
     out_b[..num_pixels].fill(0.0);
 
     let abs_r = (1.0 - spool.color.r).max(0.0);
     let abs_g = (1.0 - spool.color.g).max(0.0);
     let abs_b = (1.0 - spool.color.b).max(0.0);
-    let spool_strength = (abs_r * abs_r + abs_g * abs_g + abs_b * abs_b).sqrt().max(1e-4);
+    let spool_strength = (abs_r * abs_r + abs_g * abs_g + abs_b * abs_b)
+        .sqrt()
+        .max(1e-4);
 
     for p in 0..num_pixels {
         let imp = canvas.importance_w[p];
         if imp <= 0.0 {
             continue;
         }
-        let target_abs_r = (1.0 - canvas.target_c0[p]).max(0.0);
-        let target_abs_g = (1.0 - canvas.target_c1[p]).max(0.0);
-        let target_abs_b = (1.0 - canvas.target_c2[p]).max(0.0);
+        // Densidade óptica logarítmica de Beer-Lambert: D = -ln(max(T, 0.05))
+        let opt_r = -canvas.target_c0[p].clamp(0.05, 1.0).ln();
+        let opt_g = -canvas.target_c1[p].clamp(0.05, 1.0).ln();
+        let opt_b = -canvas.target_c2[p].clamp(0.05, 1.0).ln();
 
-        let proj = (target_abs_r * abs_r + target_abs_g * abs_g + target_abs_b * abs_b) / spool_strength;
-        out_b[p] = (proj.max(0.0) * imp).clamp(0.0, 10.0);
+        let proj = (opt_r * abs_r + opt_g * abs_g + opt_b * abs_b) / spool_strength;
+        // Ponderação suave da importância sem multiplicar linearmente a densidade alvo
+        let imp_factor = imp.clamp(0.25, 2.0).sqrt();
+        out_b[p] = (proj.max(0.0) * imp_factor).clamp(0.0, 5.0);
     }
 }
 
@@ -442,11 +434,8 @@ impl GlobalFistaSolver {
                 &mut w_buffer,
             );
 
-            let counts = quantize_chord_weights(
-                &w_buffer,
-                lines_per_spool,
-                self.config.max_chord_repeats,
-            );
+            let counts =
+                quantize_chord_weights(&w_buffer, lines_per_spool, self.config.max_chord_repeats);
 
             let path = route_eulerian_continuous_path(matrix, counts, self.current_pin);
             color_paths.push((spool.id, path));
@@ -482,7 +471,6 @@ impl GlobalFistaSolver {
     pub fn step(
         &mut self,
         canvas: &mut CanvasStateSoA,
-        tracker: &mut IncrementalMetricsTracker,
         scheduler: &mut SpoolScheduler,
         matrix: &SparseChordMatrixCSR,
         evaluator: &OpticalModelEvaluator,
@@ -509,29 +497,17 @@ impl GlobalFistaSolver {
             alpha_eff,
         );
 
-        // Coleta cores antigas para atualização incremental em O(|L|)
-        self.old_colors_buf.clear();
-        for &p in pixel_indices {
-            self.old_colors_buf.push(canvas.current_color(p as usize));
-        }
-
         // Aplica a corda
         evaluator.apply_chord(canvas, pixel_indices, subpixel_weights, spool, alpha_eff);
 
-        // Atualiza telemetria incremental
-        tracker.update_pixels(canvas, pixel_indices, &self.old_colors_buf);
-
         // Avança scheduler
         scheduler.advance_step(spool.id, spools);
-        let boost = scheduler.active_edge_boost();
-        if boost > 0.0 {
-            canvas.apply_edge_importance_boost(boost);
-        }
 
         self.current_pin = scheduled.to_pin;
         self.step_count += 1;
 
-        let score_norm = ((raw_gain.max(0.0) / (raw_gain.max(0.0) + 1.0)) * 65535.0).clamp(0.0, 65535.0) as u16;
+        let score_norm =
+            ((raw_gain.max(0.0) / (raw_gain.max(0.0) + 1.0)) * 65535.0).clamp(0.0, 65535.0) as u16;
 
         Some(FistaStepRecord {
             from_pin: scheduled.from_pin as u16,
@@ -548,12 +524,11 @@ impl GlobalFistaSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weaver_domain::{
-        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels,
-        RasterizerType,
-    };
     use crate::optical_models::OpticalMixModelType;
     use crate::spool_scheduler::SpoolSwitchStrategy;
+    use weaver_domain::{
+        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels, RasterizerType,
+    };
 
     fn setup_fista_test(
         pin_count: usize,
@@ -561,20 +536,14 @@ mod tests {
     ) -> (
         SparseChordMatrixCSR,
         CanvasStateSoA,
-        IncrementalMetricsTracker,
         OpticalModelEvaluator,
         SpoolScheduler,
         Vec<SpoolColor>,
     ) {
-        let spec = LoomPhysicalSpec::circle(
-            200.0,
-            pin_count,
-            2.0,
-            1.5,
-            10.0,
-        );
+        let spec = LoomPhysicalSpec::circle(200.0, pin_count, 2.0, 1.5, 10.0);
         let loom = LoomGeometry::new(spec);
-        let matrix = SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
+        let matrix =
+            SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
 
         let bg = LinearRgbColor::WHITE;
         let mut target = vec![bg; (res * res) as usize];
@@ -591,20 +560,19 @@ mod tests {
         }
 
         let canvas = CanvasStateSoA::from_target_and_background(res, res, &target, bg, None);
-        let tracker = IncrementalMetricsTracker::new(&canvas);
         let evaluator = OpticalModelEvaluator::new(
             OpticalMixModelType::PorterDuffOcclusion,
             ColorErrorMetric::LinearRgb,
         );
         let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 100, 0);
-        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.3)];
+        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
 
-        (matrix, canvas, tracker, evaluator, scheduler, spools)
+        (matrix, canvas, evaluator, scheduler, spools)
     }
 
     #[test]
     fn test_matrix_free_operators_consistency() {
-        let (matrix, canvas, _, _, _, _) = setup_fista_test(16, 32);
+        let (matrix, canvas, _, _, _) = setup_fista_test(16, 32);
         let chord_count = matrix.chord_count();
         let num_pixels = canvas.num_pixels;
 
@@ -622,13 +590,15 @@ mod tests {
 
         let mut grad = vec![0.0f32; chord_count];
         matrix_free_adjoint(&matrix, &img, &mut grad);
-        assert!(grad[test_chord] > 0.0, "Retroprojeção deve ter ganho positivo na corda testada");
+        assert!(
+            grad[test_chord] > 0.0,
+            "Retroprojeção deve ter ganho positivo na corda testada"
+        );
     }
 
     #[test]
     fn test_fista_solver_end_to_end_improvement() {
-        let (matrix, mut canvas, mut tracker, evaluator, mut scheduler, spools) =
-            setup_fista_test(24, 48);
+        let (matrix, mut canvas, evaluator, mut scheduler, spools) = setup_fista_test(24, 48);
 
         let config = GlobalFistaConfig {
             max_steps: 20,
@@ -640,13 +610,13 @@ mod tests {
         };
 
         let mut solver = GlobalFistaSolver::new(config, &canvas, &matrix, &spools);
-        let initial_metrics = tracker.current_snapshot();
+        let initial_metrics =
+            crate::telemetry_metrics::MetricsTracker::new(&canvas).current_snapshot();
 
         let mut executed = 0;
         for _ in 0..15 {
             if let Some(_) = solver.step(
                 &mut canvas,
-                &mut tracker,
                 &mut scheduler,
                 &matrix,
                 &evaluator,
@@ -660,7 +630,7 @@ mod tests {
         }
 
         assert!(executed >= 5, "Deve executar passos planejados pelo FISTA");
-        let final_metrics = tracker.current_snapshot();
+        let final_metrics = crate::telemetry_metrics::MetricsTracker::new(&canvas).compute(&canvas);
         assert!(final_metrics.delta_e < initial_metrics.delta_e);
         assert!(final_metrics.rmse < initial_metrics.rmse);
     }

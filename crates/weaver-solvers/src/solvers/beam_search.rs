@@ -14,7 +14,6 @@ use weaver_domain::{LinearRgbColor, PegSide, SparseChordMatrixCSR};
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
-use crate::telemetry_metrics::IncrementalMetricsTracker;
 
 /// Configuração da Busca em Feixe (Beam Search).
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +60,7 @@ pub struct BeamMove {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BeamBranch {
     current_pin: usize,
+    prev_pin: Option<usize>,
     cumulative_score: f32,
     first_move: Option<BeamMove>,
     state_idx: usize,
@@ -92,6 +92,7 @@ pub struct BeamStepRecord {
 pub struct BeamSearchSolver {
     pub config: BeamSearchConfig,
     pub current_pin: usize,
+    pub prev_pin: Option<usize>,
     pub step_count: usize,
     chord_usage: Vec<u16>,
 
@@ -125,12 +126,21 @@ impl BeamSearchSolver {
                 template_canvas.height_px,
                 LinearRgbColor::WHITE,
             );
-            state_a.target_c0.copy_from_slice(&template_canvas.target_c0);
-            state_a.target_c1.copy_from_slice(&template_canvas.target_c1);
-            state_a.target_c2.copy_from_slice(&template_canvas.target_c2);
-            state_a.base_importance_w.copy_from_slice(&template_canvas.base_importance_w);
-            state_a.importance_w.copy_from_slice(&template_canvas.importance_w);
-            state_a.edge_map.copy_from_slice(&template_canvas.edge_map);
+            state_a
+                .target_c0
+                .copy_from_slice(&template_canvas.target_c0);
+            state_a
+                .target_c1
+                .copy_from_slice(&template_canvas.target_c1);
+            state_a
+                .target_c2
+                .copy_from_slice(&template_canvas.target_c2);
+            state_a
+                .base_importance_w
+                .copy_from_slice(&template_canvas.base_importance_w);
+            state_a
+                .importance_w
+                .copy_from_slice(&template_canvas.importance_w);
 
             let state_b = state_a.clone();
             pool_a.push(state_a);
@@ -140,6 +150,7 @@ impl BeamSearchSolver {
         Self {
             config,
             current_pin,
+            prev_pin: None,
             step_count: 0,
             chord_usage: vec![0; chord_count],
             pool_a,
@@ -154,6 +165,7 @@ impl BeamSearchSolver {
     /// Reinicia o solver.
     pub fn reset(&mut self, start_pin: usize) {
         self.current_pin = start_pin;
+        self.prev_pin = None;
         self.step_count = 0;
         self.chord_usage.fill(0);
         self.candidate_expansions.clear();
@@ -197,6 +209,7 @@ impl BeamSearchSolver {
         self.branches_a.clear();
         self.branches_a.push(BeamBranch {
             current_pin: self.current_pin,
+            prev_pin: self.prev_pin,
             cumulative_score: 0.0,
             first_move: None,
             state_idx: 0,
@@ -238,6 +251,9 @@ impl BeamSearchSolver {
                     if next_pin == branch.current_pin {
                         continue;
                     }
+                    if branch.prev_pin == Some(next_pin) {
+                        continue;
+                    }
 
                     let chord_idx = match SparseChordMatrixCSR::try_canonical_chord_index(
                         branch.current_pin,
@@ -262,8 +278,13 @@ impl BeamSearchSolver {
                         continue;
                     }
 
-                    let chord_len = pixel_indices.len() as f32;
-                    let len_factor = if gamma == 0.0 {
+                    // Usa a integral de cobertura sub-pixel real da corda em vez de pixel_indices.len(),
+                    // eliminando o viés geométrico de 41% entre linhas verticais e diagonais em Xiaolin Wu!
+                    let weight_sum: u32 = subpixel_weights.iter().map(|&w| w as u32).sum();
+                    let chord_len = ((weight_sum as f32) * (1.0 / 255.0)).max(1.0);
+                    let len_factor = if gamma == 1.0 {
+                        chord_len
+                    } else if gamma == 0.0 {
                         1.0
                     } else {
                         chord_len.powf(gamma).max(1e-5)
@@ -353,6 +374,7 @@ impl BeamSearchSolver {
 
                     self.branches_b.push(BeamBranch {
                         current_pin: cand.next_move.to_pin,
+                        prev_pin: Some(parent_branch.current_pin),
                         cumulative_score: cand.total_score,
                         first_move: if level == 0 {
                             Some(cand.next_move)
@@ -388,6 +410,7 @@ impl BeamSearchSolver {
 
                     self.branches_a.push(BeamBranch {
                         current_pin: cand.next_move.to_pin,
+                        prev_pin: Some(parent_branch.current_pin),
                         cumulative_score: cand.total_score,
                         first_move: if level == 0 {
                             Some(cand.next_move)
@@ -427,14 +450,14 @@ impl BeamSearchSolver {
     pub fn step(
         &mut self,
         canvas: &mut CanvasStateSoA,
-        tracker: &mut IncrementalMetricsTracker,
         scheduler: &mut SpoolScheduler,
         matrix: &SparseChordMatrixCSR,
         evaluator: &OpticalModelEvaluator,
         spools: &[SpoolColor],
         alpha_eff: f32,
     ) -> Option<BeamStepRecord> {
-        let best_move = self.find_best_move(canvas, matrix, evaluator, scheduler, spools, alpha_eff)?;
+        let best_move =
+            self.find_best_move(canvas, matrix, evaluator, scheduler, spools, alpha_eff)?;
 
         let (pixel_indices, subpixel_weights) = matrix.chord_slice(best_move.chord_idx);
         let spool = spools
@@ -442,29 +465,17 @@ impl BeamSearchSolver {
             .find(|s| s.id == best_move.spool_id)
             .expect("Spool must exist");
 
-        // Coleta cores antigas para atualização incremental de SSIM/RMSE/DeltaE em O(|L|)
-        self.old_colors_buf.clear();
-        for &p in pixel_indices {
-            self.old_colors_buf.push(canvas.current_color(p as usize));
-        }
-
         // Aplica a corda na tela principal
         evaluator.apply_chord(canvas, pixel_indices, subpixel_weights, spool, alpha_eff);
 
-        // Notifica o tracker incremental
-        tracker.update_pixels(canvas, pixel_indices, &self.old_colors_buf);
-
         // Avança o agendador de carretéis
         scheduler.advance_step(spool.id, spools);
-        let edge_boost = scheduler.active_edge_boost();
-        if edge_boost > 0.0 {
-            canvas.apply_edge_importance_boost(edge_boost);
-        }
 
         // Atualiza estado do solver
         self.chord_usage[best_move.chord_idx] += 1;
         let from = self.current_pin;
         let to = best_move.to_pin;
+        self.prev_pin = Some(from);
         self.current_pin = to;
         self.step_count += 1;
 
@@ -486,12 +497,11 @@ impl BeamSearchSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weaver_domain::{
-        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels,
-        RasterizerType,
-    };
     use crate::optical_models::OpticalMixModelType;
     use crate::spool_scheduler::SpoolSwitchStrategy;
+    use weaver_domain::{
+        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels, RasterizerType,
+    };
 
     fn setup_beam_test(
         pin_count: usize,
@@ -499,20 +509,14 @@ mod tests {
     ) -> (
         SparseChordMatrixCSR,
         CanvasStateSoA,
-        IncrementalMetricsTracker,
         OpticalModelEvaluator,
         SpoolScheduler,
         Vec<SpoolColor>,
     ) {
-        let spec = LoomPhysicalSpec::circle(
-            200.0,
-            pin_count,
-            2.0,
-            1.5,
-            10.0,
-        );
+        let spec = LoomPhysicalSpec::circle(200.0, pin_count, 2.0, 1.5, 10.0);
         let loom = LoomGeometry::new(spec);
-        let matrix = SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
+        let matrix =
+            SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
 
         let bg = LinearRgbColor::WHITE;
         let mut target = vec![bg; (res * res) as usize];
@@ -529,21 +533,19 @@ mod tests {
         }
 
         let canvas = CanvasStateSoA::from_target_and_background(res, res, &target, bg, None);
-        let tracker = IncrementalMetricsTracker::new(&canvas);
         let evaluator = OpticalModelEvaluator::new(
             OpticalMixModelType::PorterDuffOcclusion,
             ColorErrorMetric::LinearRgb,
         );
         let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 100, 0);
-        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.3)];
+        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
 
-        (matrix, canvas, tracker, evaluator, scheduler, spools)
+        (matrix, canvas, evaluator, scheduler, spools)
     }
 
     #[test]
     fn test_beam_search_pool_allocation_and_reduction() {
-        let (matrix, mut canvas, mut tracker, evaluator, mut scheduler, spools) =
-            setup_beam_test(24, 48);
+        let (matrix, mut canvas, evaluator, mut scheduler, spools) = setup_beam_test(24, 48);
 
         let config = BeamSearchConfig {
             beam_width: 4,
@@ -558,13 +560,13 @@ mod tests {
         assert_eq!(solver.pool_a.len(), 4);
         assert_eq!(solver.pool_b.len(), 4);
 
-        let initial_metrics = tracker.current_snapshot();
+        let initial_metrics =
+            crate::telemetry_metrics::MetricsTracker::new(&canvas).current_snapshot();
         let mut executed = 0;
 
         for _ in 0..10 {
             if let Some(step) = solver.step(
                 &mut canvas,
-                &mut tracker,
                 &mut scheduler,
                 &matrix,
                 &evaluator,
@@ -579,7 +581,7 @@ mod tests {
         }
 
         assert!(executed >= 5);
-        let final_metrics = tracker.current_snapshot();
+        let final_metrics = crate::telemetry_metrics::MetricsTracker::new(&canvas).compute(&canvas);
         assert!(final_metrics.delta_e < initial_metrics.delta_e);
         assert!(final_metrics.rmse < initial_metrics.rmse);
     }

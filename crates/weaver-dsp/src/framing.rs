@@ -7,6 +7,7 @@
 use std::f32::consts::PI;
 use weaver_domain::{LoomGeometry, LoomGridMapping};
 
+use crate::face_framing::{detect_face_region, face_framing_from_region};
 use crate::image::{GrayImage, ImageBuffer, Rgba8Image};
 
 /// Método de interpolação sub-pixel para mapeamento afim de coordenadas.
@@ -80,6 +81,16 @@ impl LoomMask {
     }
 }
 
+/// O que o auto-enquadramento deve encaixar no aro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FramingTarget {
+    /// Rosto (testa → queixo) preenchendo o aro — padrão para retratos reconhecíveis.
+    Face,
+    /// Cabeça inteira e ombros (enquadramento mais aberto; feições menores).
+    #[default]
+    HeadAndShoulders,
+}
+
 /// Opções de configuração para o algoritmo de Auto-Enquadramento.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoFramingOptions {
@@ -87,6 +98,8 @@ pub struct AutoFramingOptions {
     pub target_ratio: f32,
     /// Deslocamento vertical para posicionar a linha dos olhos ligeiramente acima do centro geométrico (~terço superior).
     pub eye_line_offset_ratio: f32,
+    /// Rosto ou cabeça e ombros.
+    pub target: FramingTarget,
 }
 
 impl Default for AutoFramingOptions {
@@ -94,6 +107,7 @@ impl Default for AutoFramingOptions {
         Self {
             target_ratio: 0.80,
             eye_line_offset_ratio: 0.08,
+            target: FramingTarget::HeadAndShoulders,
         }
     }
 }
@@ -193,10 +207,25 @@ pub fn apply_affine_transform(
 ///
 /// Combina mapa de energia de alta frequência (gradiente de Sobel), probabilidade cromática de pele
 /// e prior composicional central para estimar o centroide da cabeça e proporção de 80%.
-pub fn compute_auto_framing(
-    image: &Rgba8Image,
-    options: &AutoFramingOptions,
-) -> AutoFramingResult {
+pub fn compute_auto_framing(image: &Rgba8Image, options: &AutoFramingOptions) -> AutoFramingResult {
+    if options.target == FramingTarget::Face {
+        if let Some(region) = detect_face_region(image) {
+            let (zoom, pan_x, pan_y) =
+                face_framing_from_region(&region, image.width, image.height, options.target_ratio);
+            return AutoFramingResult {
+                config: FramingConfig {
+                    zoom,
+                    pan_x,
+                    pan_y,
+                    rotation_deg: 0.0,
+                },
+                face_bbox: region.bbox,
+                centroid: region.center,
+                confidence: region.confidence,
+            };
+        }
+        // Nenhum rosto frontal detectado (pintura estilizada, perfil): recai em cabeça e ombros.
+    }
     let gray = image.to_gray();
     let width = image.width;
     let height = image.height;
@@ -216,29 +245,31 @@ pub fn compute_auto_framing(
     // 2. Mapa de Probabilidade de Pele
     let skin = compute_skin_probability_map(image);
 
-    // 3. Combinação de Saliência com Prior Central
+    // 3. Combinação de Saliência com Prior Central (focado no terço superior/central da cabeça)
     let mut saliency = vec![0.0f32; (width * height) as usize];
-    let c_x = width as f32 * 0.5;
-    let c_y = height as f32 * 0.45; // Cabeça ligeiramente no terço superior
-    let inv_sigma_x_sq = 1.0 / (0.40 * width as f32).powi(2);
-    let inv_sigma_y_sq = 1.0 / (0.40 * height as f32).powi(2);
+    let c_in_x = (width as f32 - 1.0) * 0.5;
+    let c_in_y = (height as f32 - 1.0) * 0.5;
+    let prior_cx = width as f32 * 0.50;
+    let prior_cy = height as f32 * 0.40; // Cabeça tipicamente na metade superior de fotos 3x4
+    let inv_sigma_x_sq = 1.0 / (0.28 * width as f32).max(1.0).powi(2);
+    let inv_sigma_y_sq = 1.0 / (0.25 * height as f32).max(1.0).powi(2);
 
     let mut total_mass = 0.0f32;
     let mut weighted_x = 0.0f32;
     let mut weighted_y = 0.0f32;
 
     for y in 0..height {
-        let dy = y as f32 - c_y;
+        let dy = y as f32 - prior_cy;
         let dy_sq = dy * dy * inv_sigma_y_sq;
 
         for x in 0..width {
             let idx = (y * width + x) as usize;
-            let dx = x as f32 - c_x;
+            let dx = x as f32 - prior_cx;
             let dx_sq = dx * dx * inv_sigma_x_sq;
             let center_weight = (-0.5 * (dx_sq + dy_sq)).exp();
 
             // Saliência = Alta Frequência * (Fator Base + Peso de Pele) * Centro
-            let s = edges[idx] * (0.30 + 0.70 * skin[idx]) * center_weight;
+            let s = edges[idx] * (0.08 + 0.92 * skin[idx]) * center_weight;
             saliency[idx] = s;
 
             total_mass += s;
@@ -251,7 +282,7 @@ pub fn compute_auto_framing(
         return AutoFramingResult {
             config: FramingConfig::default(),
             face_bbox: [0.0, 0.0, width as f32, height as f32],
-            centroid: (c_x, c_y),
+            centroid: (c_in_x, c_in_y),
             confidence: 0.0,
         };
     }
@@ -275,24 +306,32 @@ pub fn compute_auto_framing(
     let sigma_x = (var_x / total_mass).sqrt().max(1.0);
     let sigma_y = (var_y / total_mass).sqrt().max(1.0);
 
-    // Bounding Box estimada (aproximadamente cobrindo a extensão facial e cabelo)
-    let min_x = (mean_x - 1.8 * sigma_x).clamp(0.0, width as f32);
-    let max_x = (mean_x + 1.8 * sigma_x).clamp(0.0, width as f32);
-    let min_y = (mean_y - 2.0 * sigma_y).clamp(0.0, height as f32);
-    let max_y = (mean_y + 2.0 * sigma_y).clamp(0.0, height as f32);
+    // Bounding Box estimada (cobrindo a extensão da cabeça sem inflar pelo pescoço/ombros)
+    let min_x = (mean_x - 1.55 * sigma_x).clamp(0.0, width as f32);
+    let max_x = (mean_x + 1.55 * sigma_x).clamp(0.0, width as f32);
+    let min_y = (mean_y - 1.65 * sigma_y).clamp(0.0, height as f32);
+    let max_y = (mean_y + 1.65 * sigma_y).clamp(0.0, height as f32);
 
     let face_w = max_x - min_x;
     let face_h = max_y - min_y;
     let min_dim = (width.min(height) as f32).max(1.0);
-    let face_extent = face_w.max(face_h).clamp(0.20 * min_dim, min_dim);
+    let face_extent = (face_w * 1.05)
+        .max(face_h * 0.90)
+        .clamp(0.20 * min_dim, 0.76 * min_dim);
 
     // 5. Cálculo dos parâmetros ideais de enquadramento
+    // Em apply_affine_transform: x_in = c_in_x - pan_x * r_in + dx * scale.
+    // Para que (mean_x, mean_y) seja posicionado no centro (com olhos ligeiramente acima do centro),
+    // precisamos de pan_x = (c_in_x - mean_x) / r_in e pan_y = (c_in_y - target_center_y) / r_in.
     let r_in = min_dim * 0.5;
     let target_diameter = 2.0 * r_in * options.target_ratio.clamp(0.40, 1.0);
-    let zoom = (target_diameter / face_extent).clamp(0.50, 4.0);
+    let zoom = (target_diameter / face_extent).clamp(1.0, 4.0);
 
-    let pan_x = ((mean_x - c_x) / r_in).clamp(-1.0, 1.0);
-    let pan_y = ((mean_y - c_y) / r_in - options.eye_line_offset_ratio).clamp(-1.0, 1.0);
+    let eye_shift_in = options.eye_line_offset_ratio * (r_in / zoom);
+    let target_center_y_in = mean_y + eye_shift_in;
+
+    let pan_x = ((c_in_x - mean_x) / r_in).clamp(-1.0, 1.0);
+    let pan_y = ((c_in_y - target_center_y_in) / r_in).clamp(-1.0, 1.0);
 
     // 6. Confiança baseada na concentração de saliência dentro do Bounding Box
     let mut bbox_mass = 0.0f32;
@@ -452,4 +491,3 @@ mod tests {
         assert!(!mask.is_inside(0, 0));
     }
 }
-

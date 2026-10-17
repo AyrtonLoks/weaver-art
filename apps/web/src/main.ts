@@ -7,10 +7,8 @@ import {
   formatDuration,
   loomPegCount,
   parsePegsCSV,
-  prepareTarget,
   toCSV,
   toInstructions,
-  toRGBA,
   toSVG,
   type WeaveStep,
   type ThreadSummary,
@@ -28,7 +26,8 @@ import { PRESETS, resolveOptions, ReactivePresetStore, WEAVER_PRESET_PROFILES } 
 import { WebGLLoomRenderer } from './renderer-webgl/index.js';
 import { BlueprintView } from './views/blueprint-view/index.js';
 import { PlayerView } from './views/player-view/index.js';
-import { StudioViewManager } from './views/studio-view/index.js';
+import { DistanceViewController, StudioViewManager } from './views/studio-view/index.js';
+import type { DiagnosticBuffersPayload } from './views/studio-view/index.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -113,6 +112,13 @@ const repeatsHint = $('repeats-hint');
 
 const btnSmartFrame = $<HTMLButtonElement>('btnSmartFrame');
 const btnResetCrop = $<HTMLButtonElement>('btnResetCrop');
+const framingTargetSelect = document.getElementById('framingTarget') as HTMLSelectElement | null;
+const featureEmphasisInput = document.getElementById('featureEmphasisWeight') as HTMLInputElement | null;
+const skinLiftInput = document.getElementById('skinLift') as HTMLInputElement | null;
+/** Índice do rosto usado no próximo clique de "Enquadrar rosto" (zera ao trocar de foto). */
+let smartFrameFaceIndex = 0;
+/** Foto carregada antes do motor Wasm ficar pronto: enquadrar assim que possível. */
+let pendingAutoFrame = false;
 
 const sEstTime = $('s-est-time');
 const spoolBreakdown = $('spoolBreakdown');
@@ -155,13 +161,13 @@ function purgeLegacyDuplicateDomElements(): void {
   }
 
   // 2. Amplia os limites dos sliders de Zoom e Pan para permitir posicionar qualquer foto livremente
-  fields.cropZoom.min = '0.40';
-  fields.cropZoom.max = '4.00';
-  fields.cropZoom.step = '0.02';
-  fields.cropPanX.min = '-100';
-  fields.cropPanX.max = '100';
-  fields.cropPanY.min = '-100';
-  fields.cropPanY.max = '100';
+  fields.cropZoom.min = '0.50';
+  fields.cropZoom.max = '6.00';
+  fields.cropZoom.step = '0.01';
+  fields.cropPanX.min = '-200';
+  fields.cropPanX.max = '200';
+  fields.cropPanY.min = '-200';
+  fields.cropPanY.max = '200';
 
   // 3. Oculta controles legados duplicados da sidebar
   const legacyInputsToHide = [
@@ -239,13 +245,13 @@ const studioManager = new StudioViewManager(
     targetCaption: document.getElementById('targetCaption') as HTMLElement | undefined,
   },
   () => {
-    //presetStore.setParam('framing', {
-      //zoom: Number(fields.cropZoom.value) || 1.0,
-      //panXPercent: Number(fields.cropPanX.value) || 0,
-      //panYPercent: Number(fields.cropPanY.value) || 0,
-      //rotationDeg: Number(cropRotationInput.value) || 0,
-      //autoFaceTargetRatio: 0,
-    //});
+    presetStore.setParam('framing', {
+      zoom: Number(fields.cropZoom.value) || 1.0,
+      panXPercent: Number(fields.cropPanX.value) || 0,
+      panYPercent: Number(fields.cropPanY.value) || 0,
+      rotationDeg: Number(cropRotationInput.value) || 0,
+      autoFaceTargetRatio: 0,
+    });
     updateOutputs();
     updateTargetPreview(false);
   },
@@ -258,6 +264,33 @@ const loomRenderer = new WebGLLoomRenderer(simCanvas, {
 });
 
 const engineClient = new WeaverEngineClient();
+
+const distanceView = new DistanceViewController(
+  {
+    simCanvas,
+    compareCanvas: document.getElementById('simCompare') as HTMLCanvasElement | null,
+    pair: document.getElementById('simPair'),
+    btnThreads: document.getElementById('viewThreads') as HTMLButtonElement | null,
+    btnDistance: document.getElementById('viewDistance') as HTMLButtonElement | null,
+    distanceInput: document.getElementById('viewDistanceM') as HTMLInputElement | null,
+    distanceOut: document.getElementById('viewDistanceM-out'),
+    compareToggle: document.getElementById('viewCompare') as HTMLInputElement | null,
+    caption: document.getElementById('simCaption'),
+  },
+  () => loomRenderer.getLoom().extentMm || Number(fields.diameter.value) || 622,
+  () => loomRenderer.getZoom(),
+);
+
+/** Repassa os buffers de diagnóstico do DSP ao estúdio e à comparação da vista à distância. */
+function applyDiagnostics(res: DiagnosticBuffersPayload): void {
+  studioManager.setDiagnosticBuffers(res);
+  const dims = res.dimensions;
+  if (res.preparedRgba && dims && dims.length >= 2) {
+    const rgba =
+      res.preparedRgba instanceof Uint8ClampedArray ? res.preparedRgba : new Uint8ClampedArray(res.preparedRgba);
+    distanceView.setReference(rgba, dims[0], dims[1]);
+  }
+}
 
 const blueprintView = new BlueprintView(
   {
@@ -299,6 +332,27 @@ engineClient
     studioManager.setBrushApplyHandler(async (weights) => {
       return await engineClient.applyImportanceBrush(weights);
     });
+    studioManager.setSmartFrameHandler(async () => {
+      if (!image || !engineClient.isReady()) return null;
+      const mode = framingTargetSelect?.value === 'head' ? 'head' : 'face';
+      const res = await engineClient.computeSmartFraming(
+        image.data.slice().buffer,
+        image.width,
+        image.height,
+        0,
+        mode,
+        smartFrameFaceIndex,
+      );
+      // Próximo clique na mesma foto passa para o rosto seguinte (fotos com várias pessoas).
+      const count = res.faceCount ?? 0;
+      smartFrameFaceIndex = count > 1 ? ((res.faceIndex ?? smartFrameFaceIndex) + 1) % count : 0;
+      return res;
+    });
+    // Foto carregada antes do motor ficar pronto: aplica o enquadramento automático agora.
+    if (image && pendingAutoFrame) {
+      pendingAutoFrame = false;
+      void studioManager.runSmartFrame();
+    }
     engineClient.onDone(async () => {
       if (isWasmRunning) {
         await finishWasmRun(true);
@@ -331,7 +385,7 @@ function generateEllipticalPegs(widthMm: number, heightMm: number, pegCount: num
   const ry = heightMm / 2;
   const pegs: { x: number; y: number }[] = [];
   for (let i = 0; i < pegCount; i++) {
-    const angle = -Math.PI / 2 + (2 * Math.PI * i) / pegCount;
+    const angle = (2 * Math.PI * i) / pegCount;
     pegs.push({
       x: rx + rx * Math.cos(angle),
       y: ry + ry * Math.sin(angle),
@@ -344,7 +398,7 @@ function generateRegularPolygonPegs(diameterMm: number, sides: number, totalPegs
   const r = diameterMm / 2;
   const vertices: { x: number; y: number }[] = [];
   for (let s = 0; s < sides; s++) {
-    const angle = -Math.PI / 2 + (2 * Math.PI * s) / sides;
+    const angle = (2 * Math.PI * s) / sides;
     vertices.push({
       x: r + r * Math.cos(angle),
       y: r + r * Math.sin(angle),
@@ -420,7 +474,7 @@ export function getCurrentLoomConfig(): LoomConfig {
     diameterMm: Number(fields.diameter.value) || 600,
     pegCount: Math.max(3, Math.round(Number(fields.pegs.value) || 200)),
     pegDiameterMm,
-    startAngleDeg: -90,
+    startAngleDeg: 0,
   };
 }
 
@@ -438,6 +492,9 @@ function updateLoomPreview(): void {
 
 // ------------------------------------------------------------- Preset Store Reactivity
 function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
+  if (preset.value !== cfg.presetProfileId) {
+    preset.value = cfg.presetProfileId;
+  }
   loomShape.value = cfg.shape;
   document.body.dataset.loomShape = cfg.shape;
 
@@ -450,6 +507,7 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   fields.diameter.value = cfg.diameterMm.toFixed(1);
   fields.pegDiameter.value = String(cfg.pinDiameterMm);
   fields.threadWidth.value = String(cfg.threadThicknessMm);
+  loomRenderer.setThreadThickness(cfg.threadThicknessMm);
 
   rasterizerSelect.value = cfg.rasterizer;
   paletteModeSelect.value = cfg.paletteMode;
@@ -478,17 +536,22 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   switchPenaltyLambdaInput.value = String(cfg.switchPenaltyLambda);
   minRunLengthInput.value = String(cfg.minRunLength);
 
-  fields.claheClip.value = String(cfg.claheClipLimit);
+  fields.clahe.checked = cfg.claheClipLimit > 0;
+  const claheControlsEl = document.getElementById('clahe-controls');
+  if (claheControlsEl) claheControlsEl.hidden = !fields.clahe.checked;
+  fields.claheClip.value = String(cfg.claheClipLimit > 0 ? cfg.claheClipLimit : 2.0);
   faceImportanceWeightInput.value = String(cfg.faceImportanceWeight);
+  if (featureEmphasisInput) featureEmphasisInput.value = String(cfg.featureEmphasisWeight);
+  if (skinLiftInput) skinLiftInput.value = String(cfg.skinLift);
   edgeDetectorSelect.value = cfg.edgeDetector;
   controlEdgeBlendWeight.hidden = cfg.edgeDetector === 'NONE';
   edgeBlendWeightInput.value = String(cfg.edgeBlendWeight);
   morphologyOpSelect.value = cfg.morphologyOp;
 
-  //fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
-  //fields.cropPanX.value = String(cfg.framing.panXPercent);
-  //fields.cropPanY.value = String(cfg.framing.panYPercent);
-  //cropRotationInput.value = String(cfg.framing.rotationDeg);
+  fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
+  fields.cropPanX.value = String(cfg.framing.panXPercent);
+  fields.cropPanY.value = String(cfg.framing.panYPercent);
+  cropRotationInput.value = String(cfg.framing.rotationDeg);
 
   btnResetPresetDefaults.hidden = !isDirty;
 
@@ -501,20 +564,29 @@ presetStore.subscribe((cfg, isDirty) => {
   syncUIWithConfig(cfg, isDirty);
 });
 
+/** Mantém o enquadramento da foto atual ao trocar de preset (o enquadramento é da foto, não do preset). */
+function keepImageFraming(apply: () => void): void {
+  const framing = { ...presetStore.getConfig().framing };
+  apply();
+  if (image) presetStore.setParam('framing', framing);
+}
+
 preset.addEventListener('change', () => {
   const selected = preset.value;
-  if (selected in WEAVER_PRESET_PROFILES) {
-    presetStore.loadPreset(selected as WeaverPresetProfileId);
-  } else if (selected === 'portrait-mono' || selected === 'vrellis-mono') {
-    presetStore.loadPreset('VRELLIS_CLASSIC_MONO');
-  } else if (selected === 'portrait-cmyk' || selected === 'cmyk' || selected === 'vrellis-color') {
-    presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
-  }
+  keepImageFraming(() => {
+    if (selected in WEAVER_PRESET_PROFILES) {
+      presetStore.loadPreset(selected as WeaverPresetProfileId);
+    } else if (selected === 'portrait-mono' || selected === 'vrellis-mono') {
+      presetStore.loadPreset('VRELLIS_CLASSIC_MONO');
+    } else if (selected === 'portrait-cmyk' || selected === 'cmyk' || selected === 'vrellis-color') {
+      presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
+    }
+  });
   updateTargetPreview();
 });
 
 btnResetPresetDefaults.addEventListener('click', () => {
-  presetStore.resetAllDirty();
+  keepImageFraming(() => presetStore.resetAllDirty());
   updateTargetPreview();
 });
 
@@ -627,6 +699,14 @@ faceImportanceWeightInput.addEventListener('input', () => {
   $('faceImportanceWeight-out').textContent = Number(faceImportanceWeightInput.value).toFixed(1);
   updateTargetPreview();
 });
+featureEmphasisInput?.addEventListener('input', () => {
+  presetStore.setParam('featureEmphasisWeight', Number(featureEmphasisInput.value));
+  updateTargetPreview();
+});
+skinLiftInput?.addEventListener('input', () => {
+  presetStore.setParam('skinLift', Number(skinLiftInput.value));
+  updateTargetPreview();
+});
 
 customPegsFile.addEventListener('change', async () => {
   const f = customPegsFile.files?.[0];
@@ -667,6 +747,18 @@ function updateOutputs(): void {
 
   const rotEl = document.getElementById('cropRotation-out');
   if (rotEl) rotEl.textContent = `${Math.round(Number(cropRotationInput.value))}°`;
+
+  const faceImpEl = document.getElementById('faceImportanceWeight-out');
+  if (faceImpEl) faceImpEl.textContent = Number(faceImportanceWeightInput.value).toFixed(1);
+
+  const edgeBlendEl = document.getElementById('edgeBlendWeight-out');
+  if (edgeBlendEl) edgeBlendEl.textContent = Number(edgeBlendWeightInput.value).toFixed(2);
+
+  const featEl = document.getElementById('featureEmphasisWeight-out');
+  if (featEl && featureEmphasisInput) featEl.textContent = Number(featureEmphasisInput.value).toFixed(1);
+
+  const skinEl = document.getElementById('skinLift-out');
+  if (skinEl && skinLiftInput) skinEl.textContent = Number(skinLiftInput.value).toFixed(1);
 }
 
 function computeActiveCrop(): { x: number; y: number; size: number } | undefined {
@@ -692,6 +784,7 @@ function computeActiveCrop(): { x: number; y: number; size: number } | undefined
 
 function buildRuntimeWasmConfig(): Record<string, unknown> {
   const cfg = presetStore.getConfig();
+  const edgeDetector = (edgeDetectorSelect.value || cfg.edgeDetector) as WeaverConfig['edgeDetector'];
   return {
     ...cfg,
     pinCount: Number(fields.pegs.value) || cfg.pinCount,
@@ -703,6 +796,13 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
     maxChordRepeats: Number(fields.repeats.value) || cfg.maxChordRepeats,
     targetResolution: Number(fields.resolution.value) || 500,
     claheClipLimit: fields.clahe.checked ? Number(fields.claheClip.value) || 2.0 : 0.0,
+    faceImportanceWeight: finiteOr(faceImportanceWeightInput.value, cfg.faceImportanceWeight),
+    featureEmphasisWeight: featureEmphasisInput
+      ? finiteOr(featureEmphasisInput.value, cfg.featureEmphasisWeight)
+      : cfg.featureEmphasisWeight,
+    skinLift: skinLiftInput ? finiteOr(skinLiftInput.value, cfg.skinLift) : cfg.skinLift,
+    edgeDetector,
+    edgeBlendWeight: edgeDetector === 'NONE' ? 0.0 : finiteOr(edgeBlendWeightInput.value, cfg.edgeBlendWeight),
     contrast: Number(fields.contrast.value) || 1.0,
     brightness: Number(fields.brightness.value) || 0.0,
     gamma: Number(fields.gamma.value) || 1.0,
@@ -714,6 +814,12 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
       autoFaceTargetRatio: 0.0,
     },
   };
+}
+
+/** Converte o valor de um input numérico, aceitando 0 (ao contrário de Number(x) || padrão). */
+function finiteOr(raw: string, fallback: number): number {
+  const v = Number(raw);
+  return raw.trim() !== '' && Number.isFinite(v) ? v : fallback;
 }
 
 let dspDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -763,7 +869,7 @@ function renderInstantClientFramingPreview(): void {
   ctx.restore();
 }
 
-function updateTargetPreview(): void {
+function updateTargetPreview(_force?: boolean): void {
   if (!image) return;
   if (studioManager.getActiveStage() === 'prepared') {
     renderInstantClientFramingPreview();
@@ -774,14 +880,9 @@ function updateTargetPreview(): void {
     if (!image || !engineClient.isReady()) return;
     const runtimeCfg = buildRuntimeWasmConfig();
     engineClient
-      .loadAndPrepareImage(
-        image.data.slice().buffer,
-        image.width,
-        image.height,
-        JSON.stringify(runtimeCfg),
-      )
+      .loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, JSON.stringify(runtimeCfg))
       .then((res) => {
-        studioManager.setDiagnosticBuffers(res);
+        applyDiagnostics(res);
       })
       .catch((err) => {
         console.warn('Wasm DSP preview erro:', err);
@@ -799,7 +900,14 @@ function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions[
       { id: 'cmyk-y', name: 'Amarelo', color: '#f5dd05', widthMm, opacity: 0.22, startPeg: 0 },
       { id: 'cmyk-m', name: 'Magenta', color: '#d90a75', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 4) },
       { id: 'cmyk-c', name: 'Ciano', color: '#0594d9', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 2) },
-      { id: 'cmyk-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+      {
+        id: 'cmyk-k',
+        name: 'Preto',
+        color: '#141414',
+        widthMm,
+        opacity: 0.35,
+        startPeg: Math.floor((3 * totalPegs) / 4),
+      },
     ];
   }
   if (mode === 'RGB_OCCLUSIVE') {
@@ -807,7 +915,14 @@ function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions[
       { id: 'rgb-r', name: 'Vermelho', color: '#e01010', widthMm, opacity: 0.28, startPeg: 0 },
       { id: 'rgb-g', name: 'Verde', color: '#10c020', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 4) },
       { id: 'rgb-b', name: 'Azul', color: '#1030e0', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 2) },
-      { id: 'rgb-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+      {
+        id: 'rgb-k',
+        name: 'Preto',
+        color: '#141414',
+        widthMm,
+        opacity: 0.35,
+        startPeg: Math.floor((3 * totalPegs) / 4),
+      },
     ];
   }
   return [{ id: 'mono-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: 0 }];
@@ -918,12 +1033,25 @@ async function loadFile(file: File): Promise<void> {
   drop.style.backgroundImage = `url(${URL.createObjectURL(file)})`;
   drop.classList.add('has-image');
   runBtn.disabled = running;
-  updateTargetPreview(true);
+  smartFrameFaceIndex = 0;
+  if (btnSmartFrame.dataset.label) btnSmartFrame.textContent = btnSmartFrame.dataset.label;
+  if (engineClient.isReady()) {
+    // Enquadramento automático pelo rosto (o usuário pode ajustar depois pelos sliders/arraste).
+    const framed = await studioManager.runSmartFrame();
+    if (!framed) updateTargetPreview(true);
+  } else {
+    pendingAutoFrame = true;
+    updateTargetPreview(true);
+  }
 }
 
 fileInput.addEventListener('change', () => {
   const f = fileInput.files?.[0];
   if (f) loadFile(f).catch(showError);
+});
+framingTargetSelect?.addEventListener('change', () => {
+  smartFrameFaceIndex = 0;
+  if (image) void studioManager.runSmartFrame();
 });
 drop.addEventListener('dragover', (e) => {
   e.preventDefault();
@@ -948,7 +1076,8 @@ function setStats(
   switches?: number | null,
   manualEstTime?: string | null,
 ): void {
-  $('s-lines').textContent = lines.toLocaleString('pt-BR');$('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
+  $('s-lines').textContent = lines.toLocaleString('pt-BR');
+  $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
   const switchesEl = document.getElementById('s-switches');
   if (switchesEl) {
     switchesEl.textContent = switches !== undefined && switches !== null ? switches.toLocaleString('pt-BR') : '0';
@@ -1086,6 +1215,11 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   isWasmRunning = false;
   setRunning(false);
   loomRenderer.renderFrame();
+  if (isCompleted) {
+    // Obra pronta: mostrar como ela será vista na parede, ao lado da foto.
+    distanceView.setCompare(true);
+    distanceView.setMode('distance');
+  }
 
   const mem = engineClient.memory;
   const currentStep = mem.getCurrentStepIndex();
@@ -1209,6 +1343,7 @@ runBtn.addEventListener('click', async () => {
   result = null;
   loomRenderer.reset();
   loomRenderer.setLoom(options.loom);
+  loomRenderer.setThreadThickness(Number(fields.threadWidth.value) || 0.18);
   loomRenderer.setPalette(paletteModeSelect.value as ColorPaletteMode);
   exportButtons.forEach((b) => (b.disabled = true));
   spoolBreakdown.hidden = true;
@@ -1225,10 +1360,7 @@ runBtn.addEventListener('click', async () => {
       image.height,
       runtimeCfgJson,
     );
-    studioManager.setDiagnosticBuffers(prepRes);
-    if (studioManager.getActiveStage() === 'prepared') {
-      renderInstantClientFramingPreview();
-    }
+    applyDiagnostics(prepRes);
     await engineClient.initSolver(runtimeCfgJson);
     engineClient.startSolver(50);
     start60HzTelemetryLoop();

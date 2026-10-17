@@ -79,12 +79,18 @@ fn create_synthetic_face_with_glasses(width: u32, height: u32) -> Rgba8Image {
             }
 
             // Ponte horizontal dos óculos (linha cruzada horizontal)
-            if (y as f32 - eye_y).abs() <= 1.5 && x as f32 >= (left_eye_x - lens_r) && x as f32 <= (right_eye_x + lens_r) {
+            if (y as f32 - eye_y).abs() <= 1.5
+                && x as f32 >= (left_eye_x - lens_r)
+                && x as f32 <= (right_eye_x + lens_r)
+            {
                 val = 15;
             }
 
             // Haste / cruzamento vertical no centro (linha cruzada vertical / nariz)
-            if (x as f32 - cx).abs() <= 1.2 && y as f32 >= (eye_y - lens_r) && y as f32 <= (cy + 4.0) {
+            if (x as f32 - cx).abs() <= 1.2
+                && y as f32 >= (eye_y - lens_r)
+                && y as f32 <= (cy + 4.0)
+            {
                 val = 25;
             }
 

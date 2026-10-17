@@ -1,34 +1,32 @@
 //! Algoritmo Guloso Iterativo de String Art (`solvers/greedy.rs`).
 //!
-//! A partir do pino atual $p_{\text{atual}}$ e para cada cor permitida pelo `SpoolScheduler`,
-//! avalia todos os pinos candidatos $p_{\text{prox}}$ lendo fatias contíguas da `SparseChordMatrixCSR`.
+//! A partir do pino atual e para cada carretel permitido pelo `SpoolScheduler`, avalia todas as
+//! cordas candidatas lendo fatias contíguas da `SparseChordMatrixCSR` e escolhe a de maior score:
 //!
-//! Normaliza o score pelo comprimento da corda:
-//! $$\text{Score}(L, k) = \frac{1}{|L|^\gamma} \sum_{p \in L} \text{Ganho}(p, k) - \text{PenalidadeTroca}(k)$$
+//! $$\text{Score}(L, k) = \frac{\Delta E(L, k)}{|L|^{\gamma}} - \text{PenalidadeTroca}(k)$$
 //!
-//! Garante desempate estritamente determinístico pelo menor índice de pino e menor índice de carretel (RNF-02).
-//! Mantém histórico recente (Tabu list) e controle de repetições máximas por par de pinos.
+//! onde $\Delta E$ é a redução **exata** do erro perceptual (`OpticalModelEvaluator`) e $|L|$ é a
+//! integral de cobertura sub-pixel da corda. Para quando nenhuma corda reduz o erro.
+//! Desempate determinístico pelo menor pino e menor carretel (RNF-02).
 
-use weaver_domain::{LinearRgbColor, PegSide, SparseChordMatrixCSR};
+use weaver_domain::{PegSide, SparseChordMatrixCSR};
 
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
-use crate::telemetry_metrics::IncrementalMetricsTracker;
 
 /// Configuração do Algoritmo Guloso Iterativo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GreedyConfig {
     /// Quantidade máxima de passos/linhas a tecer.
     pub max_steps: usize,
-    /// Quantidade máxima de vezes que o mesmo par canônico de pinos $(a, b)$ pode ser tecido.
+    /// Quantidade máxima de vezes que o mesmo par canônico de pinos pode ser tecido.
     pub max_chord_repeats: usize,
-    /// Expoente $\gamma$ de penalização/normalização de comprimento ($1 / |L|^\gamma$).
-    /// Se 0.0, não normaliza por comprimento (ganho bruto). Padrão: 1.0 (ganho por pixel médio).
+    /// Expoente $\gamma$ de normalização por comprimento ($1/|L|^\gamma$; 0 = ganho bruto).
     pub length_exponent_gamma: f32,
     /// Pino inicial de tecelagem (0..N-1).
     pub start_pin: usize,
-    /// Tamanho do histórico Tabu recente para evitar ciclos ou vaivém imediato (0 desativa).
+    /// Tamanho do histórico Tabu de pinos recentes (0 desativa).
     pub tabu_history_size: usize,
 }
 
@@ -67,18 +65,30 @@ pub struct GreedyStepRecord {
     pub score_normalized: u16,
 }
 
-/// Motor de otimização Iterative Greedy com zero alocações na heap no laço interno.
+/// Integral de cobertura sub-pixel de uma corda (comprimento efetivo em pixels).
+#[inline]
+pub fn chord_coverage_length(weights: &[u8]) -> f32 {
+    let sum: u32 = weights.iter().map(|&w| w as u32).sum();
+    (sum as f32 / 255.0).max(1.0)
+}
+
+/// Converte um score em ponto fixo `u16` para o `WeavingPathBuffer`.
+#[inline]
+pub fn normalize_score(score: f32) -> u16 {
+    let s = score.max(0.0);
+    ((s / (s + 1.0)) * 65535.0).clamp(0.0, 65535.0) as u16
+}
+
+/// Motor guloso com laço interno sem alocações.
 pub struct GreedySolver {
     pub config: GreedyConfig,
     pub current_pin: usize,
     pub step_count: usize,
     chord_usage: Vec<u16>,
     tabu_queue: Vec<usize>,
-    old_colors_buf: Vec<LinearRgbColor>,
 }
 
 impl GreedySolver {
-    /// Inicializa um novo solver guloso com buffers pré-alocados para a matriz CSR dada.
     pub fn new(config: GreedyConfig, chord_count: usize) -> Self {
         let current_pin = config.start_pin;
         let tabu_cap = config.tabu_history_size;
@@ -88,38 +98,37 @@ impl GreedySolver {
             step_count: 0,
             chord_usage: vec![0; chord_count],
             tabu_queue: Vec::with_capacity(tabu_cap),
-            old_colors_buf: Vec::with_capacity(1024),
         }
     }
 
-    /// Reinicia o solver mantendo a memória alocada nos buffers.
     pub fn reset(&mut self, start_pin: usize) {
         self.current_pin = start_pin;
         self.step_count = 0;
         self.chord_usage.fill(0);
         self.tabu_queue.clear();
-        self.old_colors_buf.clear();
     }
 
-    /// Retorna o número de vezes que a corda de índice canônico $k$ foi utilizada.
     #[inline]
     pub fn chord_usage(&self, chord_idx: usize) -> u16 {
         self.chord_usage.get(chord_idx).copied().unwrap_or(0)
     }
 
-    /// Retorna uma referência imutável a todo o vetor de contagem de uso de cordas.
     #[inline]
     pub fn all_chord_usages(&self) -> &[u16] {
         &self.chord_usage
     }
 
-    /// Verifica se um pino está na lista Tabu recente.
+    /// Acesso mutável às contagens de uso (usado pelo passe de refinamento).
+    #[inline]
+    pub fn chord_usage_mut(&mut self) -> &mut [u16] {
+        &mut self.chord_usage
+    }
+
     #[inline]
     pub fn is_tabu(&self, pin: usize) -> bool {
         self.tabu_queue.contains(&pin)
     }
 
-    /// Registra um pino na fila Tabu FIFO.
     fn push_tabu(&mut self, pin: usize) {
         if self.config.tabu_history_size == 0 {
             return;
@@ -130,13 +139,7 @@ impl GreedySolver {
         self.tabu_queue.push(pin);
     }
 
-    /// Avalia todos os pinos candidatos $p_{\text{prox}}$ a partir de `current_pin`
-    /// para cada carretel permitido pelo `SpoolScheduler` e seleciona o melhor acorde.
-    ///
-    /// Aplica desempate estritamente determinístico:
-    /// - Maior score;
-    /// - Em caso de empate: menor índice de pino `to_pin`;
-    /// - Em caso de novo empate: menor índice `spool_id`.
+    /// Avalia todas as cordas a partir de `current_pin` e retorna a melhor com ganho positivo.
     pub fn find_best_chord(
         &self,
         canvas: &CanvasStateSoA,
@@ -144,108 +147,64 @@ impl GreedySolver {
         evaluator: &OpticalModelEvaluator,
         scheduler: &SpoolScheduler,
         spools: &[SpoolColor],
-        alpha_eff: f32,
+        coverage: f32,
     ) -> Option<GreedyChordCandidate> {
         let pin_count = matrix.pin_count;
         if pin_count < 2 {
             return None;
         }
-
-        let allowed_spool_ids = scheduler.allowed_spools(spools);
-        if allowed_spool_ids.is_empty() {
+        let allowed = scheduler.allowed_spools(spools);
+        if allowed.is_empty() {
             return None;
         }
 
-        let mut best: Option<GreedyChordCandidate> = None;
         let gamma = self.config.length_exponent_gamma;
-        let max_repeats = self.config.max_chord_repeats;
+        let max_repeats = self.config.max_chord_repeats.max(1);
+        let mut best: Option<GreedyChordCandidate> = None;
 
         for next_pin in 0..pin_count {
-            if next_pin == self.current_pin {
+            if next_pin == self.current_pin || self.is_tabu(next_pin) {
                 continue;
             }
-
-            if self.is_tabu(next_pin) {
-                continue;
-            }
-
-            let chord_idx = match SparseChordMatrixCSR::try_canonical_chord_index(
+            let Some(chord_idx) = SparseChordMatrixCSR::try_canonical_chord_index(
                 self.current_pin,
                 next_pin,
                 pin_count,
-            ) {
-                Some(idx) => idx,
-                None => continue,
+            ) else {
+                continue;
             };
-
             if (self.chord_usage[chord_idx] as usize) >= max_repeats {
                 continue;
             }
-
-            let (pixel_indices, subpixel_weights) = matrix.chord_slice(chord_idx);
-            if pixel_indices.is_empty() {
+            let (pixels, weights) = matrix.chord_slice(chord_idx);
+            if pixels.is_empty() {
                 continue;
             }
+            let len = chord_coverage_length(weights);
+            let len_factor = if gamma == 0.0 { 1.0 } else { len.powf(gamma) };
 
-            // Usa a integral de cobertura sub-pixel real da corda em vez de pixel_indices.len(),
-            // eliminando o viés geométrico de 41% entre linhas verticais e diagonais em Xiaolin Wu!
-            let weight_sum: u32 = subpixel_weights.iter().map(|&w| w as u32).sum();
-            let chord_len = ((weight_sum as f32) * (1.0 / 255.0)).max(1.0);
-            let len_factor = if gamma == 1.0 {
-                chord_len
-            } else if gamma == 0.0 {
-                1.0
-            } else {
-                chord_len.powf(gamma).max(1e-5)
-            };
-
-            for &spool_id in &allowed_spool_ids {
-                let spool = match spools.iter().find(|s| s.id == spool_id) {
-                    Some(s) => s,
-                    None => continue,
+            for &spool_id in &allowed {
+                let Some(spool) = spools.iter().find(|s| s.id == spool_id) else {
+                    continue;
                 };
-
-                let raw_gain = evaluator.chord_marginal_gain(
-                    canvas,
-                    pixel_indices,
-                    subpixel_weights,
-                    spool,
-                    alpha_eff,
-                );
-
-                // Apenas cordas que efetivamente reduzem o erro óptico são candidatas válidas
+                let raw_gain =
+                    evaluator.chord_marginal_gain(canvas, pixels, weights, spool, coverage);
                 if raw_gain <= 0.0 {
                     continue;
                 }
-
-                let penalty = scheduler.switch_penalty(spool.id);
-                let score = (raw_gain / len_factor) - penalty;
-
+                let score = raw_gain / len_factor - scheduler.switch_penalty(spool.id);
                 if score <= 0.0 {
                     continue;
                 }
-
-                let is_better = match &best {
+                let better = match &best {
                     None => true,
                     Some(b) => {
-                        if score > b.score {
-                            true
-                        } else if (score - b.score).abs() <= 1e-7 {
-                            // Desempate determinístico (RNF-02)
-                            if next_pin < b.to_pin {
-                                true
-                            } else if next_pin == b.to_pin {
-                                spool.id < b.spool_id
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
+                        score > b.score
+                            || ((score - b.score).abs() <= 1e-9
+                                && (next_pin, spool.id) < (b.to_pin, b.spool_id))
                     }
                 };
-
-                if is_better {
+                if better {
                     best = Some(GreedyChordCandidate {
                         from_pin: self.current_pin,
                         to_pin: next_pin,
@@ -257,77 +216,42 @@ impl GreedySolver {
                 }
             }
         }
-
         best
     }
 
-    /// Executa um único passo de tecelagem gulosa:
-    /// 1. Seleciona a melhor corda candidata determinística;
-    /// 2. Salva as cores antigas no buffer reusável sem alocações;
-    /// 3. Aplica a corda sobre `canvas`;
-    /// 4. Atualiza incrementalmente o `tracker` em tempo $O(|L|)$;
-    /// 5. Avança o `scheduler` e aplica reforço dinâmico de bordas se necessário;
-    /// 6. Atualiza uso de cordas, pino atual e fila tabu;
-    /// 7. Retorna o registro do passo.
+    /// Executa um passo: escolhe, aplica e registra a melhor corda.
     pub fn step(
         &mut self,
         canvas: &mut CanvasStateSoA,
-        tracker: &mut IncrementalMetricsTracker,
         scheduler: &mut SpoolScheduler,
         matrix: &SparseChordMatrixCSR,
         evaluator: &OpticalModelEvaluator,
         spools: &[SpoolColor],
-        alpha_eff: f32,
+        coverage: f32,
     ) -> Option<GreedyStepRecord> {
-        let candidate = self.find_best_chord(canvas, matrix, evaluator, scheduler, spools, alpha_eff)?;
-
-        let (pixel_indices, subpixel_weights) = matrix.chord_slice(candidate.chord_idx);
-        let spool = spools
-            .iter()
-            .find(|s| s.id == candidate.spool_id)
-            .expect("Spool must exist");
-
-        // 1. Coleta cores antigas para atualização incremental de telemetria O(|L|)
-        self.old_colors_buf.clear();
-        for &p in pixel_indices {
-            self.old_colors_buf.push(canvas.current_color(p as usize));
+        if self.step_count >= self.config.max_steps {
+            return None;
         }
-
-        // 2. Aplica a corda in-place no CanvasStateSoA
-        evaluator.apply_chord(canvas, pixel_indices, subpixel_weights, spool, alpha_eff);
-
-        // 3. Notifica o tracker incremental
-        tracker.update_pixels(canvas, pixel_indices, &self.old_colors_buf);
-
-        // 4. Avança o agendador de carretéis
+        let cand = self.find_best_chord(canvas, matrix, evaluator, scheduler, spools, coverage)?;
+        let spool = spools.iter().find(|s| s.id == cand.spool_id)?;
+        let (pixels, weights) = matrix.chord_slice(cand.chord_idx);
+        evaluator.apply_chord(canvas, pixels, weights, spool, coverage);
         scheduler.advance_step(spool.id, spools);
-        // Aplica o boost de bordas apenas UMA única vez na transição de época (evita 250.000 cópias por linha!)
-        if self.step_count % 250 == 0 {
-            let edge_boost = scheduler.active_edge_boost();
-            if edge_boost > 0.0 {
-                canvas.apply_edge_importance_boost(edge_boost);
-            }
-        }
 
-        // 5. Atualiza estado do solver
-        self.chord_usage[candidate.chord_idx] += 1;
+        self.chord_usage[cand.chord_idx] += 1;
         let from = self.current_pin;
-        let to = candidate.to_pin;
         self.push_tabu(from);
-        self.current_pin = to;
+        self.current_pin = cand.to_pin;
         self.step_count += 1;
-
-        let score_norm = ((candidate.score.max(0.0) / (candidate.score.max(0.0) + 1.0)) * 65535.0)
-            .clamp(0.0, 65535.0) as u16;
 
         Some(GreedyStepRecord {
             from_pin: from as u16,
-            to_pin: to as u16,
-            spool_id: candidate.spool_id,
+            to_pin: cand.to_pin as u16,
+            spool_id: cand.spool_id,
             departure_winding: PegSide::Clockwise,
             arrival_winding: PegSide::Clockwise,
-            gain: candidate.raw_gain,
-            score_normalized: score_norm,
+            gain: cand.raw_gain,
+            score_normalized: normalize_score(cand.score),
         })
     }
 }
@@ -335,212 +259,112 @@ impl GreedySolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weaver_domain::{
-        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels,
-        RasterizerType,
-    };
     use crate::optical_models::OpticalMixModelType;
     use crate::spool_scheduler::SpoolSwitchStrategy;
+    use weaver_domain::{
+        linear_to_srgb_channel, ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec,
+        Pixels, RasterizerType,
+    };
 
-    fn setup_test_environment(
-        pin_count: usize,
-        res: u32,
-    ) -> (
-        LoomGeometry,
-        SparseChordMatrixCSR,
-        CanvasStateSoA,
-        IncrementalMetricsTracker,
-        OpticalModelEvaluator,
-        SpoolScheduler,
-        Vec<SpoolColor>,
-    ) {
-        let spec = LoomPhysicalSpec::circle(
-            200.0,
-            pin_count,
-            2.0,
-            1.5,
-            10.0,
+    fn setup(target_value: f32) -> (SparseChordMatrixCSR, CanvasStateSoA) {
+        let res = 64u32;
+        let loom = LoomGeometry::new(LoomPhysicalSpec::circle(400.0, 40, 2.0, 2.0, 10.0));
+        let matrix = SparseChordMatrixCSR::build(
+            &loom,
+            Pixels(res),
+            4,
+            RasterizerType::XiaolinWuAntialiased,
         );
-        let loom = LoomGeometry::new(spec);
-        let matrix = SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
+        let n = (res * res) as usize;
+        let target: Vec<LinearRgbColor> = (0..n)
+            .map(|i| {
+                let x = (i as u32 % res) as f32 / res as f32;
+                let v = if x < 0.5 { target_value } else { 1.0 };
+                LinearRgbColor::new(v, v, v)
+            })
+            .collect();
+        let canvas = CanvasStateSoA::from_target_and_background(
+            res,
+            res,
+            &target,
+            LinearRgbColor::WHITE,
+            None,
+        );
+        (matrix, canvas)
+    }
 
-        // Canvas com fundo branco e alvo com círculo escuro no centro
-        let bg = LinearRgbColor::WHITE;
-        let mut target = vec![bg; (res * res) as usize];
-        let center = (res as f32 - 1.0) * 0.5;
-        let radius = res as f32 * 0.35;
-        for y in 0..res {
-            for x in 0..res {
-                let dx = x as f32 - center;
-                let dy = y as f32 - center;
-                if (dx * dx + dy * dy).sqrt() <= radius {
-                    target[(y * res + x) as usize] = LinearRgbColor::new(0.1, 0.1, 0.1);
-                }
-            }
-        }
+    fn error(c: &CanvasStateSoA) -> f32 {
+        (0..c.num_pixels)
+            .map(|p| {
+                let d = linear_to_srgb_channel(c.current_c0[p])
+                    - linear_to_srgb_channel(c.target_c0[p]);
+                d * d
+            })
+            .sum()
+    }
 
-        let canvas = CanvasStateSoA::from_target_and_background(res, res, &target, bg, None);
-        let tracker = IncrementalMetricsTracker::new(&canvas);
-        let evaluator = OpticalModelEvaluator::new(
+    fn evaluator() -> OpticalModelEvaluator {
+        OpticalModelEvaluator::new(
             OpticalMixModelType::PorterDuffOcclusion,
-            ColorErrorMetric::LinearRgb,
-        );
-        let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 100, 0);
-        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.3)];
-
-        (loom, matrix, canvas, tracker, evaluator, scheduler, spools)
+            ColorErrorMetric::CielabDeltaE2000,
+        )
+        .with_luma_only(true)
     }
 
     #[test]
-    fn test_greedy_solver_monotonic_improvement() {
-        let (_loom, matrix, mut canvas, mut tracker, evaluator, mut scheduler, spools) =
-            setup_test_environment(32, 64);
-
-        let config = GreedyConfig {
-            max_steps: 20,
+    fn every_step_strictly_reduces_perceptual_error() {
+        let (matrix, mut canvas) = setup(0.1);
+        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
+        let mut sched = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 200, 0);
+        let cfg = GreedyConfig {
+            max_steps: 200,
             max_chord_repeats: 2,
-            length_exponent_gamma: 1.0,
-            start_pin: 0,
-            tabu_history_size: 0,
+            ..Default::default()
         };
-
-        let mut solver = GreedySolver::new(config, matrix.chord_count());
-        let initial_metrics = tracker.current_snapshot();
-
-        let mut steps_taken = 0;
-        for _ in 0..15 {
-            if let Some(step) = solver.step(
-                &mut canvas,
-                &mut tracker,
-                &mut scheduler,
-                &matrix,
-                &evaluator,
-                &spools,
-                0.2,
-            ) {
-                assert!(step.gain > 0.0, "Ganho deve ser estritamente positivo");
-                steps_taken += 1;
-            } else {
-                break;
-            }
+        let mut solver = GreedySolver::new(cfg, matrix.chord_count());
+        let eval = evaluator();
+        let mut prev = error(&canvas);
+        let mut steps = 0;
+        while let Some(rec) = solver.step(&mut canvas, &mut sched, &matrix, &eval, &spools, 0.3) {
+            assert!(rec.gain > 0.0);
+            let e = error(&canvas);
+            assert!(e < prev + 1e-4, "erro subiu: {prev} -> {e}");
+            prev = e;
+            steps += 1;
         }
-
-        assert!(steps_taken >= 10, "Deve executar pelo menos 10 passos");
-        let final_metrics = tracker.current_snapshot();
-        assert!(
-            final_metrics.delta_e < initial_metrics.delta_e,
-            "DeltaE deve diminuir: inicial {} vs final {}",
-            initial_metrics.delta_e,
-            final_metrics.delta_e
-        );
-        assert!(
-            final_metrics.rmse < initial_metrics.rmse,
-            "RMSE deve diminuir: inicial {} vs final {}",
-            initial_metrics.rmse,
-            final_metrics.rmse
-        );
+        assert!(steps > 10);
+        assert!(solver.all_chord_usages().iter().all(|&u| u <= 2));
     }
 
     #[test]
-    fn test_greedy_tie_breaking_determinism() {
-        let (_loom, matrix, canvas, _tracker, evaluator, scheduler, spools) =
-            setup_test_environment(16, 40);
-
-        let config = GreedyConfig {
-            max_steps: 10,
-            max_chord_repeats: 1,
-            length_exponent_gamma: 1.0,
-            start_pin: 0,
-            tabu_history_size: 0,
-        };
-
-        let solver1 = GreedySolver::new(config.clone(), matrix.chord_count());
-        let solver2 = GreedySolver::new(config, matrix.chord_count());
-
-        let cand1 = solver1.find_best_chord(&canvas, &matrix, &evaluator, &scheduler, &spools, 0.2);
-        let cand2 = solver2.find_best_chord(&canvas, &matrix, &evaluator, &scheduler, &spools, 0.2);
-
-        assert_eq!(cand1, cand2, "Resultados devem ser 100% idênticos e determinísticos");
+    fn white_target_produces_no_chords() {
+        let (matrix, mut canvas) = setup(1.0);
+        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
+        let mut sched = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 50, 0);
+        let mut solver = GreedySolver::new(GreedyConfig::default(), matrix.chord_count());
+        let r = solver.step(&mut canvas, &mut sched, &matrix, &evaluator(), &spools, 0.3);
+        assert!(r.is_none());
     }
 
     #[test]
-    fn test_greedy_max_chord_repeats_respected() {
-        let (_loom, matrix, mut canvas, mut tracker, evaluator, mut scheduler, spools) =
-            setup_test_environment(16, 40);
-
-        let max_repeats = 2;
-        let config = GreedyConfig {
-            max_steps: 30,
-            max_chord_repeats: max_repeats,
-            length_exponent_gamma: 0.0,
-            start_pin: 0,
-            tabu_history_size: 0,
-        };
-
-        let mut solver = GreedySolver::new(config, matrix.chord_count());
-
-        for _ in 0..25 {
-            if solver
-                .step(
-                    &mut canvas,
-                    &mut tracker,
-                    &mut scheduler,
-                    &matrix,
-                    &evaluator,
-                    &spools,
-                    0.2,
-                )
-                .is_none()
-            {
-                break;
+    fn solver_is_deterministic() {
+        let run = || {
+            let (matrix, mut canvas) = setup(0.2);
+            let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
+            let mut sched = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 60, 0);
+            let cfg = GreedyConfig {
+                max_steps: 60,
+                tabu_history_size: 4,
+                ..Default::default()
+            };
+            let mut solver = GreedySolver::new(cfg, matrix.chord_count());
+            let eval = evaluator();
+            let mut path = Vec::new();
+            while let Some(r) = solver.step(&mut canvas, &mut sched, &matrix, &eval, &spools, 0.3) {
+                path.push((r.from_pin, r.to_pin));
             }
-        }
-
-        for &usage in solver.all_chord_usages() {
-            assert!(
-                (usage as usize) <= max_repeats,
-                "Nenhuma corda pode ultrapassar max_chord_repeats"
-            );
-        }
-    }
-
-    #[test]
-    fn test_greedy_coarse_to_fine_cmyk() {
-        let (_loom, matrix, mut canvas, mut tracker, evaluator, _, _) =
-            setup_test_environment(32, 64);
-        let spools = vec![
-            SpoolColor::new(0, LinearRgbColor::new(1.0, 1.0, 0.0), 0.25),
-            SpoolColor::new(1, LinearRgbColor::new(1.0, 0.0, 1.0), 0.25),
-            SpoolColor::new(2, LinearRgbColor::new(0.0, 1.0, 1.0), 0.25),
-            SpoolColor::new(3, LinearRgbColor::BLACK, 0.35),
-        ];
-        let strat = SpoolSwitchStrategy::CoarseToFineEpochs {
-            base_ratio: 0.50,
-            refine_ratio: 0.35,
-            detail_top_ratio: 0.15,
-            black_spool_id: 3,
-            white_spool_id: None,
-            edge_importance_boost: 2.0,
+            path
         };
-        let mut scheduler = SpoolScheduler::new(strat, 100, 0);
-        let config = GreedyConfig {
-            max_steps: 100,
-            max_chord_repeats: 3,
-            length_exponent_gamma: 1.0,
-            start_pin: 0,
-            tabu_history_size: 0,
-        };
-        let mut solver = GreedySolver::new(config, matrix.chord_count());
-        let mut steps_taken = 0;
-        for _ in 0..10 {
-            if let Some(_step) = solver.step(&mut canvas, &mut tracker, &mut scheduler, &matrix, &evaluator, &spools, 0.2) {
-                steps_taken += 1;
-            } else {
-                break;
-            }
-        }
-        println!("Steps taken: {}", steps_taken);
-        assert!(steps_taken > 0, "Deveria ter executado passos!");
+        assert_eq!(run(), run());
     }
 }
-

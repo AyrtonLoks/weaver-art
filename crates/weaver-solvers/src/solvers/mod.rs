@@ -8,11 +8,13 @@
 pub mod beam_search;
 pub mod global_fista;
 pub mod greedy;
+pub mod refine;
 
 pub use beam_search::{BeamMove, BeamSearchConfig, BeamSearchSolver, BeamStepRecord};
 pub use global_fista::{
-    estimate_lipschitz_constant, matrix_free_adjoint, matrix_free_forward,
-    quantize_chord_weights, route_eulerian_continuous_path, solve_fista_channel,
-    FistaStepRecord, GlobalFistaConfig, GlobalFistaSolver,
+    estimate_lipschitz_constant, matrix_free_adjoint, matrix_free_forward, quantize_chord_weights,
+    route_eulerian_continuous_path, solve_fista_channel, FistaStepRecord, GlobalFistaConfig,
+    GlobalFistaSolver,
 };
 pub use greedy::{GreedyChordCandidate, GreedyConfig, GreedySolver, GreedyStepRecord};
+pub use refine::{PathRefiner, RefineConfig};

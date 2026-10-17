@@ -10,7 +10,7 @@ flowchart LR
     decode["sharp: decodifica + EXIF"]
   end
   subgraph web["@weaver-art/web (navegador)"]
-    framing["Smart Face Framing (zoom/pan circular 80%)"]
+    framing["Enquadramento pelo rosto (Viola-Jones Wasm, rosto = 95% do aro)"]
     bitmap["createImageBitmap + canvas"] --> framing --> worker["Web Worker"]
   end
   photo --> bitmap
@@ -125,3 +125,52 @@ Vitest roda os testes de `packages/*/test` com imagens sintéticas (sem binário
   múltiplos fios e modelo de meio-tom óptico;
 - exportadores: SVG, CSV, JSON, TXT, gerador PDF 1.4 com offsets xref válidos, gabaritos de furação e G-code;
 - parsers e sincronização: importação/exportação CSV de pinos, códigos curtos de progresso e reconciliação.
+
+## Arquitetura do Sistema e Contratos de Integração
+
+### 1. Estrutura de Camadas (Clean Architecture)
+
+O monorepo é dividido estritamente entre o **Core Matemático em Rust (`crates/*`)** e a **Aplicação Web em TypeScript (`apps/web/src/*`)**:
+
+1. **Camada 1 — Domínio Puro (`crates/weaver-domain`):**
+   - `geometry/`: `LoomGeometry` polimórfico (Pino 0 sempre em $-\pi/2$), diagnóstico de furação (`drilling.rs`) e tangentes de pinos cilíndricos (`tangents.rs`).
+   - `color/`: Conversões exatas `SrgbColor` $\leftrightarrow$ `LinearRgbColor` $\leftrightarrow$ `LabColor`, métricas $\Delta E$ e projeção de _Gamut_ convexo.
+   - `matrix/`: `SparseChordMatrixCSR` (`chord_offsets`, `pixel_indices`, `pixel_weights`) e rasterizadores de Bresenham e Xiaolin Wu.
+   - _Regra:_ Zero dependências de outros crates internos ou de navegador.
+
+2. **Camada 2 — Motores de Aplicação (`crates/weaver-dsp`, `crates/weaver-solvers`, `crates/weaver-cam`):**
+   - `weaver-dsp`: Enquadramento afim (`framing.rs`, alvos `FramingTarget::Face` / `HeadAndShoulders`), detector de rostos Viola-Jones em Rust puro (`face_framing.rs` + tabelas geradas da cascata frontal do OpenCV em `haar_frontalface.rs`, licença Intel/BSD), CLAHE (`contrast.rs`), Morfologia (`morphology.rs`), Sobel/Canny (`edges.rs`), Mapa de Importância e mapa opcional de feições escuras (`importance.rs`) e Transformada de Radon (`radon.rs`).
+   - `weaver-solvers`: Matriz de estado _Struct-of-Arrays_ (`state_matrix.rs`), modelos ópticos (`optical_models.rs`), agendador de carretéis (`spool_scheduler.rs`), métricas incrementais $O(\vert{}L\vert{})$ (`telemetry_metrics.rs`) e solvers (`greedy.rs`, `beam_search.rs`, `global_fista.rs`).
+   - `weaver-cam`: Paginador 1:1 de folhas A4/A3 (`blueprint_tiler.rs`), gerador PDF vetorial (`pdf.rs`), exportador CSV (`csv_exporter.rs`), G-Code CNC (`gcode_exporter.rs`), calculadora BOM (`bom_calculator.rs`) e codec de retomada (`resume_codec.rs`).
+
+3. **Camada 3 — Adaptador WebAssembly (`crates/weaver-wasm-adapter`):**
+   - Exposto via `wasm-bindgen` para o Web Worker (`solver.worker.ts`), lendo e escrevendo diretamente no `SharedArrayBuffer`.
+
+4. **Camada 4 — Frontend e Visualização (`apps/web/src/`):**
+   - `domain-contracts/`: Contratos TypeScript e utilitários geométricos leves (`core-helpers.ts`).
+   - `core-bridge/`: `WeaverEngineClient`, `SharedWorkspaceMemory` e `solver.worker.ts`.
+   - `preset-engine/`: `ReactivePresetStore` (gerencia presets e visibilidade contextual sem tocar no `framing` do usuário).
+   - `renderer-webgl/`: `WebGLLoomRenderer` (pipeline de 2 estágios em `RGBA16F` com inversão correta de $Y$).
+   - `views/`: `studio-view`, `blueprint-view` (CAD mecânico com Nível de Detalhe / LOD dinâmico) e `player-view` (Modo Tecelagem com TTS e QR Code).
+
+---
+
+### 2. Layout Binário do `SharedArrayBuffer` (ADR-003)
+
+- **Bytes `0..31` (`Int32Array[0..7]`):**
+  - `[0]`: `StatusFlag` (`0=IDLE, 1=RUNNING, 2=PAUSED, 3=DONE, 4=ABORT`)
+  - `[1]`: `CurrentStepIndex` ($0 \dots K_{\max}$)
+  - `[2]`: `ActiveSpoolIndex` ($0 \dots M-1$)
+  - `[3]`: `TotalSpoolSwitches`
+- **Bytes `32..127` (`Float32Array[0..23]`):**
+  - `[0]`: `CurrentRMSE`
+  - `[1]`: `CurrentDeltaE`
+  - `[2]`: `CurrentSSIM`
+  - `[3]`: `TotalThreadMeters`
+  - `[4..19]`: `ThreadMetersPerSpool[0..15]`
+- **Bytes `128..EOF` (`WeavingPathBuffer`, 8 bytes por passo):**
+  - `bytes 0..1`: `from_pin: u16` (Little Endian)
+  - `bytes 2..3`: `to_pin: u16` (Little Endian)
+  - `byte 4`: `spool_id: u8`
+  - `byte 5`: `winding_flags: u8` (bit 0 = departure CCW, bit 1 = arrival CCW)
+  - `bytes 6..7`: `score_normalized: u16`

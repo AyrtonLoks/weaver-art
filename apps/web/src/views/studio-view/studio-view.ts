@@ -18,6 +18,15 @@
 export type TargetInspectionStage = 'prepared' | 'importance' | 'edges' | 'radon' | 'residual';
 export type BrushInteractionMode = 'boost' | 'reduce';
 
+/** Resultado do enquadramento automático (zoom/pan do recorte + rostos detectados). */
+export interface SmartFrameOutcome {
+  zoom: number;
+  panXPercent: number;
+  panYPercent: number;
+  faceCount?: number;
+  faceIndex?: number;
+}
+
 export interface DiagnosticBuffersPayload {
   preparedRgba?: ArrayBuffer | Uint8ClampedArray;
   importanceRgba?: ArrayBuffer | Uint8ClampedArray;
@@ -65,9 +74,10 @@ export class StudioViewManager {
   private cachedPreparedRgba: Uint8ClampedArray | null = null;
   private cachedSimRgba: Uint8ClampedArray | null = null;
 
-  // Listeners & Wasm Brush callback
+  // Listeners & Wasm Brush / SmartFraming callbacks
   private onFramingChange?: () => void;
   private onBrushApplyHandler?: (weights: Float32Array) => Promise<ArrayBuffer | void> | void;
+  private onSmartFrameHandler?: () => Promise<SmartFrameOutcome | null> | void;
   private brushApplyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(el: StudioFramingElements, onFramingChange?: () => void) {
@@ -137,6 +147,48 @@ export class StudioViewManager {
 
   public setBrushApplyHandler(handler: (weights: Float32Array) => Promise<ArrayBuffer | void> | void): void {
     this.onBrushApplyHandler = handler;
+  }
+
+  public setSmartFrameHandler(handler: () => Promise<SmartFrameOutcome | null> | void): void {
+    this.onSmartFrameHandler = handler;
+  }
+
+  /**
+   * Executa o enquadramento automático (rosto ou cabeça e ombros) e aplica
+   * zoom/pan aos sliders. Retorna o resultado aplicado ou `null`.
+   */
+  public async runSmartFrame(): Promise<SmartFrameOutcome | null> {
+    if (!this.onSmartFrameHandler) return null;
+    const btn = this.el.btnSmartFrame;
+    const originalLabel = btn?.dataset.label ?? btn?.textContent ?? '';
+    if (btn) {
+      btn.dataset.label = originalLabel;
+      btn.disabled = true;
+      btn.textContent = 'Detectando…';
+    }
+    try {
+      const res = await this.onSmartFrameHandler();
+      if (!res) return null;
+      const zoom = Math.max(0.5, Math.min(6, Number(res.zoom) || 1));
+      const panX = Math.round(Math.max(-200, Math.min(200, Number(res.panXPercent) || 0)));
+      const panY = Math.round(Math.max(-200, Math.min(200, Number(res.panYPercent) || 0)));
+      this.el.zoomInput.value = zoom.toFixed(2);
+      this.el.panXInput.value = String(panX);
+      this.el.panYInput.value = String(panY);
+      this.onFramingChange?.();
+      if (btn && (res.faceCount ?? 0) > 1) {
+        btn.textContent = `${originalLabel} (${(res.faceIndex ?? 0) + 1}/${res.faceCount})`;
+        return { ...res, zoom, panXPercent: panX, panYPercent: panY };
+      }
+      if (btn) btn.textContent = originalLabel;
+      return { ...res, zoom, panXPercent: panX, panYPercent: panY };
+    } catch (err) {
+      console.warn('[Weaver Art] Enquadramento automático falhou:', err);
+      if (btn) btn.textContent = originalLabel;
+      return null;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   public getManualBrushMask(): Float32Array | null {
@@ -414,10 +466,9 @@ export class StudioViewManager {
       const deltaPanX = (dx / rect.width) * (100 / zoom);
       const deltaPanY = (dy / rect.height) * (100 / zoom);
 
-      const newPanX = Math.round(Math.max(-100, Math.min(100, startPanX + deltaPanX)));
-      const newPanY = Math.round(Math.max(-100, Math.min(100, startPanY + deltaPanY)));
+      const newPanX = Math.round(Math.max(-200, Math.min(200, startPanX + deltaPanX)));
+      const newPanY = Math.round(Math.max(-200, Math.min(200, startPanY + deltaPanY)));
 
-      this.el.panXInput.mountValue?.(newPanX);
       this.el.panXInput.value = String(newPanX);
       this.el.panYInput.value = String(newPanY);
       this.onFramingChange?.();
@@ -453,7 +504,7 @@ export class StudioViewManager {
         e.preventDefault();
         const currentZoom = Number(this.el.zoomInput.value) || 1.0;
         const zoomDelta = e.deltaY < 0 ? 0.05 : -0.05;
-        const newZoom = Math.max(0.4, Math.min(4.0, currentZoom + zoomDelta));
+        const newZoom = Math.max(0.5, Math.min(6.0, currentZoom + zoomDelta));
         this.el.zoomInput.value = newZoom.toFixed(2);
         this.onFramingChange?.();
       },
@@ -468,13 +519,10 @@ export class StudioViewManager {
       });
     });
 
-    // Smart frame 80% (Petros Vrellis standard)
+    // Enquadramento automático pelo rosto (detector Viola-Jones no Wasm).
+    // Cliques repetidos alternam entre os rostos detectados (fotos com mais de uma pessoa).
     this.el.btnSmartFrame?.addEventListener('click', () => {
-      this.el.zoomInput.value = '1.25';
-      this.el.panYInput.value = '-6';
-      this.el.panXInput.value = '0';
-      if (this.el.rotationInput) this.el.rotationInput.value = '0';
-      this.onFramingChange?.();
+      this.runSmartFrame();
     });
 
     // Reset crop

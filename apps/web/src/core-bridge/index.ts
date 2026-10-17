@@ -5,9 +5,13 @@
 
 export * from './shared-memory-layout.js';
 export * from './engine-client.js';
-export type { ToSolverWorkerMessage, FromSolverWorkerMessage, CamExportType } from './solver.worker.js';
-
-export type { FromWorker, ToWorker } from '../protocol';
+export type {
+  ToSolverWorkerMessage,
+  FromSolverWorkerMessage,
+  CamExportType,
+  ToSolverWorkerMessage as ToWorker,
+  FromSolverWorkerMessage as FromWorker,
+} from './solver.worker.js';
 
 /** Lifecycle state of the asynchronous Wasm solver worker. */
 export type SolverLifecycleState = 'idle' | 'initializing' | 'running' | 'paused' | 'completed' | 'aborted' | 'error';

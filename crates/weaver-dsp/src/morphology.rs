@@ -163,12 +163,7 @@ pub fn closing(input: &[f32], width: u32, height: u32, se: &StructuringElement) 
 /// Operador derivado de Gradiente Morfológico: $\text{Dilatação} - \text{Erosão}$.
 ///
 /// Realça transições e contornos morfológicos de alta frequência.
-pub fn morph_gradient(
-    input: &[f32],
-    width: u32,
-    height: u32,
-    se: &StructuringElement,
-) -> Vec<f32> {
+pub fn morph_gradient(input: &[f32], width: u32, height: u32, se: &StructuringElement) -> Vec<f32> {
     let dilated = dilate(input, width, height, se);
     let eroded = erode(input, width, height, se);
 
@@ -254,4 +249,3 @@ mod tests {
         assert!(b_top[3 * w as usize + 3] < 1e-4);
     }
 }
-

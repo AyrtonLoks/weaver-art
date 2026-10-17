@@ -17,7 +17,6 @@ pub enum SpoolSwitchStrategy {
         detail_top_ratio: f32,
         black_spool_id: u8,
         white_spool_id: Option<u8>,
-        edge_importance_boost: f32,
     },
     SeparatedChannels {
         quotas: Vec<f32>,
@@ -107,12 +106,8 @@ impl SpoolScheduler {
                     spools,
                 );
                 if self.saturated_spools.contains(&target_spool_id) {
-                    // Se o carretel da época atual saturou, libera o Preto ou o próximo não-saturado
-                    if !self.saturated_spools.contains(black_spool_id) {
-                        vec![*black_spool_id]
-                    } else {
-                        vec![all_ids[0]]
-                    }
+                    // Avança para o próximo carretel na ordem das camadas (Y -> M -> C -> K)
+                    vec![all_ids[0]]
                 } else {
                     vec![target_spool_id]
                 }
@@ -139,26 +134,38 @@ impl SpoolScheduler {
     }
 
     /// Quando o carretel atual não possui mais cordas com ganho positivo,
-    /// avança o cursor de agendamento para o próximo bloco/cor sem encerrar o solver!
+    /// avança o cursor de agendamento para o próximo bloco/cor e transfere (rollover)
+    /// o saldo restante para a camada final Preta (K).
     pub fn skip_saturated_spool(&mut self, spools: &[SpoolColor]) -> bool {
         let current_allowed = self.allowed_spools(spools);
         if current_allowed.is_empty() {
             return false;
         }
-        for id in current_allowed {
-            if !self.saturated_spools.contains(&id) {
-                self.saturated_spools.push(id);
+        for id in &current_allowed {
+            if !self.saturated_spools.contains(id) {
+                self.saturated_spools.push(*id);
             }
         }
-        // Avança o cursor de época em 10% para destravar o próximo bloco
-        let jump = (self.max_steps / 10).max(1);
-        self.schedule_cursor = (self.schedule_cursor.max(self.current_step) + jump).min(self.max_steps);
-        // Se todos os carretéis saturaram, limpa para permitir tentativa em outra época ou encerra
+
+        // Avança o cursor até encontrar a janela do próximo carretel na sequência
+        let step_inc = (self.max_steps / 50).max(1);
+        let mut cursor = self.schedule_cursor.max(self.current_step);
+        while cursor < self.max_steps {
+            cursor = (cursor + step_inc).min(self.max_steps);
+            self.schedule_cursor = cursor;
+            let next_allowed = self.allowed_spools(spools);
+            if !next_allowed.is_empty() && next_allowed != current_allowed {
+                break;
+            }
+        }
+
         !self.allowed_spools(spools).is_empty()
     }
 
-    /// Calcula deterministicamente o carretel programado para a época atual.
-    /// Inclui o Preto (K) tanto na base tonal quanto no acabamento de nitidez no topo!
+    /// Calcula deterministicamente o carretel programado para a época atual,
+    /// respeitando a Invariante de Camadas Sequenciais (AGENTS.md Seção 2):
+    /// Cores luminosas primeiro (Amarelo -> Magenta -> Ciano) e Preto (K) por último
+    /// (com saldo dinâmico de rollover e época final de alta nitidez nas bordas faciais).
     fn compute_epoch_spool(
         step: usize,
         max_steps: usize,
@@ -178,22 +185,28 @@ impl SpoolScheduler {
             return black_spool_id;
         }
 
-        let progress = (step as f32) / (max_steps as f32).max(1.0);
+        let progress = ((step as f32) / (max_steps as f32).max(1.0)).clamp(0.0, 1.0);
 
-        // Cronograma Petros Vrellis para Retratos Policromáticos:
-        // 1. [0.00 .. 0.30]: Base Tonal Preta (constrói anatomia, olhos, cabelo e sombras base)
-        // 2. [0.30 .. 0.70]: Camadas Cromáticas (Y, M, C) apenas para matiz de pele e roupa
-        // 3. [0.70 .. 1.00]: Acabamento de Alta Nitidez em Preto (K) por cima para óculos, pupilas e contornos!
-        // 1. [0.00 .. 0.35]: Base Estrutural Preta (35%)
-        // 2. [0.35 .. 0.65]: Toque Cromático Suave Y, M, C (apenas 30% combinados, com UCR ativo!)
-        // 3. [0.65 .. 1.00]: Nitidez Final Preta no Topo (35% para óculos, pupilas e contornos!)
-        if progress < 0.35 {
-            black_spool_id
-        } else if progress < 0.65 {
-            let c_prog = (progress - 0.35) / 0.30;
+        // Cronograma Físico de Camadas Sequenciais (Padrão Petros Vrellis / CMYK):
+        // 1. [0.00 .. 0.58]: Camadas Cromáticas Luminosas (Amarelo 18% -> Magenta 20% -> Ciano 20%)
+        // 2. [0.58 .. 0.78]: Camada Preta Estrutural (20% K para sombras e volume anatômico)
+        // 3. [0.78 .. 1.00]: Camada Preta de Nitidez Facial (22% K com boost de bordas para olhos, óculos e boca)
+        let cmy_total_ratio = 0.58f32;
+        if progress < cmy_total_ratio {
             let n = chromatic.len();
-            let idx = ((c_prog * (n as f32)).floor() as usize).min(n - 1);
-            chromatic[idx]
+            if n == 3 {
+                if progress < 0.18 {
+                    chromatic[0] // Amarelo (Y)
+                } else if progress < 0.38 {
+                    chromatic[1] // Magenta (M)
+                } else {
+                    chromatic[2] // Ciano (C)
+                }
+            } else {
+                let c_prog = progress / cmy_total_ratio;
+                let idx = ((c_prog * (n as f32)).floor() as usize).min(n - 1);
+                chromatic[idx]
+            }
         } else {
             if let Some(w_id) = white_spool_id {
                 if progress >= 0.94 {
@@ -213,25 +226,6 @@ impl SpoolScheduler {
                 SpoolSwitchStrategy::HysteresisPenalty { penalty_lambda } => *penalty_lambda,
                 _ => 0.0,
             }
-        }
-    }
-
-    pub fn active_edge_boost(&self) -> f32 {
-        match &self.strategy {
-            SpoolSwitchStrategy::CoarseToFineEpochs {
-                base_ratio,
-                refine_ratio,
-                edge_importance_boost,
-                ..
-            } => {
-                let progress = (self.schedule_cursor.max(self.current_step) as f32) / (self.max_steps as f32);
-                if progress >= (*base_ratio + *refine_ratio) {
-                    *edge_importance_boost
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
         }
     }
 
@@ -261,16 +255,12 @@ impl SpoolScheduler {
             self.total_switches += 1;
             self.active_spool_id = chosen_spool_id;
             self.consecutive_steps = 1;
-            // Quando muda de cor com sucesso, reabilita carretéis anteriores para épocas futuras
-            self.saturated_spools.clear();
         } else {
             self.consecutive_steps += 1;
         }
 
         self.current_step += 1;
-        if self.schedule_cursor < self.current_step {
-            self.schedule_cursor = self.current_step;
-        }
+        self.schedule_cursor = (self.schedule_cursor + 1).max(self.current_step);
     }
 }
 
@@ -295,7 +285,6 @@ mod tests {
                 detail_top_ratio: 0.15,
                 black_spool_id: 3,
                 white_spool_id: None,
-                edge_importance_boost: 2.5,
             },
             6000,
             0,

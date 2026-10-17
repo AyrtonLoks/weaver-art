@@ -514,7 +514,9 @@ describe('Sprint 4 — Task 4.3: Vista Modo Tecelagem (PlayerView)', () => {
       // Step 1 -> Step 2 (thread changes from Yellow to Black)
       elements.next.click();
       expect(elements.spoolAlert?.hidden).toBe(false);
-      expect(elements.spoolAlertText?.textContent).toContain('Troca de Carretel: Amarre e finalize o fio Amarelo no pino 51 e inicie o carretel Preto.');
+      expect(elements.spoolAlertText?.textContent).toContain(
+        'Troca de Carretel: Amarre e finalize o fio Amarelo no pino 51 e inicie o carretel Preto.',
+      );
       // Auto timer should be automatically stopped and unchecked!
       expect(elements.auto.checked).toBe(false);
 
