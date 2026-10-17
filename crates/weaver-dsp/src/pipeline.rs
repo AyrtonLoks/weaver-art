@@ -8,8 +8,8 @@
 //!    brilho/contraste/gama do usuário e, se habilitados, CLAHE, nitidez (unsharp) e fusão de bordas;
 //! 4. Conversão **única** de volta para luz linear (alvo do solver).
 //!
-//! O mapa de importância é suave e limitado: $W = 1 + \beta_f M_{\text{face}} + \beta_e E$, com
-//! $M_{\text{face}}, E \in [0, 1]$ desfocados — logo $W \ge 1$ (exceto onde o pincel do usuário reduz).
+//! O mapa de importância é suave e limitado: $W = 1 + \beta_f M_{\text{face}} + \beta_e E + \beta_{ft} F$,
+//! com $M_{\text{face}}, E, F \in [0, 1]$ desfocados ($F$ = feições escuras pequenas) — logo $W \ge 1$ (exceto onde o pincel do usuário reduz).
 
 use weaver_domain::{linear_to_srgb_channel, srgb_to_linear_channel, LinearRgbColor, LoomGeometry};
 
@@ -24,7 +24,7 @@ use crate::framing::{
     InterpolationMethod, LoomMask,
 };
 use crate::image::{GrayImage, ImageBuffer, Rgba8Image};
-use crate::importance::{compute_facial_saliency_map, ImportanceMap};
+use crate::importance::{compute_dark_feature_map, compute_facial_saliency_map, ImportanceMap};
 use crate::radon::{apply_ramp_filter, compute_radon_transform, RadonOptions, Sinogram};
 
 /// Configuração completa de execução do pipeline de pré-processamento DSP.
@@ -40,6 +40,10 @@ pub struct DspPipelineConfig {
     pub beta_face: f32,
     /// Peso das bordas no mapa de importância (0 = desligado).
     pub beta_edge: f32,
+    /// Peso das feições escuras pequenas (olhos, sobrancelhas, boca) no mapa de importância.
+    pub beta_feature: f32,
+    /// Clareia os meios-tons altos (pele) preservando os escuros, em [0, 1] (0 = desligado).
+    pub skin_lift: f32,
     /// Fusão de alta frequência: escurece bordas no alvo (0 = desligada).
     pub high_freq_blend: f32,
     /// Intensidade da máscara de nitidez (unsharp) no alvo (0 = desligada).
@@ -66,6 +70,8 @@ impl Default for DspPipelineConfig {
             canny: CannyConfig::default(),
             beta_face: 0.0,
             beta_edge: 0.0,
+            beta_feature: 0.0,
+            skin_lift: 0.0,
             high_freq_blend: 0.0,
             sharpen_amount: 0.0,
             sharpen_sigma: 1.2,
@@ -211,6 +217,13 @@ impl DspPipeline {
         if (self.config.gamma - 1.0).abs() > 1e-3 {
             apply_gamma_gray(&mut work, self.config.gamma);
         }
+        if self.config.skin_lift > 1e-4 {
+            let lift = self.config.skin_lift.clamp(0.0, 1.0);
+            for v in work.data.iter_mut() {
+                // Curva suave: não altera pretos (v ≤ 0,25) nem o branco; clareia a pele
+                *v = (*v + lift * 2.0 * *v * (1.0 - *v) * (*v - 0.25).max(0.0)).clamp(0.0, 1.0);
+            }
+        }
         if let Some(clahe_cfg) = &self.config.clahe {
             if clahe_cfg.clip_limit > 0.05 {
                 clahe_gray(&mut work, clahe_cfg);
@@ -290,6 +303,11 @@ impl DspPipeline {
         } else {
             None
         };
+        let feature_map = if self.config.beta_feature > 1e-6 {
+            Some(compute_dark_feature_map(&work, &framed_rgba))
+        } else {
+            None
+        };
         let mut importance_map = ImportanceMap::compose_auto(
             res,
             res,
@@ -298,6 +316,12 @@ impl DspPipeline {
             self.config.beta_face.max(0.0),
             self.config.beta_edge.max(0.0),
         );
+        if let Some(fm) = &feature_map {
+            let beta = self.config.beta_feature;
+            for (wt, f) in importance_map.weights.iter_mut().zip(&fm.data) {
+                *wt += beta * f;
+            }
+        }
         if let Some(brush) = user_brush_mask {
             importance_map.merge_user_brush(brush);
         }

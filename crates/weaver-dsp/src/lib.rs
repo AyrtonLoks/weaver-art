@@ -5,6 +5,10 @@
 
 pub mod contrast;
 pub mod edges;
+pub mod face_framing;
+#[rustfmt::skip]
+#[allow(clippy::all)]
+pub mod haar_frontalface;
 pub mod framing;
 pub mod image;
 pub mod importance;
@@ -20,13 +24,15 @@ pub use edges::{
     canny, compute_multiscale_saliency, edges_to_rgba, fuse_high_frequency, gaussian_blur_5x5,
     gaussian_blur_gray, sobel, CannyConfig, SobelResult,
 };
+pub use face_framing::{detect_face_region, detect_faces, face_framing_from_region, FaceRegion};
 pub use framing::{
     apply_affine_transform, compute_auto_framing, AutoFramingOptions, AutoFramingResult,
-    FramingConfig, InterpolationMethod, LoomMask,
+    FramingConfig, FramingTarget, InterpolationMethod, LoomMask,
 };
 pub use image::{GrayImage, ImageBuffer, RgbFloatImage, Rgba8Image};
 pub use importance::{
-    compute_facial_saliency_map, compute_skin_probability, BrushMergeMode, ImportanceMap,
+    compute_dark_feature_map, compute_facial_saliency_map, compute_skin_probability,
+    BrushMergeMode, ImportanceMap,
 };
 pub use morphology::{
     black_tophat, closing, closing_gray, dilate, erode, morph_gradient, opening, opening_gray,
@@ -366,6 +372,7 @@ mod tests {
         let options = AutoFramingOptions {
             target_ratio: 0.80,
             eye_line_offset_ratio: 0.08,
+            target: FramingTarget::HeadAndShoulders,
         };
 
         let result = compute_auto_framing(&rgba, &options);

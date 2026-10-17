@@ -187,6 +187,11 @@ impl MetricsTracker {
 
     /// Calcula todas as métricas para o estado atual da tela.
     pub fn compute(&self, state: &CanvasStateSoA) -> TelemetrySnapshot {
+        self.compute_masked(state, &self.mask)
+    }
+
+    /// Calcula as métricas apenas nos pixels de mask (ex.: região do rosto).
+    pub fn compute_masked(&self, state: &CanvasStateSoA, mask: &[bool]) -> TelemetrySnapshot {
         let (w, h, s) = (self.width, self.height, self.sigma_view);
         let n = w * h;
         let cr = gaussian_blur(&state.current_c0[..n], w, h, s);
@@ -200,7 +205,7 @@ impl MetricsTracker {
         let mut de = 0.0f64;
         let mut count = 0usize;
         for i in 0..n {
-            if !self.mask[i] {
+            if !mask[i] {
                 continue;
             }
             let d = (luma[i] - self.ref_luma_srgb_blur[i]) as f64;
@@ -212,7 +217,7 @@ impl MetricsTracker {
         }
         let count = count.max(1) as f64;
         TelemetrySnapshot {
-            ssim: ssim_masked(&luma, &self.ref_luma_srgb_blur, w, h, &self.mask),
+            ssim: ssim_masked(&luma, &self.ref_luma_srgb_blur, w, h, mask),
             rmse: (se / count).sqrt() as f32,
             delta_e: (de / count) as f32,
         }

@@ -20,30 +20,37 @@ export class WasmWeavingEngine {
         wasm.wasmweavingengine_apply_user_importance_brush(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * Auto-enquadramento. `mode`: `"face"` (rosto preenchendo o aro, padrão) ou `"head"`
+     * (cabeça e ombros). `target_ratio <= 0` usa o padrão do modo. `face_index` escolhe entre
+     * os rostos detectados (útil em fotos com mais de uma pessoa; o índice é circular).
      * @param {Uint8Array} raw_rgba
      * @param {number} width
      * @param {number} height
      * @param {number} target_ratio
+     * @param {string} mode
+     * @param {number} face_index
      * @returns {string}
      */
-    compute_smart_framing_wasm(raw_rgba, width, height, target_ratio) {
-        let deferred3_0;
-        let deferred3_1;
+    compute_smart_framing_wasm(raw_rgba, width, height, target_ratio, mode, face_index) {
+        let deferred4_0;
+        let deferred4_1;
         try {
             const ptr0 = passArray8ToWasm0(raw_rgba, wasm.__wbindgen_malloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.wasmweavingengine_compute_smart_framing_wasm(this.__wbg_ptr, ptr0, len0, width, height, target_ratio);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
+            const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.wasmweavingengine_compute_smart_framing_wasm(this.__wbg_ptr, ptr0, len0, width, height, target_ratio, ptr1, len1, face_index);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
             if (ret[3]) {
-                ptr2 = 0; len2 = 0;
+                ptr3 = 0; len3 = 0;
                 throw takeFromExternrefTable0(ret[2]);
             }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
         } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
         }
     }
     /**

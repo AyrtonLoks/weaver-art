@@ -13,8 +13,8 @@ use weaver_domain::{
     RasterizerType, SparseChordMatrixCSR, WindingDirection,
 };
 use weaver_dsp::{
-    compute_auto_framing, AutoFramingOptions, ClaheConfig, DspPipeline, DspPipelineConfig,
-    FramingConfig, ImportanceMap, Rgba8Image,
+    compute_auto_framing, detect_faces, face_framing_from_region, AutoFramingOptions, ClaheConfig,
+    DspPipeline, DspPipelineConfig, FramingConfig, FramingTarget, ImportanceMap, Rgba8Image,
 };
 use weaver_solvers::{
     compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig,
@@ -40,6 +40,12 @@ pub const CTRL_INT32_SOLVER_PHASE: usize = 5;
 /// Padrões calibrados no benchmark com foto real (weaver-cli bench).
 pub const DEFAULT_HIGHLIGHT_PROTECTION: f32 = 0.0;
 pub const DEFAULT_REFINE_PASSES: usize = 0;
+/// Realce de feições: sem ganho visível consistente nas fotos de teste → desligado por padrão.
+pub const DEFAULT_FEATURE_EMPHASIS: f32 = 0.0;
+/// Aro de bicicleta 28" (ISO 622 / 700C): diâmetro de assento do pneu.
+pub const DEFAULT_LOOM_DIAMETER_MM: f64 = 622.0;
+/// Fração do diâmetro ocupada pelo rosto no enquadramento automático.
+pub const DEFAULT_FACE_FILL: f32 = 0.95;
 
 pub const CTRL_FLOAT32_RMSE: usize = 0;
 pub const CTRL_FLOAT32_DELTA_E: usize = 1;
@@ -142,6 +148,12 @@ pub struct WasmWeaverConfig {
     /// Janela de pinos do refinamento (0 = todos os pinos).
     #[serde(default)]
     pub refine_window: usize,
+    /// Realce das feições escuras pequenas (olhos, sobrancelhas, boca) no mapa de importância.
+    #[serde(default = "default_feature_emphasis")]
+    pub feature_emphasis_weight: f32,
+    /// Clareia a pele (meios-tons altos) preservando os escuros, em `[0, 1]`.
+    #[serde(default)]
+    pub skin_lift: f32,
 
     #[serde(default)]
     pub framing: Option<WasmFramingConfig>,
@@ -156,7 +168,8 @@ fn default_pin_count() -> usize {
     200
 }
 fn default_diameter_mm() -> f64 {
-    600.0
+    // Aro de bicicleta 28" (ISO 622 / 700C)
+    DEFAULT_LOOM_DIAMETER_MM
 }
 fn default_polygon_sides() -> usize {
     6
@@ -224,6 +237,9 @@ fn default_highlight_protection() -> f32 {
 fn default_refine_passes() -> usize {
     DEFAULT_REFINE_PASSES
 }
+fn default_feature_emphasis() -> f32 {
+    DEFAULT_FEATURE_EMPHASIS
+}
 
 impl Default for WasmWeaverConfig {
     fn default() -> Self {
@@ -259,6 +275,8 @@ impl Default for WasmWeaverConfig {
             highlight_protection: default_highlight_protection(),
             refine_passes: default_refine_passes(),
             refine_window: 0,
+            feature_emphasis_weight: default_feature_emphasis(),
+            skin_lift: 0.0,
             framing: None,
             target_resolution: default_resolution(),
         }
@@ -386,6 +404,8 @@ impl WasmWeavingEngine {
         dsp_config.beta_edge = config.edge_blend_weight.max(0.0);
         dsp_config.high_freq_blend = 0.0;
         dsp_config.sharpen_amount = config.sharpen_amount.max(0.0);
+        dsp_config.beta_feature = config.feature_emphasis_weight.max(0.0);
+        dsp_config.skin_lift = config.skin_lift.clamp(0.0, 1.0);
         dsp_config.monochrome_target = config.palette_mode.eq_ignore_ascii_case("MONOCHROME");
         dsp_config.contrast = config.contrast;
         dsp_config.brightness = config.brightness;
@@ -699,12 +719,17 @@ impl WasmWeavingEngine {
         Ok(())
     }
 
+    /// Auto-enquadramento. `mode`: `"face"` (rosto preenchendo o aro, padrão) ou `"head"`
+    /// (cabeça e ombros). `target_ratio <= 0` usa o padrão do modo. `face_index` escolhe entre
+    /// os rostos detectados (útil em fotos com mais de uma pessoa; o índice é circular).
     pub fn compute_smart_framing_wasm(
         &self,
         raw_rgba: &[u8],
         width: u32,
         height: u32,
         target_ratio: f32,
+        mode: &str,
+        face_index: u32,
     ) -> Result<String, JsValue> {
         let expected_len = (width as usize) * (height as usize) * 4;
         if raw_rgba.len() != expected_len || width == 0 || height == 0 {
@@ -713,8 +738,39 @@ impl WasmWeavingEngine {
             ));
         }
         let img = Rgba8Image::new(width, height, 4, raw_rgba.to_vec());
+        let head = mode.eq_ignore_ascii_case("head");
+
+        if !head {
+            let faces = detect_faces(&img);
+            if !faces.is_empty() {
+                let idx = face_index as usize % faces.len();
+                let ratio = if target_ratio > 0.0 {
+                    target_ratio.clamp(0.5, 1.2)
+                } else {
+                    DEFAULT_FACE_FILL
+                };
+                let (zoom, pan_x, pan_y) =
+                    face_framing_from_region(&faces[idx], width, height, ratio);
+                let json = serde_json::json!({
+                    "zoom": zoom,
+                    "panXPercent": pan_x * 100.0,
+                    "panYPercent": pan_y * 100.0,
+                    "confidence": faces[idx].confidence,
+                    "mode": "face",
+                    "faceIndex": idx,
+                    "faceCount": faces.len(),
+                });
+                return Ok(json.to_string());
+            }
+        }
+
         let opts = AutoFramingOptions {
-            target_ratio: target_ratio.clamp(0.50, 0.92),
+            target_ratio: if target_ratio > 0.0 {
+                target_ratio.clamp(0.50, 0.92)
+            } else {
+                0.8
+            },
+            target: FramingTarget::HeadAndShoulders,
             ..AutoFramingOptions::default()
         };
         let res = compute_auto_framing(&img, &opts);
@@ -723,6 +779,9 @@ impl WasmWeavingEngine {
             "panXPercent": res.config.pan_x * 100.0,
             "panYPercent": res.config.pan_y * 100.0,
             "confidence": res.confidence,
+            "mode": "head",
+            "faceIndex": 0,
+            "faceCount": 0,
         });
         Ok(json.to_string())
     }

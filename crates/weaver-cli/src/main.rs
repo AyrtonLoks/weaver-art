@@ -76,9 +76,10 @@ mod bench;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("bench") {
-        bench::run(&args[2..]);
-        return;
+    match args.get(1).map(String::as_str) {
+        Some("bench") => return bench::run(&args[2..]),
+        Some("contact") => return bench::contact(&args[2..]),
+        _ => {}
     }
 
     println!("================================================================================");

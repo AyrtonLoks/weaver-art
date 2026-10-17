@@ -6,7 +6,7 @@
 //!
 //! Exemplo:
 //! ```text
-//! weaver-cli bench --image foto.jpg --pins 288 --lines 4000 --zoom 1.08 --pan-y 40 --out out/
+//! weaver-cli bench --image foto.jpg --framing face --lines 6000 --out out/
 //! ```
 
 use std::collections::HashMap;
@@ -17,7 +17,10 @@ use weaver_domain::{
     linear_to_srgb_channel, ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec,
     Millimeters, Pixels, RasterizerType, SparseChordMatrixCSR,
 };
-use weaver_dsp::{ClaheConfig, DspPipeline, DspPipelineConfig, FramingConfig, Rgba8Image};
+use weaver_dsp::{
+    detect_face_region, AutoFramingOptions, ClaheConfig, DspPipeline, DspPipelineConfig,
+    FramingConfig, FramingTarget, Rgba8Image,
+};
 use weaver_solvers::{
     compute_effective_alpha, gaussian_blur, inscribed_disc_mask, CanvasStateSoA, GreedyConfig,
     OpticalMixModelType, OpticalModelEvaluator, RefineConfig, SolverSession, SpoolColor,
@@ -88,7 +91,7 @@ pub fn run(raw: &[String]) {
     let image_path = a.s("image", "");
     if image_path.is_empty() {
         eprintln!(
-            "uso: weaver-cli bench --image <arquivo> [--pins 288] [--lines 4000] [--out dir] ..."
+            "uso: weaver-cli bench --image <arquivo> [--framing face|head|manual] [--pins 200] [--lines 6000] [--out dir] ..."
         );
         std::process::exit(2);
     }
@@ -103,10 +106,11 @@ pub fn run(raw: &[String]) {
     let src = Rgba8Image::new(iw, ih, 4, img.into_raw());
 
     let res = a.u("res", 500) as u32;
-    let pins = a.u("pins", 288);
-    let diameter = a.f("diameter", 600.0);
+    let pins = a.u("pins", 200);
+    // Aro de bicicleta 28" (ISO 622 / 700C): diâmetro de assento do pneu = 622 mm
+    let diameter = a.f("diameter", 622.0);
     let thread_mm = a.f("thread", 0.18);
-    let max_lines = a.u("lines", 4000);
+    let max_lines = a.u("lines", 6000);
     let repeats = a.u("repeats", 3);
     let min_gap = if a.0.contains_key("gap-exact") {
         a.u("gap-exact", 12)
@@ -137,12 +141,29 @@ pub fn run(raw: &[String]) {
         },
         beta_face: a.f("face", 2.0),
         beta_edge: a.f("edge", 0.0),
+        beta_feature: a.f("feat", 0.0),
+        skin_lift: a.f("tone", 0.0),
         high_freq_blend: a.f("hfb", 0.0),
         sharpen_amount: a.f("sharpen", 0.0),
         contrast: a.f("contrast", 1.0),
         gamma: a.f("gamma", 1.0),
         ..DspPipelineConfig::default()
     };
+    // Enquadramento: ace (padrão, rosto preenchendo o aro), head (cabeça e ombros) ou manual.
+    match a.s("framing", "face").as_str() {
+        "manual" => {}
+        mode => {
+            dsp_cfg.auto_framing = Some(AutoFramingOptions {
+                target_ratio: a.f("fill", if mode == "head" { 0.8 } else { 0.95 }),
+                target: if mode == "head" {
+                    FramingTarget::HeadAndShoulders
+                } else {
+                    FramingTarget::Face
+                },
+                ..AutoFramingOptions::default()
+            });
+        }
+    }
     let clahe = a.f("clahe", 0.0);
     if clahe > 0.0 {
         dsp_cfg.clahe = Some(ClaheConfig {
@@ -257,19 +278,38 @@ pub fn run(raw: &[String]) {
         .map(|r| (r.total_removed, r.total_moves))
         .unwrap_or((0, 0));
 
+    // Métricas só na região do rosto (detectado na foto já enquadrada)
+    let face_snap = dsp.framed_rgba().and_then(detect_face_region).map(|f| {
+        let (cx, cy) = f.center;
+        let (rx, ry) = (
+            (f.bbox[2] - f.bbox[0]) * 0.6,
+            (f.bbox[3] - f.bbox[1]) * 0.75,
+        );
+        let face_mask: Vec<bool> = (0..n)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) <= 1.0 && mask[i]
+            })
+            .collect();
+        session.tracker.compute_masked(&session.canvas, &face_mask)
+    });
+    let fr = dsp.config.framing;
+
     println!(
-        "{label:<28} linhas={:<5} (constr. {:<5}) t={:>6.1}s (constr. {:>5.1}s) | SSIM={:.4} RMSE={:.4} ΔE={:.2} corr={:.4} | brilho={:.3} (foto {:.3}) | refino: {moved} realoc., {removed} remoções",
+        "{label:<28} linhas={:<5} t={:>5.1}s | zoom={:.2} pan=({:.0}%,{:.0}%) | SSIM={:.4} corr={:.4} | ROSTO SSIM={} RMSE={} | brilho={:.3} (foto {:.3}) | refino: {moved}/{removed}",
         session.history_steps.len(),
-        construct_lines,
         secs,
-        construct_secs,
+        fr.zoom,
+        fr.pan_x * 100.0,
+        fr.pan_y * 100.0,
         snap.ssim,
-        snap.rmse,
-        snap.delta_e,
         corr_dist,
+        face_snap.map_or("-".into(), |s| format!("{:.4}", s.ssim)),
+        face_snap.map_or("-".into(), |s| format!("{:.4}", s.rmse)),
         mean(&lc),
         mean(&lr),
     );
+    let _ = (construct_lines, construct_secs, snap.rmse, snap.delta_e);
 
     save_png(
         &format!("{out_dir}/{label}_canvas.png"),
@@ -297,4 +337,66 @@ pub fn run(raw: &[String]) {
         res,
         &imp_rgb,
     );
+}
+
+/// `weaver-cli contact --out folha.png [--size 200] [--cols N] img1.png img2.png ...`
+///
+/// Monta uma folha de contato (grade) com as imagens reduzidas — é assim que a obra é vista
+/// à distância, e é a forma recomendada de comparar variantes visualmente.
+pub fn contact(raw: &[String]) {
+    let mut out = "contact.png".to_string();
+    let mut size = 200u32;
+    let mut cols = 0usize;
+    let mut inputs = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        match raw[i].as_str() {
+            "--out" => {
+                out = raw.get(i + 1).cloned().unwrap_or(out);
+                i += 1;
+            }
+            "--size" => {
+                size = raw.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(size);
+                i += 1;
+            }
+            "--cols" => {
+                cols = raw.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            path => inputs.push(path.to_string()),
+        }
+        i += 1;
+    }
+    if inputs.is_empty() {
+        eprintln!("uso: weaver-cli contact --out folha.png [--size 200] [--cols N] img1.png ...");
+        std::process::exit(2);
+    }
+    let gap = 8u32;
+    let cols = if cols == 0 {
+        inputs.len()
+    } else {
+        cols.min(inputs.len())
+    } as u32;
+    let rows = (inputs.len() as u32).div_ceil(cols);
+    let mut sheet = image::RgbImage::from_pixel(
+        gap + cols * (size + gap),
+        gap + rows * (size + gap),
+        image::Rgb([255, 255, 255]),
+    );
+    for (k, path) in inputs.iter().enumerate() {
+        let img = image::open(path).expect("imagem inválida").to_rgb8();
+        let thumb =
+            image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
+        let (cx, cy) = (k as u32 % cols, k as u32 / cols);
+        image::imageops::overlay(
+            &mut sheet,
+            &thumb,
+            (gap + cx * (size + gap)) as i64,
+            (gap + cy * (size + gap)) as i64,
+        );
+        println!("{}: {}", k + 1, path);
+    }
+    sheet
+        .save(&out)
+        .expect("falha ao salvar a folha de contato");
 }

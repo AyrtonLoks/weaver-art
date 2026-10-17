@@ -7,6 +7,7 @@
 use std::f32::consts::PI;
 use weaver_domain::{LoomGeometry, LoomGridMapping};
 
+use crate::face_framing::{detect_face_region, face_framing_from_region};
 use crate::image::{GrayImage, ImageBuffer, Rgba8Image};
 
 /// Método de interpolação sub-pixel para mapeamento afim de coordenadas.
@@ -80,6 +81,16 @@ impl LoomMask {
     }
 }
 
+/// O que o auto-enquadramento deve encaixar no aro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FramingTarget {
+    /// Rosto (testa → queixo) preenchendo o aro — padrão para retratos reconhecíveis.
+    Face,
+    /// Cabeça inteira e ombros (enquadramento mais aberto; feições menores).
+    #[default]
+    HeadAndShoulders,
+}
+
 /// Opções de configuração para o algoritmo de Auto-Enquadramento.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoFramingOptions {
@@ -87,6 +98,8 @@ pub struct AutoFramingOptions {
     pub target_ratio: f32,
     /// Deslocamento vertical para posicionar a linha dos olhos ligeiramente acima do centro geométrico (~terço superior).
     pub eye_line_offset_ratio: f32,
+    /// Rosto ou cabeça e ombros.
+    pub target: FramingTarget,
 }
 
 impl Default for AutoFramingOptions {
@@ -94,6 +107,7 @@ impl Default for AutoFramingOptions {
         Self {
             target_ratio: 0.80,
             eye_line_offset_ratio: 0.08,
+            target: FramingTarget::HeadAndShoulders,
         }
     }
 }
@@ -194,6 +208,24 @@ pub fn apply_affine_transform(
 /// Combina mapa de energia de alta frequência (gradiente de Sobel), probabilidade cromática de pele
 /// e prior composicional central para estimar o centroide da cabeça e proporção de 80%.
 pub fn compute_auto_framing(image: &Rgba8Image, options: &AutoFramingOptions) -> AutoFramingResult {
+    if options.target == FramingTarget::Face {
+        if let Some(region) = detect_face_region(image) {
+            let (zoom, pan_x, pan_y) =
+                face_framing_from_region(&region, image.width, image.height, options.target_ratio);
+            return AutoFramingResult {
+                config: FramingConfig {
+                    zoom,
+                    pan_x,
+                    pan_y,
+                    rotation_deg: 0.0,
+                },
+                face_bbox: region.bbox,
+                centroid: region.center,
+                confidence: region.confidence,
+            };
+        }
+        // Nenhum rosto frontal detectado (pintura estilizada, perfil): recai em cabeça e ombros.
+    }
     let gray = image.to_gray();
     let width = image.width;
     let height = image.height;
