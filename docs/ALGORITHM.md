@@ -1,7 +1,43 @@
 # Algoritmo
 
-Este documento descreve o modelo físico e matemático do Weaver Art. A implementação está em
-[`packages/core/src`](../packages/core/src).
+Este documento descreve o modelo físico e matemático do Weaver Art. O motor de produção é o
+workspace Rust/Wasm em [`crates/`](../crates) (DSP, solvers, CAM); o núcleo TypeScript em
+[`packages/core/src`](../packages/core/src) permanece como referência e fallback de exportação.
+
+## 0. Estado atual do motor (reescrita do núcleo + rodada "reconhecimento facial")
+
+O objetivo do projeto é que a pessoa **se reconheça** na obra. As decisões abaixo foram medidas com
+fotos reais (`weaver-cli bench`, folhas de contato `weaver-cli contact`) e substituem as seções
+legadas marcadas como tal mais adiante.
+
+1. **Fio opaco e cobertura física**: $\alpha_{\text{material}} \approx 1$; o escurecimento por pixel vem
+   da cobertura $t_f \cdot R_{px} / D_{mm}$ e da transmitância em luz linear $T = \prod (1 - \alpha c_i)$.
+2. **Objetivo limpo**: o ganho de uma corda é a variação **exata** do erro quadrático ponderado em
+   espaço perceptual (curva sRGB), com pesos $W = 1 + \beta_f M_{\text{face}} \,[+\, \beta_{\text{feat}} M_{\text{feições}}] \ge 1$.
+   As heurísticas `highlightProtection`, `angularDiversity`, `centerDampRadiusMm`, `lengthPenalty`,
+   `shadowLift` e `torsoFeathering` (seções 5–6.5 abaixo) **não existem** no motor Rust.
+3. **Enquadramento pelo rosto** (`weaver-dsp/src/face_framing.rs`): detector Viola-Jones sobre imagem
+   integral em tons de cinza (cascata `haarcascade_frontalface_default` do OpenCV convertida para
+   tabelas estáticas, 25 estágios / 2.913 classificadores fracos), janelas multiescala com features
+   escaladas, agrupamento com 3 vizinhos mínimos e supressão de caixas sobrepostas. Dada a caixa do
+   rosto $(c_x, c_y, s)$ na foto e o raio de entrada $r_{in} = \min(w, h)/2$, o recorte usa
+   $\text{zoom} = \text{fill} \cdot 2 r_{in} / s$ e
+   $\text{pan} = (c_{in} - c_{\text{rosto}}) / r_{in}$, com `fill = 0,95` (o rosto ocupa 95% do aro;
+   topo do cabelo e orelhas ficam de fora). Sem rosto, recai no modo "cabeça e ombros" (Sobel + pele
+   YCbCr + prior central, fill 0,8).
+4. **Tear padrão**: aro de bicicleta 28″ ISO 622 (622 mm), 200 pinos, fio 0,18 mm, 6000 linhas,
+   `maxChordRepeats = 2`, grade de 500 px.
+5. **Vista à distância** (UI): a obra é julgada como vista na parede — desfoque gaussiano com
+   $\sigma_{mm} = 0{,}6 \cdot d_m$ (≈ 2′ de arco), convertido para pixels pela escala do canvas, lado a
+   lado com a foto enquadrada sob o mesmo desfoque. O benchmark usa a mesma ideia ("correlação à
+   distância") e mede SSIM/RMSE só na elipse do rosto detectado.
+6. **Realces opcionais, padrão 0**: mapa de feições escuras (black top-hat × pele, `beta_feature`) e
+   "pele mais limpa" (`skin_lift`). Nos testes deram diferença visual mínima e correlação global
+   levemente pior; ficam disponíveis para escolha visual.
+
+> [!NOTE]
+> As seções 5–6 a seguir documentam o núcleo TypeScript legado (`packages/core`). Elas são mantidas
+> como histórico; para o comportamento atual, valem os itens acima e o `AGENTS.md`.
 
 ## 1. O objeto a reproduzir
 

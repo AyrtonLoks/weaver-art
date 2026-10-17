@@ -10,7 +10,7 @@ flowchart LR
     decode["sharp: decodifica + EXIF"]
   end
   subgraph web["@weaver-art/web (navegador)"]
-    framing["Smart Face Framing (zoom/pan circular 80%)"]
+    framing["Enquadramento pelo rosto (Viola-Jones Wasm, rosto = 95% do aro)"]
     bitmap["createImageBitmap + canvas"] --> framing --> worker["Web Worker"]
   end
   photo --> bitmap
@@ -139,7 +139,7 @@ O monorepo é dividido estritamente entre o **Core Matemático em Rust (`crates/
    - _Regra:_ Zero dependências de outros crates internos ou de navegador.
 
 2. **Camada 2 — Motores de Aplicação (`crates/weaver-dsp`, `crates/weaver-solvers`, `crates/weaver-cam`):**
-   - `weaver-dsp`: Enquadramento afim (`framing.rs`), CLAHE (`contrast.rs`), Morfologia (`morphology.rs`), Sobel/Canny (`edges.rs`), Mapa de Importância (`importance.rs`) e Transformada de Radon (`radon.rs`).
+   - `weaver-dsp`: Enquadramento afim (`framing.rs`, alvos `FramingTarget::Face` / `HeadAndShoulders`), detector de rostos Viola-Jones em Rust puro (`face_framing.rs` + tabelas geradas da cascata frontal do OpenCV em `haar_frontalface.rs`, licença Intel/BSD), CLAHE (`contrast.rs`), Morfologia (`morphology.rs`), Sobel/Canny (`edges.rs`), Mapa de Importância e mapa opcional de feições escuras (`importance.rs`) e Transformada de Radon (`radon.rs`).
    - `weaver-solvers`: Matriz de estado _Struct-of-Arrays_ (`state_matrix.rs`), modelos ópticos (`optical_models.rs`), agendador de carretéis (`spool_scheduler.rs`), métricas incrementais $O(\vert{}L\vert{})$ (`telemetry_metrics.rs`) e solvers (`greedy.rs`, `beam_search.rs`, `global_fista.rs`).
    - `weaver-cam`: Paginador 1:1 de folhas A4/A3 (`blueprint_tiler.rs`), gerador PDF vetorial (`pdf.rs`), exportador CSV (`csv_exporter.rs`), G-Code CNC (`gcode_exporter.rs`), calculadora BOM (`bom_calculator.rs`) e codec de retomada (`resume_codec.rs`).
 

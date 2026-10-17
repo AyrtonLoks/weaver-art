@@ -18,9 +18,8 @@ pinos, comprimento real do fio) em vez de apenas desenhar linhas em pixels.
 
 |                     | Implementações clássicas              | Weaver Art                                                                                                                                                                                               |
 | ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|                     | Implementações clássicas              | Weaver Art                                                                                                                                                                                               |
-| ------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unidades            | pixels                                | **milímetros** (tear circular de 28″ = 711,2 mm, ou retangular/personalizado com dimensões reais)                                                                                                        |
+| Unidades            | pixels                                | **milímetros** (padrão: aro de bicicleta 28″ ISO 622 = 622 mm, ou retangular/personalizado com dimensões reais)                                                                                          |
+| Enquadramento       | manual                                | **detecção de rosto Viola-Jones** (Rust puro) — o rosto preenche ~95% do aro automaticamente ao carregar a foto                                                                                          |
 | Formato do tear     | apenas círculo fixo                   | **circular, quadrado, retangular ou pinos arbitrários via CSV** com detecção de envoltória convexa e máscara analítica antisserrilhada                                                                   |
 | Critério de escolha | “linha mais escura” (média de pixels) | **redução do erro quadrático** entre simulação e alvo (com penalidade de comprimento configurável)                                                                                                       |
 | Modelo de tom       | subtrai constante do alvo             | **cobertura física do fio** em luz linear: `T = Π(1 − cᵢ)` — o tom escurece com a densidade **e com as interseções**, como descrito por Vrellis                                                          |
@@ -106,61 +105,63 @@ Arquivos gerados em `./output/`:
 ### Estúdio web
 
 1. Arraste uma foto (retratos funcionam melhor — como na série de Vrellis baseada em El Greco).
-2. **Enquadre o rosto**: clique no botão **Enquadrar Rosto (80%)** ou use os seletores de Zoom e Deslocamento X/Y com pré-visualização instantânea na máscara circular do tear.
-3. Configure a geometria do tear: **Circular**, **Quadrado**, **Retangular** ou importe um **CSV de pinos**.
+2. **Enquadramento automático pelo rosto**: ao carregar a foto, o detector de rostos (Viola-Jones, em Rust/Wasm) ajusta zoom e posição para o rosto preencher ~95% do aro (o topo do cabelo e as orelhas ficam de fora — é assim que o rosto fica grande o bastante para ser reconhecido). Em fotos com várias pessoas, clique de novo em **Enquadrar rosto** para alternar entre os rostos; o seletor **Alvo** troca para **Cabeça e ombros**. Ajuste fino: arraste a foto ou use Zoom e Pan X/Y.
+3. Configure a geometria do tear: **Circular**, **Quadrado**, **Retangular** ou importe um **CSV de pinos**. O padrão é um aro de bicicleta 28″ (622 mm) com 200 pinos e fio de 0,18 mm.
 4. Baixe antecipadamente o **Gabarito de furação** (PDF multi-folhas em escala real 1:1 com marcas de registro e régua de conferência, ou SVG) e o **CSV de pinos** para fabricar sua moldura física.
-5. Ajuste algoritmo e tom (incluindo **Proteção de realces**, **Diversidade angular**, **Atenuação central**, **CLAHE**, **Penalidade de comprimento de fio** e **Distância de observação**).
-6. Opcionalmente extraia uma **paleta personalizada** diretamente da foto ($k$ cores em CIELAB) ou calibre a cor de carretéis reais carregando a foto de uma meada de linha.
-7. Experimente a **Mistura óptica por meio-tom** para permitir cooperação e fusão perceptual de cores entre fios vizinhos.
-8. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas completas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)**, **SSIM** e a tabela detalhada de **estimativa de carretéis**.
-9. Exporte arquivos completos (incluindo **G-code** para robôs de tecelagem), ou abra o **Modo tecelagem**:
+5. Opcional: **Realce de feições** (olhos, sobrancelhas, boca) e **Pele mais limpa** — desligados por padrão; compare os níveis com a vista à distância.
+6. Clique em **Gerar padrão** e acompanhe a simulação ao vivo com métricas em tempo real: **RMSE**, **$\Delta E$ (CIELAB)**, **SSIM** e a tabela de **estimativa de carretéis**.
+7. Ao terminar, a simulação muda para a **Vista à distância**: o desfoque equivale à acuidade visual humana na distância escolhida (1–6 m, padrão 3 m) e a foto enquadrada aparece ao lado com o mesmo desfoque — é assim que a obra será vista na parede. **Fios (tamanho real)** volta a mostrar cada fio.
+8. Exporte arquivos completos (incluindo **G-code** para robôs de tecelagem), ou abra o **Modo tecelagem**:
    - O próximo pino aparece em destaque com o sentido correto de contorno;
    - O número pode ser **ditado por voz** (pt-BR);
    - Acompanhe o **tempo restante estimado** dinamicamente;
    - **Sincronize com outro dispositivo sem servidor**: copie o código compacto (`WA1-...`), compartilhe o link direto (`#progress=...`) ou baixe o arquivo de retomada.
 
-## Presets Disponíveis
+## Presets do estúdio
 
-| Preset          | Fios              | Resolução | Cordas        | Destaques                                                                                                                                              |
-| --------------- | ----------------- | --------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `portrait-mono` | 1 (Preto)         | 500 px    | 4.000 (rep=2) | **Recomendado para retratos P&B**: proteção de realce, diversidade angular, atenuação central, unsharp mask e saliência multiescala.                   |
-| `portrait-cmyk` | 4 (Y, C, M, K)    | 500 px    | 6.000 (rep=2) | **Recomendado para retratos coloridos**: 4 camadas sequenciais com cotas calibradas para tons de pele (30% Y, 5% M, 25% C, 40% K) e rollover dinâmico. |
-| `vrellis-mono`  | 1 (Preto)         | 400 px    | 4.000 (rep=1) | Reprodução histórica do setup clássico de Petros Vrellis.                                                                                              |
-| `vrellis-color` | 5 (Y, M, B, G, K) | 400 px    | 5.000 (rep=1) | Paleta de 5 cores em camadas do trabalho colorido de Vrellis.                                                                                          |
-| `cmyk`          | 4 (Y, C, M, K)    | 400 px    | 8.000 (rep=2) | Síntese subtrativa CMYK balanceada genérica.                                                                                                           |
+| Preset                              | Fios           | Pinos | Cordas | Destaques                                                               |
+| ----------------------------------- | -------------- | ----- | ------ | ----------------------------------------------------------------------- |
+| Vrellis Clássico — Monocromático    | 1 (Preto)      | 200   | 6.000  | **Recomendado para se reconhecer no retrato**: guloso exato, fio opaco. |
+| Retrato Vrellis — Alta Fidelidade   | 4 (C, M, Y, K) | 288   | 6.500  | CMYK em épocas coarse-to-fine; preto por último.                        |
+| CMYK — Histerese Dinâmica de Trocas | 4 (C, M, Y, K) | 288   | 6.000  | Penalidade de troca de carretel por histerese (menos nós).              |
+| Otimização Global — NNLS / Radon    | 1 (Preto)      | 200   | 5.000  | Solver global FISTA (experimental).                                     |
 
-## Parâmetros padrão (preset `vrellis-mono`)
+Todos usam o aro 28″ (622 mm), fio 0,18 mm, pino de 2 mm e resolução de simulação de 500 px.
 
-| Parâmetro               | Valor                     | Origem                                                                     |
-| ----------------------- | ------------------------- | -------------------------------------------------------------------------- |
-| Diâmetro do tear        | 711,2 mm (28″)            | publicado por Vrellis                                                      |
-| Pinos                   | 200                       | publicado por Vrellis                                                      |
-| Linhas                  | até 4 000                 | Vrellis: 3 000 – 4 000 cordas, 1 – 2 km de fio                             |
-| Diâmetro do pino        | 2 mm                      | estimativa — calibre com o seu tear                                        |
-| Largura aparente do fio | 0,2 mm                    | estimativa — calibre com o seu fio                                         |
-| Gap mínimo              | 12 pinos                  | evita cordas inúteis rente ao aro                                          |
-| Repetições por par      | 1                         | uma passada por par de pinos                                               |
-| Resolução da grade      | 400 px                    | resolução de simulação física (ver ALGORITHM.md)                           |
-| Penalidade comp. fio    | 0.0                       | deságio de cordas longas (use 0.1 a 0.25 para economizar fio)              |
-| Distância de observação | 0.0 m                     | desfoque retiniano à distância real (ex: 1.5 a 3.0 m, Birsak et al., 2018) |
-| Meio-tom óptico         | desativado (0.75 mm)      | fusão espacial retiniana de cores adjacentes à distância                   |
-| Refinamento global      | 0 passes                  | passes pós-gulosos para redução de erro mantendo continuidade              |
-| Orçamento do cache      | 128 MB (CLI), 64 MB (web) | tamanho do `ChordCache` de rasterização de cordas canônicas                |
-| Poda de candidatos      | `none` (exata)            | poda lazy greedy (`lazy`) para aceleração de até 5–10×                     |
+## Parâmetros padrão (medidos com fotos reais)
+
+| Parâmetro                 | Valor                         | Origem / evidência                                                                             |
+| ------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| Diâmetro do tear          | 622 mm (aro de bicicleta 28″) | aro ISO 622 / 700C — fácil de conseguir em casa                                                |
+| Pinos                     | 200                           | Vrellis; 288 pinos deram só +0,015 de SSIM com 44% mais furos                                  |
+| Linhas (mono)             | até 6.000                     | fotos escuras: SSIM 0,66→0,74 (noite) e 0,71→0,79 (igreja); fotos claras param sozinhas ~4.100 |
+| Largura do fio            | 0,18 mm                       | 0,15 mm foi pior em todas as fotos do benchmark                                                |
+| Enquadramento             | rosto preenchendo 95% do aro  | 80% deixa o rosto pequeno; 105% corta o queixo                                                 |
+| Foco facial (importância) | 2,0                           | benchmark Vênus + retratos do usuário                                                          |
+| Realce de feições / pele  | 0 (desligados)                | diferença visual mínima e correlação levemente pior — disponíveis para escolha visual          |
+| CLAHE / bordas            | desligados                    | CLAHE 2.0 reduziu a correlação de 0,935 para 0,912 na Vênus                                    |
+| Repetições por par        | 2                             | necessário para metas ≥ 5.000 cordas                                                           |
+| Refinamento global        | 0 passes                      | sem ganho mensurável, 2–4× mais lento (disponível no `weaver-cli bench --refine`)              |
 
 > [!TIP]
 >
-> - **Retratos de Alta Fidelidade (Padrão Petros Vrellis)**: utilize `--preset portrait-mono` (ou `portrait-cmyk`). Enquadre a face de modo que a cabeça ocupe entre 75% e 85% do círculo. A **Proteção de realces** (`--highlight-protection 2.5`) impede que cordas cruzem áreas iluminadas (testa, bochechas, nariz), a **Diversidade angular** (`--angular-diversity 0.35`) quebra artefatos lineares estriados paralelos e a **Atenuação cáustica central** (`--center-damp 25`) elimina manchas indesejadas no centro da face.
-> - **Aceleração Máxima e Desempenho**: utilize `--accel wasm --pruning lazy` para combinar o kernel Rust SIMD e a poda lazy de candidatos. Em computadores multi-core com imagens em alta resolução ($\ge 600$ px), utilize `--accel parallel --threads 4` para dividir a avaliação entre trabalhadores via memória compartilhada.
-> - **Economia de fio e tensão mecânica**: utilize **Penalidade comp. fio** (`--length-penalty 0.15` a `0.25`) para priorizar cordas mais eficientes e aproximar a metragem total aos 1–2 km reportados por Petros Vrellis.
-> - **Fotos escuras e roupas pretas**: utilize **Elevação de sombras** (`--shadow-lift 0.10` a `0.15`) ou atenuação de tronco (`--torso-feathering 0.25`) para evitar que a roupa absorva a maior parte das linhas e suje o rosto.
-> - **Foco nas feições**: utilize **Foco em detalhes** (`--edge-emphasis 0.40` a `0.60`) para realçar olhos, óculos, nariz e boca através de mapa de saliência Sobel.
-> - **Iluminação irregular e retratos**: ative **CLAHE** (`--clahe --clahe-clip 2.0`) para equalizar contraste local adaptativo sem estourar ruído.
-> - **Paleta personalizada da foto**: extraia $k$ cores dominantes da imagem (`--auto-palette <k>`) com amostragem restrita à máscara do tear, ordenação decrescente por luminância e cota reservada de 35%–40% para a âncora escura final.
-> - **Fusão de cores e meio-tom**: ative **Meio-tom óptico** (`--halftone --halftone-radius 0.75`) para modelar como os olhos combinam cores primárias vizinhas à distância (ex: amarelo + ciano gerando verde sem exigir interseção local exata).
+> - **Para se reconhecer**: use uma foto de frente, com o rosto bem iluminado e sem inclinação. Avalie sempre pela **Vista à distância** ao lado da foto — de perto, toda string art parece só um emaranhado de fios.
+> - **Fotos escuras (noite, ambientes internos)**: mantenha as 6.000 linhas; com menos cordas a obra fica mais clara que a foto.
 > - **Metas altas de cordas (ex: 10.000 cordas)**: aumente **Repetições** para `2` ou `3`. Um tear de 200 pinos possui limite combinatório de cordas que cruzam a figura; permitir repetições viabiliza atingir 10.000 cordas mantendo o fundo limpo.
-> - **Máxima precisão**: ative **Refinamento global** (`--refine 1`) para executar passes pós-gulosos que trocam pinos intermediários mantendo estritamente o fio contínuo e sem emaranhados.
-> - **Fabricação física**: gere o gabarito PDF multi-folhas com `weaver-art template` e imprima em 100% (sem ajuste de página). Confira com uma régua se os 50 mm marcados em cada folha batem exatamente antes de furar.
+> - **Fabricação física**: gere o gabarito PDF multi-folhas e imprima em 100% (sem ajuste de página). Confira com uma régua se os 50 mm marcados em cada folha batem exatamente antes de furar.
+
+### Benchmark com fotos reais (`weaver-cli`)
+
+Toda mudança de qualidade é medida com o binário Rust nativo, sobre fotos reais:
+
+```bash
+cargo build --release -p weaver-cli
+./target/release/weaver-cli bench --image bench/fixtures/venus_botticelli_face.png --out bench-out --label venus
+./target/release/weaver-cli bench --image samples/private/minha_foto.jpg --framing face --lines 6000 --out bench-out --label eu
+./target/release/weaver-cli contact --out bench-out/folha.png --size 320 --cols 4 bench-out/*_canvas.png
+```
+
+`bench` enquadra pelo rosto (`--framing face|head|manual`, `--fill`), gera, e imprime SSIM/correlação "à distância" contra a foto enquadrada e **ROSTO SSIM/RMSE** (só a região do rosto detectado). `contact` monta uma folha de contato para comparar variantes lado a lado. Coloque suas fotos em `samples/private/` (ignorada pelo git).
 
 ## Scripts
 

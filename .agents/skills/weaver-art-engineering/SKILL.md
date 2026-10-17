@@ -111,10 +111,11 @@ npm run build
 
 Para atingir a qualidade expressiva e reconhecimento facial característicos da obra de Petros Vrellis:
 
-1. **Enquadramento e Zoom Facial**:
-   - Assegure que a cabeça e as feições ocupem entre 75% e 85% do diâmetro útil do tear circular.
-   - Posicione os olhos no terço superior da área circular (evite colocar o centro do nariz exatamente no centro geométrico).
-   - Na Web UI, use o botão "Enquadrar Rosto (80%)" ou ajuste Zoom ~ 1.25 a 1.40 com pan vertical.
+1. **Enquadramento e Zoom Facial** (rodada "reconhecimento facial"):
+   - Padrão: **rosto detectado (Viola-Jones) ocupando ~95% do diâmetro** (`FramingTarget::Face`, `DEFAULT_FACE_FILL = 0.95`), cortando topo do cabelo e orelhas — foi o nível em que o usuário se reconheceu. 80% (cabeça inteira) deixa o rosto pequeno demais para 200 pinos; 105% corta o queixo.
+   - Na Web UI o enquadramento é aplicado sozinho ao carregar a foto; "Enquadrar rosto" reaplica/alterna entre rostos e o seletor "Alvo" troca para "Cabeça e ombros" (fill 0,8, também usado como fallback sem rosto).
+   - Tear padrão: aro de bicicleta 28″ ISO 622 (622 mm), 200 pinos, fio 0,18 mm, 6000 linhas mono.
+   - Julgue o resultado pela **Vista à distância** (σ = 0,6 mm/m, lado a lado com a foto), nunca pelos fios em tamanho real.
 
 2. **Uso dos Presets Calibrados** (padrões medidos com `weaver-cli bench` em fotos reais):
    - Monocromático: fio preto opaco (`alpha_material = 1.0`), resolução 500 px, CLAHE desligado, proteção de realces 0, foco facial `β_face = 2.0`, reforço de bordas 0, refinamento desligado.
@@ -451,11 +452,12 @@ Para testar o pipeline completo fora do navegador com máximo desempenho e diagn
    ```powershell
    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
    cargo build --release -p weaver-cli
-   .\target\release\weaver-cli.exe bench --image bench\fixtures\venus_botticelli_face.png --pins 288 --lines 4000 --face 2 --out bench-out --label venus
-   .\target\release\weaver-cli.exe bench --image <foto do usuário> --zoom 1.08 --pan-y 40 --pins 288 --lines 4000 --face 2 --out bench-out --label retrato
+   .\target\release\weaver-cli.exe bench --image bench\fixtures\venus_botticelli_face.png --lines 6000 --out bench-out --label venus
+   .\target\release\weaver-cli.exe bench --image samples\private\<foto>.jpg --lines 6000 --out bench-out --label retrato
+   .\target\release\weaver-cli.exe contact --out bench-out\folha.png --size 320 --cols 4 bench-out\venus_canvas.png bench-out\retrato_canvas.png
    ```
-   Flags: `--res --thread --repeats --gap --hp --face --edge --clahe --sharpen --refine --window --metric linear --len-gamma`. Grava `*_canvas.png`, `*_target.png`, `*_importance.png`.
-2. **Referências atuais (288 pinos, 4.000 linhas, `--face 2`)**: Vênus SSIM ≈ 0,83 / correlação ≈ 0,934; retrato do usuário SSIM ≈ 0,81 / correlação ≈ 0,91; brilho médio dentro de ±0,02 da foto. Uma mudança só é aceita se não piorar essas referências.
+   Padrões: `--framing face` (rosto = `--fill 0.95`; `head` usa 0,8; `manual` usa `--zoom/--pan-x/--pan-y`), `--pins 200`, `--diameter 622`, `--face 2`. Outras flags: `--res --thread --repeats --gap --hp --edge --clahe --sharpen --feat --tone --refine --window --metric linear --len-gamma`. Imprime zoom/pan aplicados, SSIM e correlação à distância contra a foto enquadrada e **ROSTO SSIM/RMSE** (elipse do rosto detectado). Grava `*_canvas.png`, `*_target.png`, `*_importance.png`. Fotos pessoais ficam em `samples/private/` (gitignored — nunca commitar).
+2. **Referências atuais (200 pinos, fio 0,18 mm, 6.000 linhas, enquadramento por rosto 95%)**: Vênus SSIM ≈ 0,85; selfie noturna ≈ 0,74; foto na igreja ≈ 0,79; 3x4 ≈ 0,86 (UI). Uma mudança só é aceita se não piorar essas referências **e** a folha de contato não ficar visualmente pior.
 3. **Benchmark de desempenho e CAM**: `cargo run --release -p weaver-cli` (sem argumentos) usa um retrato sintético apenas para medir tempo e exportações CAM — **não** use seus números de SSIM para julgar qualidade.
 
 ### 27. Renderizador Físico WebGL2 e Shaders de Simulação (`WebGLLoomRenderer`)
