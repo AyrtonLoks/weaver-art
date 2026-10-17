@@ -15,3 +15,4 @@ export interface StudioViewState {
   readonly options: WeaveOptions;
   readonly lastResult: WeaveResult | null;
 }
+export * from './distance-view.js';

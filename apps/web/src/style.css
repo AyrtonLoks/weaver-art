@@ -315,6 +315,51 @@ body[data-loom-shape='circle'] figure canvas {
   margin: 0 auto;
 }
 
+/* Vista à distância: barra de modos + par lado a lado (simulação × foto preparada) */
+.view-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.view-toolbar .stage-pill {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+}
+
+.view-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.view-toolbar input[type='range'] {
+  width: 110px;
+}
+
+.sim-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.sim-pair.compare {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.sim-pair canvas[hidden] {
+  display: none;
+}
+
+.sim-pair canvas {
+  transition: filter 0.2s ease;
+}
+
 figcaption {
   margin-top: 0.5rem;
   text-align: center;

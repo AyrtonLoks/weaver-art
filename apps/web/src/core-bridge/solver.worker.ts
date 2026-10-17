@@ -57,6 +57,10 @@ export type ToSolverWorkerMessage =
       width: number;
       height: number;
       targetRatio: number;
+      /** 'face' (rosto preenchendo o aro) ou 'head' (cabeça e ombros). */
+      mode: 'face' | 'head';
+      /** Índice do rosto em fotos com várias pessoas (circular). */
+      faceIndex: number;
     };
 
 /** Messages dispatched by the solver worker to the Main Thread. */
@@ -370,7 +374,14 @@ function handleSmartFrame(msg: Extract<ToSolverWorkerMessage, { type: 'SMART_FRA
   }
   try {
     const rawBytes = new Uint8Array(msg.rawRgba);
-    const resultJson = wasmEngine.compute_smart_framing_wasm(rawBytes, msg.width, msg.height, msg.targetRatio);
+    const resultJson = wasmEngine.compute_smart_framing_wasm(
+      rawBytes,
+      msg.width,
+      msg.height,
+      msg.targetRatio,
+      msg.mode,
+      msg.faceIndex,
+    );
     post({ type: 'SMART_FRAME_RESULT', resultJson });
   } catch (err) {
     post({

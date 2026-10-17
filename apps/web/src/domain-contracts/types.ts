@@ -124,6 +124,10 @@ export interface WeaverConfig extends LoomPhysicalSpec {
   rasterizer: RasterizerType;
   claheClipLimit: number;
   faceImportanceWeight: number;
+  /** Realce de feições escuras do rosto (olhos, sobrancelhas, boca) no mapa de importância. 0 = desligado. */
+  featureEmphasisWeight: number;
+  /** "Pele mais limpa": clareia sombras suaves da pele antes da otimização (0–1). 0 = desligado. */
+  skinLift: number;
   edgeDetector: EdgeDetectorType;
   edgeBlendWeight: number;
   morphologyOp: MorphologyOpType;

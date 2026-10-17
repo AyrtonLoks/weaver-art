@@ -46,6 +46,10 @@ export interface SmartFramingResult {
   panXPercent: number;
   panYPercent: number;
   confidence: number;
+  /** Modo efetivamente usado ('head' quando nenhum rosto frontal foi detectado). */
+  mode?: 'face' | 'head';
+  faceIndex?: number;
+  faceCount?: number;
 }
 
 /**
@@ -317,7 +321,9 @@ export class WeaverEngineClient {
     rawRgba: Uint8Array | ArrayBuffer,
     width: number,
     height: number,
-    targetRatio = 0.8,
+    targetRatio = 0,
+    mode: 'face' | 'head' = 'face',
+    faceIndex = 0,
   ): Promise<SmartFramingResult> {
     if (!this.worker) {
       throw new Error("Worker não inicializado. Chame 'await client.init()' primeiro.");
@@ -343,6 +349,8 @@ export class WeaverEngineClient {
         width,
         height,
         targetRatio,
+        mode,
+        faceIndex,
       };
       this.worker!.postMessage(msg, [rawBuffer]);
     });
