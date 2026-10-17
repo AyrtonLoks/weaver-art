@@ -1,12 +1,24 @@
-//! Orquestrador do Pipeline de DSP (`DspPipeline`) com Cache de Estágios e Preservação Cromática.
+//! Orquestrador do Pipeline de DSP (`DspPipeline`).
+//!
+//! Fluxo (reescrito para ser previsível e medível):
+//!
+//! 1. Enquadramento afim (zoom / pan / rotação) + máscara do tear;
+//! 2. Luminância fotométrica **linear** $Y$ (Rec. 709) → referência das métricas;
+//! 3. Espaço de trabalho perceptual $L = \text{sRGB}(Y)$, onde atuam **apenas** os ajustes pedidos:
+//!    brilho/contraste/gama do usuário e, se habilitados, CLAHE, nitidez (unsharp) e fusão de bordas;
+//! 4. Conversão **única** de volta para luz linear (alvo do solver).
+//!
+//! O mapa de importância é suave e limitado: $W = 1 + \beta_f M_{\text{face}} + \beta_e E$, com
+//! $M_{\text{face}}, E \in [0, 1]$ desfocados — logo $W \ge 1$ (exceto onde o pincel do usuário reduz).
 
-use weaver_domain::{LinearRgbColor, LoomGeometry, SrgbColor};
+use weaver_domain::{linear_to_srgb_channel, srgb_to_linear_channel, LinearRgbColor, LoomGeometry};
 
 use crate::contrast::{
-    adjust_brightness_contrast_gray, apply_gamma_gray, apply_portrait_tone_shaping,
-    apply_unsharp_mask, clahe_gray, ClaheConfig,
+    adjust_brightness_contrast_gray, apply_gamma_gray, apply_unsharp_mask, clahe_gray, ClaheConfig,
 };
-use crate::edges::{canny, edges_to_rgba, fuse_high_frequency, sobel, CannyConfig, SobelResult};
+use crate::edges::{
+    canny, edges_to_rgba, fuse_high_frequency, gaussian_blur_gray, sobel, CannyConfig, SobelResult,
+};
 use crate::framing::{
     apply_affine_transform, compute_auto_framing, AutoFramingOptions, FramingConfig,
     InterpolationMethod, LoomMask,
@@ -21,16 +33,23 @@ pub struct DspPipelineConfig {
     pub target_resolution: u32,
     pub framing: FramingConfig,
     pub interpolation: InterpolationMethod,
+    /// Equalização local CLAHE no espaço perceptual (`None` = desligada).
     pub clahe: Option<ClaheConfig>,
     pub canny: CannyConfig,
+    /// Peso da saliência facial no mapa de importância (0 = desligado).
     pub beta_face: f32,
+    /// Peso das bordas no mapa de importância (0 = desligado).
     pub beta_edge: f32,
+    /// Fusão de alta frequência: escurece bordas no alvo (0 = desligada).
     pub high_freq_blend: f32,
+    /// Intensidade da máscara de nitidez (unsharp) no alvo (0 = desligada).
+    pub sharpen_amount: f32,
+    /// Raio gaussiano da máscara de nitidez, em pixels.
+    pub sharpen_sigma: f32,
     pub background_luma: f32,
     pub radon: RadonOptions,
     pub auto_framing: Option<AutoFramingOptions>,
-    /// Quando `true`, converte a saída para escala de cinza (Modo Monocromático).
-    /// Quando `false`, preserva a cromaticidade RGB original da foto (CMYK / RGB / Custom).
+    /// `true`: alvo em escala de cinza (monocromático). `false`: preserva a cromaticidade.
     pub monochrome_target: bool,
     pub contrast: f32,
     pub brightness: f32,
@@ -43,11 +62,13 @@ impl Default for DspPipelineConfig {
             target_resolution: 500,
             framing: FramingConfig::default(),
             interpolation: InterpolationMethod::Bilinear,
-            clahe: Some(ClaheConfig::default()),
+            clahe: None,
             canny: CannyConfig::default(),
-            beta_face: 3.0,
-            beta_edge: 1.0,
-            high_freq_blend: 0.15,
+            beta_face: 0.0,
+            beta_edge: 0.0,
+            high_freq_blend: 0.0,
+            sharpen_amount: 0.0,
+            sharpen_sigma: 1.2,
             background_luma: 1.0,
             radon: RadonOptions::default(),
             auto_framing: None,
@@ -75,10 +96,7 @@ impl DspDiagnosticBuffers {
         let w2 = self.radon_sinogram_rgba.width;
         let h2 = self.radon_sinogram_rgba.height;
 
-        let out_w = w1 + w2;
-        let out_h = h1.max(h2);
-        let mut out = ImageBuffer::fill(out_w, out_h, 4, 0u8);
-
+        let mut out = ImageBuffer::fill(w1 + w2, h1.max(h2), 4, 0u8);
         for y in 0..h1 {
             for x in 0..w1 {
                 out.set_pixel(x, y, self.edges_rgba.get_pixel(x, y));
@@ -96,13 +114,12 @@ impl DspDiagnosticBuffers {
 pub struct DspPipeline {
     pub config: DspPipelineConfig,
     cached_framed_rgba: Option<Rgba8Image>,
-    cached_framed_gray: Option<GrayImage>,
     cached_prepared_gray: Option<GrayImage>,
     cached_prepared_linear_rgb: Option<Vec<LinearRgbColor>>,
+    cached_reference_linear_rgb: Option<Vec<LinearRgbColor>>,
     cached_sobel: Option<SobelResult>,
     cached_edges: Option<GrayImage>,
     cached_importance_map: Option<ImportanceMap>,
-    cached_sinogram: Option<Sinogram>,
     cached_filtered_sinogram: Option<Sinogram>,
     cached_diagnostics: Option<DspDiagnosticBuffers>,
 }
@@ -112,13 +129,12 @@ impl DspPipeline {
         Self {
             config,
             cached_framed_rgba: None,
-            cached_framed_gray: None,
             cached_prepared_gray: None,
             cached_prepared_linear_rgb: None,
+            cached_reference_linear_rgb: None,
             cached_sobel: None,
             cached_edges: None,
             cached_importance_map: None,
-            cached_sinogram: None,
             cached_filtered_sinogram: None,
             cached_diagnostics: None,
         }
@@ -131,21 +147,20 @@ impl DspPipeline {
         user_brush_mask: Option<&[f32]>,
     ) -> &DspDiagnosticBuffers {
         let res = self.config.target_resolution;
+        let total_px = (res * res) as usize;
 
         if let Some(opts) = &self.config.auto_framing {
-            let auto = compute_auto_framing(source, opts);
-            self.config.framing = auto.config;
+            self.config.framing = compute_auto_framing(source, opts).config;
         }
 
+        // 1. Enquadramento afim + máscara do tear
         let loom_mask = loom.map(|l| LoomMask::from_loom(l, res, res));
-
-        let src_float_total = (source.width * source.height * 4) as usize;
-        let mut src_float_data = Vec::with_capacity(src_float_total);
-        for &byte in &source.data {
-            src_float_data.push(byte as f32 / 255.0);
-        }
-        let src_float = ImageBuffer::new(source.width, source.height, 4, src_float_data);
-
+        let src_float = ImageBuffer::new(
+            source.width,
+            source.height,
+            4,
+            source.data.iter().map(|&b| b as f32 / 255.0).collect(),
+        );
         let framed_float = apply_affine_transform(
             &src_float,
             res,
@@ -155,167 +170,156 @@ impl DspPipeline {
             loom_mask.as_ref(),
             self.config.background_luma,
         );
+        let framed_rgba = Rgba8Image::new(
+            res,
+            res,
+            4,
+            framed_float
+                .data
+                .iter()
+                .map(|&f| (f.clamp(0.0, 1.0) * 255.0).round() as u8)
+                .collect(),
+        );
 
-        let mut framed_rgba_data = Vec::with_capacity((res * res * 4) as usize);
-        for &f in &framed_float.data {
-            framed_rgba_data.push((f.clamp(0.0, 1.0) * 255.0).round() as u8);
-        }
-        let framed_rgba = Rgba8Image::new(res, res, 4, framed_rgba_data);
+        // 2. Luminância linear Y e referência das métricas
+        let framed_y = framed_rgba.to_gray();
+        let framed_lin: Vec<LinearRgbColor> = framed_rgba.to_linear_rgb_vec();
+        let reference: Vec<LinearRgbColor> = if self.config.monochrome_target {
+            framed_y
+                .data
+                .iter()
+                .map(|&y| LinearRgbColor::new(y, y, y))
+                .collect()
+        } else {
+            framed_lin.clone()
+        };
 
-        // Opera em luminância perceptual sRGB [0.0, 1.0] durante todo o pré-processamento
-        // radiométrico (CLAHE, contraste, nitidez e bordas) e converte para Linear RGB uma única vez no final.
-        let framed_perceptual_gray = framed_rgba.to_perceptual_luma_gray();
-        let framed_gray = framed_rgba.to_gray();
-
-        // 3. Pré-processamento radiométrico e CLAHE em luma perceptual sRGB
-        let mut prepared_srgb_luma = framed_perceptual_gray.clone();
+        // 3. Espaço perceptual L = sRGB(Y) e ajustes solicitados
+        let base_l: Vec<f32> = framed_y
+            .data
+            .iter()
+            .map(|&y| linear_to_srgb_channel(y))
+            .collect();
+        let mut work = GrayImage::new(res, res, 1, base_l.clone());
         if (self.config.contrast - 1.0).abs() > 1e-3 || self.config.brightness.abs() > 1e-3 {
             adjust_brightness_contrast_gray(
-                &mut prepared_srgb_luma,
+                &mut work,
                 self.config.brightness,
                 self.config.contrast,
             );
         }
         if (self.config.gamma - 1.0).abs() > 1e-3 {
-            apply_gamma_gray(&mut prepared_srgb_luma, self.config.gamma);
+            apply_gamma_gray(&mut work, self.config.gamma);
         }
         if let Some(clahe_cfg) = &self.config.clahe {
             if clahe_cfg.clip_limit > 0.05 {
-                let mut clahe_img = prepared_srgb_luma.clone();
-                clahe_gray(&mut clahe_img, clahe_cfg);
-                let blend = ((clahe_cfg.clip_limit - 0.8) * 0.20).clamp(0.18, 0.42);
-                for (orig, &eq) in prepared_srgb_luma.data.iter_mut().zip(clahe_img.data.iter()) {
-                    *orig = (*orig * (1.0 - blend) + eq * blend).clamp(0.0, 1.0);
-                }
+                clahe_gray(&mut work, clahe_cfg);
             }
         }
-
-        // Nitidez unsharp mask e modelagem tonal Vrellis quando houver realce de alta frequência
-        if self.config.high_freq_blend > 1e-4 {
-            apply_unsharp_mask(&mut prepared_srgb_luma, 1.25, 0.32);
-            apply_portrait_tone_shaping(&mut prepared_srgb_luma, 0.14, 0.25);
-        }
-
-        // 4. Detecção de bordas Sobel e Canny sobre a imagem realçada
-        let sobel_res = sobel(&prepared_srgb_luma);
-        let canny_edges = canny(&prepared_srgb_luma, &self.config.canny);
-
-        if self.config.high_freq_blend > 0.0 {
-            prepared_srgb_luma = fuse_high_frequency(
-                &prepared_srgb_luma,
-                &sobel_res.magnitude,
-                self.config.high_freq_blend.min(0.35),
+        if self.config.sharpen_amount > 1e-4 {
+            apply_unsharp_mask(
+                &mut work,
+                self.config.sharpen_sigma,
+                self.config.sharpen_amount,
             );
         }
 
-        // 5. Reconstrução Cromática contínua e conversão única sRGB -> Linear RGB (IEC 61966-2-1)
-        let total_px = (res * res) as usize;
+        let sobel_res = sobel(&work);
+        let canny_edges = canny(&work, &self.config.canny);
+        if self.config.high_freq_blend > 1e-4 {
+            work = fuse_high_frequency(&work, &sobel_res.magnitude, self.config.high_freq_blend);
+        }
+
+        // 4. Conversão única para luz linear
         let mut prepared_linear_rgb = Vec::with_capacity(total_px);
-        let mut prepared_linear_gray_data = Vec::with_capacity(total_px);
+        let mut prepared_gray_data = Vec::with_capacity(total_px);
         let mut prepared_rgba_bytes = Vec::with_capacity(total_px * 4);
-
-        let center = (res as f32 - 1.0) * 0.5;
-        let max_r = center.max(1.0);
-        let apply_rim_vignette = loom.is_some()
-            && (self.config.clahe.is_some() || self.config.high_freq_blend > 1e-4);
-
-        for y in 0..res {
-            let dy = (y as f32 - center) / max_r;
-            for x in 0..res {
-                let dx = (x as f32 - center) / max_r;
-                let r_norm = (dx * dx + dy * dy).sqrt();
-                let i = (y * res + x) as usize;
-
-                // Suavização suave apenas junto à borda física dos pinos (r > 0.94)
-                let vignette = if apply_rim_vignette && r_norm > 0.94 {
-                    ((1.0 - r_norm) / 0.06).clamp(0.0, 1.0)
+        for i in 0..total_px {
+            let l = work.data[i].clamp(0.0, 1.0);
+            if self.config.monochrome_target {
+                let y = srgb_to_linear_channel(l);
+                prepared_linear_rgb.push(LinearRgbColor::new(y, y, y));
+                prepared_gray_data.push(y);
+                let u = (l * 255.0).round() as u8;
+                prepared_rgba_bytes.extend_from_slice(&[u, u, u, 255]);
+            } else {
+                // Preserva a cromaticidade: escala as componentes sRGB pela razão L_novo / L_original
+                let ratio = if base_l[i] > 1e-4 {
+                    (l / base_l[i]).clamp(0.0, 4.0)
                 } else {
                     1.0
                 };
-
-                let luma_in = prepared_srgb_luma.data[i].clamp(0.0, 1.0);
-                let new_luma = 1.0 - (1.0 - luma_in) * vignette;
-
-                if self.config.monochrome_target {
-                    let lin = SrgbColor::new(new_luma, new_luma, new_luma).to_linear();
-                    prepared_linear_gray_data.push(lin.luminance());
-                    prepared_linear_rgb.push(lin);
-                    let u = (new_luma * 255.0).round() as u8;
-                    prepared_rgba_bytes.extend_from_slice(&[u, u, u, 255]);
-                } else {
-                    let r_srgb = framed_rgba.data[i * 4] as f32 / 255.0;
-                    let g_srgb = framed_rgba.data[i * 4 + 1] as f32 / 255.0;
-                    let b_srgb = framed_rgba.data[i * 4 + 2] as f32 / 255.0;
-                    let orig_luma = framed_perceptual_gray.data[i].max(1e-4);
-
-                    let ratio = (luma_in / orig_luma).clamp(0.25, 2.5);
-                    let nr = 1.0 - (1.0 - (r_srgb * ratio).clamp(0.0, 1.0)) * vignette;
-                    let ng = 1.0 - (1.0 - (g_srgb * ratio).clamp(0.0, 1.0)) * vignette;
-                    let nb = 1.0 - (1.0 - (b_srgb * ratio).clamp(0.0, 1.0)) * vignette;
-
-                    let lin = SrgbColor::new(nr, ng, nb).to_linear();
-                    prepared_linear_gray_data.push(lin.luminance());
-                    prepared_linear_rgb.push(lin);
-
-                    prepared_rgba_bytes.extend_from_slice(&[
-                        (nr * 255.0).round() as u8,
-                        (ng * 255.0).round() as u8,
-                        (nb * 255.0).round() as u8,
-                        255,
-                    ]);
-                }
+                let px = &framed_rgba.data[i * 4..i * 4 + 3];
+                let enc = [
+                    (px[0] as f32 / 255.0 * ratio).clamp(0.0, 1.0),
+                    (px[1] as f32 / 255.0 * ratio).clamp(0.0, 1.0),
+                    (px[2] as f32 / 255.0 * ratio).clamp(0.0, 1.0),
+                ];
+                let lin = LinearRgbColor::new(
+                    srgb_to_linear_channel(enc[0]),
+                    srgb_to_linear_channel(enc[1]),
+                    srgb_to_linear_channel(enc[2]),
+                );
+                prepared_gray_data.push(lin.luminance());
+                prepared_linear_rgb.push(lin);
+                prepared_rgba_bytes.extend_from_slice(&[
+                    (enc[0] * 255.0).round() as u8,
+                    (enc[1] * 255.0).round() as u8,
+                    (enc[2] * 255.0).round() as u8,
+                    255,
+                ]);
             }
         }
 
-        let prepared_target_rgba = Rgba8Image::new(res, res, 4, prepared_rgba_bytes);
-        let prepared_linear_gray = GrayImage::new(res, res, 1, prepared_linear_gray_data);
-
-        // 6. Mapa de Importância W(x,y) canônico: W(x,y) = 1.0 + beta_face * M_face + beta_edge * E
-        let facial_saliency = compute_facial_saliency_map(&framed_rgba);
+        // 5. Mapa de importância suave W = 1 + βf·M_face + βe·E
+        let blur_sigma = (res as f32 * 0.01).max(0.8);
+        let face = if self.config.beta_face.abs() > 1e-6 {
+            Some(compute_facial_saliency_map(&framed_rgba))
+        } else {
+            None
+        };
+        let edge_map = if self.config.beta_edge.abs() > 1e-6 {
+            let mut e = gaussian_blur_gray(&sobel_res.magnitude, blur_sigma);
+            let max_e = e.data.iter().copied().fold(0.0f32, f32::max);
+            if max_e > 1e-6 {
+                e.data
+                    .iter_mut()
+                    .for_each(|v| *v = (*v / max_e).clamp(0.0, 1.0));
+            }
+            Some(e)
+        } else {
+            None
+        };
         let mut importance_map = ImportanceMap::compose_auto(
             res,
             res,
-            Some(&facial_saliency),
-            Some(&sobel_res.magnitude),
-            self.config.beta_face,
-            self.config.beta_edge,
+            face.as_ref(),
+            edge_map.as_ref(),
+            self.config.beta_face.max(0.0),
+            self.config.beta_edge.max(0.0),
         );
-
-        if self.config.beta_face > 0.0 && self.config.high_freq_blend > 1e-4 {
-            importance_map.modulate_portrait_importance(
-                &prepared_srgb_luma,
-                &facial_saliency,
-                &sobel_res.magnitude,
-            );
-        }
-
         if let Some(brush) = user_brush_mask {
             importance_map.merge_user_brush(brush);
         }
 
-        // 7. Transformada de Radon e Filtro de Rampa
-        let sinogram = compute_radon_transform(&prepared_srgb_luma, &self.config.radon);
+        // 6. Transformada de Radon (diagnóstico)
+        let sinogram = compute_radon_transform(&work, &self.config.radon);
         let filtered_sinogram = apply_ramp_filter(&sinogram, None);
 
-        let importance_map_rgba = importance_map.to_preview_rgba();
-        let edges_rgba = edges_to_rgba(&canny_edges);
-        let radon_sinogram_rgba = filtered_sinogram.to_preview_rgba();
-
         let diagnostics = DspDiagnosticBuffers {
-            prepared_target_rgba,
-            importance_map_rgba,
-            edges_rgba,
-            radon_sinogram_rgba,
+            prepared_target_rgba: Rgba8Image::new(res, res, 4, prepared_rgba_bytes),
+            importance_map_rgba: importance_map.to_preview_rgba(),
+            edges_rgba: edges_to_rgba(&canny_edges),
+            radon_sinogram_rgba: filtered_sinogram.to_preview_rgba(),
         };
 
         self.cached_framed_rgba = Some(framed_rgba);
-        self.cached_framed_gray = Some(framed_gray);
-        self.cached_prepared_gray = Some(prepared_linear_gray);
+        self.cached_prepared_gray = Some(GrayImage::new(res, res, 1, prepared_gray_data));
         self.cached_prepared_linear_rgb = Some(prepared_linear_rgb);
+        self.cached_reference_linear_rgb = Some(reference);
         self.cached_sobel = Some(sobel_res);
         self.cached_edges = Some(canny_edges);
         self.cached_importance_map = Some(importance_map);
-        self.cached_sinogram = Some(sinogram);
         self.cached_filtered_sinogram = Some(filtered_sinogram);
         self.cached_diagnostics = Some(diagnostics);
 
@@ -326,13 +330,24 @@ impl DspPipeline {
         self.cached_diagnostics.as_ref()
     }
 
+    /// Foto enquadrada (bytes sRGB RGBA) antes de qualquer ajuste.
+    pub fn framed_rgba(&self) -> Option<&Rgba8Image> {
+        self.cached_framed_rgba.as_ref()
+    }
+
+    /// Luminância linear do alvo preparado.
     pub fn prepared_gray(&self) -> Option<&GrayImage> {
         self.cached_prepared_gray.as_ref()
     }
 
-    /// Retorna o tensor colorido RGB Linear preparado para o solver policromático ou monocromático.
+    /// Alvo do solver em luz linear.
     pub fn prepared_linear_rgb(&self) -> Option<&[LinearRgbColor]> {
         self.cached_prepared_linear_rgb.as_deref()
+    }
+
+    /// Referência das métricas: foto enquadrada sem ajustes nem realces, em luz linear.
+    pub fn reference_linear_rgb(&self) -> Option<&[LinearRgbColor]> {
+        self.cached_reference_linear_rgb.as_deref()
     }
 
     pub fn importance_map(&self) -> Option<&ImportanceMap> {
@@ -359,89 +374,82 @@ mod tests {
 
     #[test]
     fn test_dsp_pipeline_full_execution_and_caching() {
-        let w = 40u32;
-        let h = 40u32;
-        let mut source = Rgba8Image::fill(w, h, 4, 255u8);
-
+        let mut source = Rgba8Image::fill(40, 40, 4, 255u8);
         for y in 10..30 {
             for x in 10..30 {
                 source.set_pixel(x, y, &[180, 60, 40, 255]);
             }
         }
-
         let mut config = DspPipelineConfig::default();
         config.target_resolution = 32;
         config.radon.num_angles = 16;
         config.radon.num_rhos = 16;
+        config.beta_face = 2.0;
 
         let mut pipeline = DspPipeline::new(config);
-        let loom_spec = LoomPhysicalSpec::circle(400.0, 50, 2.0, 2.0, 10.0);
-        let loom = LoomGeometry::new(loom_spec);
-
+        let loom = LoomGeometry::new(LoomPhysicalSpec::circle(400.0, 50, 2.0, 2.0, 10.0));
         let mut brush = vec![0.0f32; 32 * 32];
         brush[16 * 32 + 16] = 2.0;
 
         let diag = pipeline.execute(&source, Some(&loom), Some(&brush));
-
         assert_eq!(diag.prepared_target_rgba.width, 32);
         assert_eq!(diag.prepared_target_rgba.height, 32);
         assert!(pipeline.prepared_linear_rgb().is_some());
+        assert!(pipeline.reference_linear_rgb().is_some());
 
         let imp = pipeline.importance_map().unwrap();
         assert!(imp.get(16, 16) > 2.0);
+        // sem pincel, o mapa nunca fica abaixo de 1
+        assert!(imp.as_slice().iter().all(|&w| w >= 1.0 - 1e-6));
     }
 
     #[test]
-    fn test_mid_gray_no_double_gamma() {
-        // Verifica que uma imagem cinza média uniforme (sRGB = 128/255 ≈ 0.502)
-        // com contrast=1.0, brightness=0.0, gamma=1.0, clahe=None, high_freq_blend=0.0
-        // produz prepared_linear_rgb com luminância linear ≈ 0.2158 (conversão única IEC 61966-2-1),
-        // e NÃO ≈ 0.046 (duplo gamma).
-        let w = 16u32;
-        let h = 16u32;
-        let mut source = Rgba8Image::fill(w, h, 4, 128u8);
-        for y in 0..h {
-            for x in 0..w {
-                source.set_pixel(x, y, &[128, 128, 128, 255]);
-            }
-        }
-
+    fn test_mid_gray_single_linear_conversion() {
+        let source = Rgba8Image::fill(16, 16, 4, 128u8);
         let config = DspPipelineConfig {
             target_resolution: 16,
-            clahe: None,
-            high_freq_blend: 0.0,
             monochrome_target: true,
-            contrast: 1.0,
-            brightness: 0.0,
-            gamma: 1.0,
             ..DspPipelineConfig::default()
         };
-
         let mut pipeline = DspPipeline::new(config);
         let diag = pipeline.execute(&source, None, None);
 
-        // No buffer sRGB de diagnóstico, cinza médio 128 deve permanecer 128
         let center_rgba = diag.prepared_target_rgba.get_pixel(8, 8);
         assert_eq!(center_rgba[0], 128);
-        assert_eq!(center_rgba[1], 128);
-        assert_eq!(center_rgba[2], 128);
 
-        // Em Linear RGB, sRGB(128/255 ≈ 0.50196) -> linear ≈ 0.21586
-        let lin_rgb = pipeline.prepared_linear_rgb().unwrap();
-        let center_lin = lin_rgb[(8 * 16 + 8) as usize].luminance();
-        assert!(
-            (center_lin - 0.21586).abs() < 0.01,
-            "Luminância linear de cinza médio (128) deve ser ~0.216 (sem duplo gamma), obtido: {}",
-            center_lin
-        );
+        // sRGB(128/255) -> linear ≈ 0.2159 (conversão única IEC 61966-2-1)
+        let lin = pipeline.prepared_linear_rgb().unwrap()[8 * 16 + 8].luminance();
+        assert!((lin - 0.21586).abs() < 0.005, "obtido {lin}");
+        let prep = pipeline.prepared_gray().unwrap().get_pixel(8, 8)[0];
+        assert!((prep - 0.21586).abs() < 0.005);
+    }
 
-        // Também verifica que prepared_gray() já contém luminância linear única
-        let prep_gray = pipeline.prepared_gray().unwrap();
-        let gray_val = prep_gray.get_pixel(8, 8)[0];
-        assert!(
-            (gray_val - 0.21586).abs() < 0.01,
-            "prepared_gray deve conter luminância linear ~0.216, obtido: {}",
-            gray_val
-        );
+    #[test]
+    fn test_neutral_pipeline_target_equals_reference() {
+        let mut source = Rgba8Image::fill(24, 24, 4, 255u8);
+        for y in 0..24 {
+            for x in 0..24 {
+                let v = (x * 10) as u8;
+                source.set_pixel(x, y, &[v, v / 2, 255 - v, 255]);
+            }
+        }
+        for mono in [true, false] {
+            let config = DspPipelineConfig {
+                target_resolution: 24,
+                monochrome_target: mono,
+                ..DspPipelineConfig::default()
+            };
+            let mut pipeline = DspPipeline::new(config);
+            pipeline.execute(&source, None, None);
+            let t = pipeline.prepared_linear_rgb().unwrap();
+            let r = pipeline.reference_linear_rgb().unwrap();
+            for (a, b) in t.iter().zip(r) {
+                assert!(
+                    (a.r - b.r).abs() < 0.01
+                        && (a.g - b.g).abs() < 0.01
+                        && (a.b - b.b).abs() < 0.01
+                );
+            }
+        }
     }
 }

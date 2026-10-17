@@ -18,14 +18,18 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
 - **Atingimento de Metas de Linhas e Repetições**:
   - Um tear circular com 200 pinos possui apenas ~16.500 pares de pinos possíveis, dos quais apenas ~7.500 cruzam a figura.
   - Para metas altas ($\ge 5.000$ cordas, ex: 10.000 cordas), configure `maxChordRepeats >= 2` ou `3`. Se `maxChordRepeats = 1`, o motor ficará sem cordas úteis com ganho positivo e parará prematuramente.
-- **Fidelidade de Retratos e Prevenção do "Buraco Negro" (Padrão Petros Vrellis)**:
-  - **Enquadramento e Escala Facial**: A cabeça/feições devem ocupar entre 75% e 85% do diâmetro útil do tear circular (olhos posicionados no terço superior). Retratos com enquadramento aberto/distante resultam em feições borradas ou irreconhecíveis.
-  - **Resolução de Simulação**: Para retratos, use resolução de grade $\ge 500$ px (padrão de `portrait-mono` e `portrait-cmyk`) para amostragem fiel de micro-feições (íris, pálpebras, narinas e lábios).
-  - **Proteção Assimétrica de Realces (`highlightProtection`)**: Configure entre $2.0$ e $4.0$. Aplica penalização progressiva contra o sobre-escurecimento de áreas de alta luminosidade ($T > 0.35$), garantindo que bochechas, testa e nariz permaneçam limpos de cordas errantes.
-  - **Realce de Saliência Multiescala e Nitidez**: Utilize filtro unsharp mask ($\sigma = 1.0 \dots 1.8$) combinado com saliência de Sobel em múltiplas escalas com compressão não-linear ($edges^\gamma, \gamma = 0.6$) e `edgeEmphasis` ($0.60$ a $0.80$).
-  - **Prevenção de Foco no Tronco**: Em retratos com roupas ou fundos pretos, combine **`shadowLift`** ($0.10$ a $0.15$) com **`torsoFeathering`** ($0.20$ a $0.30$) para atenuar progressivamente a base do tear e impedir que o corpo absorva cordas que deveriam desenhar a face.
+- **Fidelidade de Retratos (regras medidas no benchmark com foto real — `weaver-cli bench`)**:
+  - **Benchmark obrigatório antes de qualquer ajuste de qualidade**: toda mudança no solver, no DSP ou nos presets deve ser medida com `weaver-cli bench` sobre **fotos reais** (no mínimo o retrato do usuário e `bench/fixtures/venus_botticelli_face.png`), comparando SSIM e correlação "à distância" contra a foto enquadrada. Benchmarks com imagens sintéticas (ovais desenhados) **não** servem para julgar qualidade.
+  - **Enquadramento e Escala Facial**: A cabeça/feições devem ocupar entre 75% e 85% do diâmetro útil do tear circular (olhos posicionados no terço superior).
+  - **Resolução de Simulação**: use grade $\ge 500$ px para retratos (resoluções 300–600 px deram a mesma correlação estrutural; 500 px equilibra fidelidade e tempo).
+  - **Física do fio**: fios reais são praticamente opacos (`alpha_material ≈ 1.0`); o escurecimento por pixel vem da cobertura física $t_f \cdot R_{px} / D_{mm}$. Opacidades artificiais (ex.: 0.35) deixam a obra lavada/cinza e foram removidas. Solver (`build_spools`) e renderer (`DEFAULT_PALETTES`) devem usar as mesmas opacidades.
+  - **Função objetivo limpa**: o ganho de uma corda é a variação **exata** do erro quadrático ponderado em espaço perceptual (curva sRGB). Não acrescente constantes empíricas por região (amortecimentos de pele, fundo de estúdio, reservas de K etc.) — a pilha dessas heurísticas foi a principal causa dos resultados irreconhecíveis.
+  - **Proteção de realces (`highlightProtection`)**: padrão **0 (desligada)**. Valores 1–3 pioraram as duas imagens de referência (SSIM e correlação menores, imagem mais clara que a foto).
+  - **Realces do alvo**: CLAHE, unsharp e fusão de bordas ficam **desligados por padrão** (CLAHE 2.0 reduziu a correlação de 0,935 para 0,912 na Vênus). `shadowLift`/`torsoFeathering`/modelagem tonal de retrato e faixas anatômicas fixas no mapa de importância foram removidos.
+  - **Mapa de importância**: suave e limitado, $W = 1 + \beta_f M_{\text{face}} + \beta_e E \ge 1$ (sem regiões abaixo de 1, exceto pelo pincel do usuário). Padrão $\beta_f = 2.0$, $\beta_e = 0$.
+  - **Passe de refinamento (`refine_passes`)**: implementado com movimentos que preservam o fio contínuo (realocação/remoção de nós). Nas imagens de referência não trouxe ganho mensurável e custa 2–4× o tempo, por isso o padrão é **0**; mantenha-o disponível e reavalie com o benchmark.
 - **Parâmetros e Heurísticas Legadas Expurgadas (NUNCA Reintroduzir)**:
-  - Os seguintes parâmetros e controles distorciam a função objetivo e foram permanentemente banidos do estado, tipos e UI: `centerDampRadiusMm` (Damping central), `angularDiversity` (Dispersão angular), `lengthPenalty` (Penalidade comp. fio), `stopWhenNoImprovement`, `halftoneMixing` / `halftoneRadiusMm`, `refinePasses`, `candidatePruning` (`lazy`), `rasterCacheMb` e os seletores legados de aceleração JS / Workers JS.
+  - Os seguintes parâmetros e controles distorciam a função objetivo e foram permanentemente banidos do estado, tipos e UI: `centerDampRadiusMm` (Damping central), `angularDiversity` (Dispersão angular), `lengthPenalty` (Penalidade comp. fio), `stopWhenNoImprovement`, `halftoneMixing` / `halftoneRadiusMm`, `candidatePruning` (`lazy`), `rasterCacheMb` e os seletores legados de aceleração JS / Workers JS.
 - **Espaços de Cor e Separação de Domínios**:
   - **Mistura Óptica e Física de Transmitância**: Opera exclusivamente no espaço **Linear RGB** com ponto branco D65 ($T = \prod (1 - \alpha c_i)$). Jamais calcule absorção ou cobertura de fios no espaço sRGB gama-codificado, pois distorce tons médios e causa escurecimento prematuro.
   - **Decisão de Erro e Função Perceptual**: Opera no espaço **CIELAB** ($\Delta E^*_{76}$ ou $\Delta E_{00}$ CIEDE2000 canônico) ou aproximações rápidas ponderadas (**Redmean** / luminância Rec. 709).
@@ -151,27 +155,28 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     - O filtro passa-alta em rampa de Ram-Lak opera no domínio espacial/discreto 1D com $h[0] = 0.25$, $h[n] = -1/(\pi^2 n^2)$ para $n$ ímpar e $h[n] = 0$ para $n$ par, eliminando FFT externa e preservando compilação pura para `wasm32-unknown-unknown`.
   - **Orquestrador de DSP e Cache de Diagnóstico**:
     - `DspPipeline` deve reter buffers intermediários em cache e exportar os 4 buffers da Studio View (`PreparedTargetRGBA`, `ImportanceMapRGBA`, `EdgesRGBA`, `RadonSinogramRGBA`), além do preview composto `EdgeAndRadonPreviewRGBA`.
-- **Fundação Física e Métrica dos Solvers (Camada 2 - `weaver-solvers` / Task 2.3)**:
+- **Fundação Física e Métrica dos Solvers (Camada 2 - `weaver-solvers`)**:
   - **Layout SoA (_Struct of Arrays_) e Alinhamento SIMD**:
-    - O estado da tela em simulação deve residir em `CanvasStateSoA`, mantendo vetores planos contíguos `Vec<f32>` separados por canal (`target_c0..c2`, `current_c0..c2`, `importance_w`, `edge_map`).
+    - O estado da tela em simulação deve residir em `CanvasStateSoA`, mantendo vetores planos contíguos `Vec<f32>` separados por canal (`target_c0..c2`, `current_c0..c2`, `importance_w`, `base_importance_w`).
     - Todos os vetores devem ser preenchidos até múltiplos de `SOA_SIMD_LANE_ALIGNMENT = 16` floats (64 bytes / linha de cache AVX-512) com peso zero nos elementos de padding, garantindo laços vetorizados limpos sem tail-loops escalares ou desvios condicionais.
-  - **Compensação Automática de Resolução vs. Espessura Física (RF-2.3)**:
-    - O solver deve sempre utilizar $\alpha_{\text{efetivo}} = \alpha_{\text{material}} \cdot \min\left(1.0, \frac{t_f \cdot R_{\text{px}}}{D_{\text{mm}}}\right)$ para garantir invariância fotométrica estrita ao alterar a resolução da malha de simulação.
-  - **Expansão Algébrica Rápida de Ganho Marginal Porter-Duff**:
-    - A avaliação de ganho em laço fechado para o modelo `PorterDuffOcclusion` deve utilizar a expansão exata:
-      $$\text{Ganho}(p, k) = W(p) \cdot \left[ 2(\alpha w) \langle \mathbf{e}(p), \mathbf{d}_k(p) \rangle_{\mathbf{M}} - (\alpha w)^2 \|\mathbf{d}_k(p)\|_{\mathbf{M}}^2 \right]$$
-      onde $\mathbf{e}(p) = C^{(t)}(p) - T(p)$ e $\mathbf{d}_k(p) = C^{(t)}(p) - \mathbf{s}_k$, com tensor métrico diagonal $\mathbf{M}$ adaptado perceptual e deterministicamente em $O(1)$.
+  - **Cobertura Física vs. Resolução (RF-2.3)**:
+    - A cobertura por pixel é $c = \min\left(1.0, \frac{t_f \cdot R_{\text{px}}}{D_{\text{mm}}}\right)$ (`compute_effective_alpha` com $\alpha = 1$); a opacidade efetiva de um fio é $a = c \cdot \alpha_{\text{material}} \cdot w_{\text{sub-pixel}}$, aplicada **por carretel** pelo `OpticalModelEvaluator`. Não aplique `clamp` arbitrário à cobertura.
+  - **Função Objetivo Exata (`optical_models.rs`)**:
+    - O ganho de uma corda é a variação exata $\sum_p W(p) \left[ e_{\text{antes}}(p)^2 - e_{\text{depois}}(p)^2 \right]$, com $e = \text{enc}(C) - \text{enc}(T)$ e `enc` = curva sRGB (LUT de 4096 entradas); `ColorErrorMetric::LinearRgb` usa `enc` = identidade.
+    - Modo `luma_only` (alvo e fio neutros) avalia um único canal; `chord_removal_gain`/`remove_chord` invertem a mistura óptica para o passe de refinamento.
   - **Estratégias de Carretel e Teto de Trocas Físicas**:
-    - A estratégia `CoarseToFineEpochs` deve particionar deterministicamente as épocas de Base, Refino e Topo, assegurando rigorosamente menos de 15 trocas totais de carretel em 6.000 passos.
-    - Na Época 3 (últimos ~15%), o carretel Preto (K) deve ser forçado por cima das cores anteriores, aplicando elevação de importância de bordas $W(p) \leftarrow W(p) + \Delta\beta \cdot E(p)$ para máxima definição facial.
-  - **Estabilidade Numérica $f64$ em Métricas Incrementais $O(|L|)$**:
-    - O `IncrementalMetricsTracker` particiona a grade em blocos $8 \times 8$. Para evitar drift por acúmulo de erros de arredondamento em subtrações sucessivas ao longo de milhares de cordas, os acumuladores internos ($\sum Y_T, \sum Y_C, \sum Y_T^2, \sum Y_C^2, \sum Y_T Y_C$ e somas quadráticas) **devem** ser rigorosamente em ponto flutuante de dupla precisão (`f64`), garantindo tolerância $< 10^{-6}$ em relação ao cálculo integral de referência.
+    - A estratégia `CoarseToFineEpochs` deve particionar deterministicamente as épocas de Base, Refino e Topo, assegurando rigorosamente menos de 15 trocas totais de carretel em 6.000 passos. O mapa de importância **não** é alterado durante a execução (o antigo reforço de bordas por época foi removido).
+  - **Métricas (`telemetry_metrics.rs` / `MetricsTracker`)**:
+    - Referência = foto enquadrada **sem realces** (`DspPipeline::reference_linear_rgb`), nunca o alvo processado.
+    - Tela e referência desfocadas por gaussiana ($\sigma$ = resolução/250 px, visão à distância); SSIM padrão (janela gaussiana 1,5) e RMSE em luma sRGB; ΔE\*76 médio em CIELAB — tudo apenas dentro do disco do tear. Recalculadas a cada 250 passos e ao final.
 - **Motores de Otimização e Solvers (Camada 2 - `weaver-solvers` / Task 2.4)**:
   - **Solver 1: Algoritmo Guloso Iterativo (`solvers/greedy.rs`)**:
     - Varre todos os pinos candidatos $p_{\text{prox}}$ a partir de $p_{\text{atual}}$ lendo as fatias contíguas da `SparseChordMatrixCSR`.
-    - Normalização de Score: $\text{Score}(L, k) = \frac{1}{|L|^\gamma} \sum_{p \in L} \text{Ganho}(p, k) - \text{PenalidadeTroca}(k)$ com expoente $\gamma \ge 0$.
-    - Desempate estritamente determinístico (RNF-02): maior score; em empate $\le 10^{-7}$, menor `to_pin`; em novo empate, menor `spool_id`.
-    - Respeito a `max_chord_repeats` e fila FIFO de histórico Tabu recente. Buffer mutável `old_colors_buf` reutilizado a cada passo para zero alocações na heap.
+    - Normalização de Score: $\text{Score}(L, k) = \frac{\Delta E(L, k)}{|L|^\gamma} - \text{PenalidadeTroca}(k)$, onde $|L|$ é a integral de cobertura sub-pixel; para quando nenhuma corda reduz o erro.
+    - Desempate estritamente determinístico (RNF-02): maior score; em empate, menor `to_pin`; em novo empate, menor `spool_id`.
+    - Respeito a `max_chord_repeats` e fila FIFO de histórico Tabu recente.
+  - **Passe de Refinamento (`solvers/refine.rs`)**:
+    - Revisita os nós internos do caminho $(a \to p \to b)$ testando realocação de $p$ e remoção do nó, aceitando apenas movimentos que reduzem o erro exato e preservando o fio único e contínuo. `SolverSession` executa as fases Construção → Refinamento → Preenchimento e incrementa `path_revision` (ControlBlock `Int32[4]`) quando reescreve passos, para o renderer redesenhar do zero.
   - **Solver 2: Busca em Feixe sem Explosão de Memória (`solvers/beam_search.rs`)**:
     - Parametrizado por largura de feixe $B \in [2, 16]$ e profundidade de lookahead $d \in [2, 4]$.
     - Proibição de clonagem por candidato: pool estático fixo de exatamente $2 \times B$ estados `CanvasStateSoA` (`pool_a` e `pool_b`) pré-alocado na inicialização.
@@ -308,7 +313,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
 
 ## Formas de Atuação
 
-Você está atuando em um sistema de alta precisão matemática e mecânica (**Weaver Art**): um motor de *String Art* computacional policromático e manufatura assistida (CAM) construído em **Rust (WebAssembly SIMD)** e **TypeScript (WebGL2)**.
+Você está atuando em um sistema de alta precisão matemática e mecânica (**Weaver Art**): um motor de _String Art_ computacional policromático e manufatura assistida (CAM) construído em **Rust (WebAssembly SIMD)** e **TypeScript (WebGL2)**.
 
 Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e obedecer rigorosamente a este documento e às especificações em `docs/REQUIREMENTS.md`, `docs/ARCHITECTURE.md` e `docs/ALGORITHM.md`.
 
@@ -329,23 +334,27 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
 ## 2. Invariantes Críticas do Sistema (NUNCA VIOLE)
 
 ### Invariante 1: Unificação do Sistema de Coordenadas (Rust $\leftrightarrow$ Canvas 2D $\leftrightarrow$ WebGL2)
-* **Convenção do Pino 0 e Sentido de Rotação:**
+
+- **Convenção do Pino 0 e Sentido de Rotação:**
   - Em **TODOS** os módulos (`weaver-domain`, `WebGLLoomRenderer`, `BlueprintCanvas` e `PlayerView`), o **Pino 0 (`index = 0`) DEVE iniciar no topo (12 horas, ângulo $-\frac{\pi}{2}\text{ rad}$ ou $-90^\circ$)** e avançar no **sentido horário (CW)**.
   - Nunca inicie o contorno circular em $0\text{ rad}$ (3 horas) no Rust, pois isso rotaciona a obra em $90^\circ$ em relação à tela.
-* **Convenção do Eixo Vertical ($Y$):**
+- **Convenção do Eixo Vertical ($Y$):**
   - Na imagem alvo (`weaver-dsp`) e no Canvas 2D (`core-helpers.ts`), a origem $(0,0)$ fica no **canto superior esquerdo** ($Y$ cresce para baixo).
   - No **WebGL2 (`webgl-loom-renderer.ts`)**, o framebuffer possui origem no **canto inferior esquerdo** ($Y$ cresce para cima). Portanto, ao enviar os vértices das cordas (`seg.y0`, `seg.y1`) para o WebGL2, **DEVE-SE** converter a coordenada vertical fazendo `y_webgl = extentMm - seg.y`, e no arraste do mouse (`pointermove`) o deslocamento `panY` no WebGL deve subtrair `dy`.
 
 ### Invariante 2: Integridade de Dimensões de Buffers de Imagem
-* Nunca desenhe um `Uint8ClampedArray` em um `<canvas>` assumindo dimensões fixas sem antes validar se `data.length === width * height * 4`.
-* Caso a pré-visualização instantânea opere em `256x256` e o Wasm opere em `500x500`, o método de pintura deve inferir `actualSide = Math.round(Math.sqrt(data.length / 4))` e redimensionar o `canvas.width` e `canvas.height` antes de chamar `ctx.putImageData()`, evitando o bug de listras diagonais corrompidas.
+
+- Nunca desenhe um `Uint8ClampedArray` em um `<canvas>` assumindo dimensões fixas sem antes validar se `data.length === width * height * 4`.
+- Caso a pré-visualização instantânea opere em `256x256` e o Wasm opere em `500x500`, o método de pintura deve inferir `actualSide = Math.round(Math.sqrt(data.length / 4))` e redimensionar o `canvas.width` e `canvas.height` antes de chamar `ctx.putImageData()`, evitando o bug de listras diagonais corrompidas.
 
 ### Invariante 3: Imutabilidade do Enquadramento do Usuário (`Pan / Zoom / Rotação`)
-* Quando o usuário posicionar a foto manualmente (via mouse ou sliders `cropZoom`, `cropPanX`, `cropPanY`, `cropRotation`), **NENHUM** evento de mudança de Preset, mudança de número de linhas ou retorno assíncrono do Worker Wasm pode sobrescrever os valores dos sliders de enquadramento na UI.
-* O arraste da foto na aba `1. Alvo` deve ser renderizado instantaneamente a 60 FPS no cliente via `ctx.drawImage` acelerado por GPU, aplicando *debounce* ($\ge 200\text{ ms}$) nas chamadas `loadAndPrepareImage` do Wasm para jamais travar a *Main Thread*.
+
+- Quando o usuário posicionar a foto manualmente (via mouse ou sliders `cropZoom`, `cropPanX`, `cropPanY`, `cropRotation`), **NENHUM** evento de mudança de Preset, mudança de número de linhas ou retorno assíncrono do Worker Wasm pode sobrescrever os valores dos sliders de enquadramento na UI.
+- O arraste da foto na aba `1. Alvo` deve ser renderizado instantaneamente a 60 FPS no cliente via `ctx.drawImage` acelerado por GPU, aplicando _debounce_ ($\ge 200\text{ ms}$) nas chamadas `loadAndPrepareImage` do Wasm para jamais travar a _Main Thread_.
 
 ### Invariante 4: Sincronização de Fonte Única da Verdade (Estúdio $\leftrightarrow$ BOM $\leftrightarrow$ Modo Tecelagem)
-* A tabela de `Estimativa de Carretéis`, os contadores de rodapé (`LINHAS`, `FIO`, `TROCAS / NÓS`) e o `Modo Tecelagem` devem ler **exatamente a mesma sequência de passos e a mesma paleta de cores ativa** (`MONOCHROME`, `CMYK_SUBTRACTIVE`, `RGB_OCCLUSIVE` ou `USER_CUSTOM`).
+
+- A tabela de `Estimativa de Carretéis`, os contadores de rodapé (`LINHAS`, `FIO`, `TROCAS / NÓS`) e o `Modo Tecelagem` devem ler **exatamente a mesma sequência de passos e a mesma paleta de cores ativa** (`MONOCHROME`, `CMYK_SUBTRACTIVE`, `RGB_OCCLUSIVE` ou `USER_CUSTOM`).
 
 ---
 
@@ -354,13 +363,14 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
 1. **PROIBIDO converter o alvo para escala de cinza quando `paletteMode !== 'MONOCHROME'`:** Em modos coloridos, o CLAHE e ajustes tonais atuam apenas na luminância, preservando 100% da cromaticidade RGB.
 2. **PROIBIDO permitir que fios coloridos (C, M, Y) atuem em pixels acromáticos/pretos:** Sem separação UCR/GCR, o carretel Amarelo tenta reduzir a distância euclidiana RGB em roupas pretas ou óculos escuros, criando bordas amarelas artificiais na periferia do aro.
 3. **PROIBIDO penalizar excessivamente o fundo branco (> 0.5x):** Toda corda que desenha os olhos e óculos no centro precisa atravessar o fundo claro nas laterais da cabeça. Uma penalidade severa no fundo branco bloqueia o centro do retrato e aborta o solver prematuramente.
-4. **PROIBIDO alocar memória na Heap ou recalcular mapas inteiros dentro do *hot loop*:** Nunca execute cópias de `250.000` pixels a cada passo individual do solver.
+4. **PROIBIDO alocar memória na Heap ou recalcular mapas inteiros dentro do _hot loop_:** Nunca execute cópias de `250.000` pixels a cada passo individual do solver.
 
 ---
 
 ## 4. Comandos de Verificação Obrigatória após cada Tarefa
 
 Antes de dar qualquer tarefa por concluída, execute e valide:
+
 1. `cargo test --workspace` (Todos os testes unitários e de integração em Rust devem passar).
 2. `npm run build:wasm` (O pacote WebAssembly em `apps/web/src/core-bridge/pkg` deve ser atualizado sempre que arquivos `.rs` forem tocados).
 3. `npm --prefix apps/web run typecheck` (`tsc --noEmit` deve passar com zero erros).

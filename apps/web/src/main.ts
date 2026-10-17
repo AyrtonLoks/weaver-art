@@ -719,9 +719,9 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
     maxChordRepeats: Number(fields.repeats.value) || cfg.maxChordRepeats,
     targetResolution: Number(fields.resolution.value) || 500,
     claheClipLimit: fields.clahe.checked ? Number(fields.claheClip.value) || 2.0 : 0.0,
-    faceImportanceWeight: Number(faceImportanceWeightInput.value) || cfg.faceImportanceWeight,
+    faceImportanceWeight: finiteOr(faceImportanceWeightInput.value, cfg.faceImportanceWeight),
     edgeDetector,
-    edgeBlendWeight: edgeDetector === 'NONE' ? 0.0 : Number(edgeBlendWeightInput.value) || cfg.edgeBlendWeight,
+    edgeBlendWeight: edgeDetector === 'NONE' ? 0.0 : finiteOr(edgeBlendWeightInput.value, cfg.edgeBlendWeight),
     contrast: Number(fields.contrast.value) || 1.0,
     brightness: Number(fields.brightness.value) || 0.0,
     gamma: Number(fields.gamma.value) || 1.0,
@@ -733,6 +733,12 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
       autoFaceTargetRatio: 0.0,
     },
   };
+}
+
+/** Converte o valor de um input numérico, aceitando 0 (ao contrário de Number(x) || padrão). */
+function finiteOr(raw: string, fallback: number): number {
+  const v = Number(raw);
+  return raw.trim() !== '' && Number.isFinite(v) ? v : fallback;
 }
 
 let dspDebounceTimer: ReturnType<typeof setTimeout> | null = null;

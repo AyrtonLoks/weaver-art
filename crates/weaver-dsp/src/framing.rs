@@ -193,10 +193,7 @@ pub fn apply_affine_transform(
 ///
 /// Combina mapa de energia de alta frequência (gradiente de Sobel), probabilidade cromática de pele
 /// e prior composicional central para estimar o centroide da cabeça e proporção de 80%.
-pub fn compute_auto_framing(
-    image: &Rgba8Image,
-    options: &AutoFramingOptions,
-) -> AutoFramingResult {
+pub fn compute_auto_framing(image: &Rgba8Image, options: &AutoFramingOptions) -> AutoFramingResult {
     let gray = image.to_gray();
     let width = image.width;
     let height = image.height;
@@ -286,7 +283,9 @@ pub fn compute_auto_framing(
     let face_w = max_x - min_x;
     let face_h = max_y - min_y;
     let min_dim = (width.min(height) as f32).max(1.0);
-    let face_extent = (face_w * 1.05).max(face_h * 0.90).clamp(0.20 * min_dim, 0.76 * min_dim);
+    let face_extent = (face_w * 1.05)
+        .max(face_h * 0.90)
+        .clamp(0.20 * min_dim, 0.76 * min_dim);
 
     // 5. Cálculo dos parâmetros ideais de enquadramento
     // Em apply_affine_transform: x_in = c_in_x - pan_x * r_in + dx * scale.
@@ -460,4 +459,3 @@ mod tests {
         assert!(!mask.is_inside(0, 0));
     }
 }
-

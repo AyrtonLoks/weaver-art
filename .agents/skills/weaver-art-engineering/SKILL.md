@@ -116,13 +116,13 @@ Para atingir a qualidade expressiva e reconhecimento facial característicos da 
    - Posicione os olhos no terço superior da área circular (evite colocar o centro do nariz exatamente no centro geométrico).
    - Na Web UI, use o botão "Enquadrar Rosto (80%)" ou ajuste Zoom ~ 1.25 a 1.40 com pan vertical.
 
-2. **Uso dos Presets Calibrados**:
-   - `portrait-mono`: monocromático de alta fidelidade com resolução de 500 px, 4.000 cordas, repetições = 2, proteção de realce 2.5, CLAHE ativado, unsharp mask $\sigma = 1.5$ e saliência multiescala $0.8$.
-   - `portrait-cmyk`: retrato em 4 camadas sequenciais (Amarelo 30%, Magenta 5%, Ciano 25%, Preto 40%) com 6.000 cordas e rollover dinâmico para o preto final.
+2. **Uso dos Presets Calibrados** (padrões medidos com `weaver-cli bench` em fotos reais):
+   - Monocromático: fio preto opaco (`alpha_material = 1.0`), resolução 500 px, CLAHE desligado, proteção de realces 0, foco facial `β_face = 2.0`, reforço de bordas 0, refinamento desligado.
+   - CMYK: camadas sequenciais com o preto por último; a calibração de cores é a próxima fase (ainda não validada no benchmark).
 
-3. **Ajuste de Parâmetros de Fidelidade Facial**:
-   - **`highlightProtection` (2.0 a 4.0)**: Se bochechas, testa ou ponta do nariz ficarem sujas de linhas escuras, aumente o fator para 3.0 ou 3.5.
-   - **`torsoFeathering` (0.2 a 0.3)** e **`shadowLift` (0.1 a 0.15)**: Em fotos com roupas pretas ou terno, ative ambos para suavizar o tronco e impedir que o corpo roube linhas das feições.
+3. **Ajuste de Parâmetros de Fidelidade Facial — sempre medindo**:
+   - Antes de mudar qualquer padrão, rode `weaver-cli bench` no retrato do usuário **e** em `bench/fixtures/venus_botticelli_face.png` e compare SSIM/correlação "à distância" e o brilho médio contra a foto. Só adote o ajuste se melhorar as duas imagens.
+   - Resultados de referência (288 pinos, 4.000 linhas máx.): `highlightProtection` 1–3, CLAHE 2.0, unsharp e reforço de bordas **pioraram** ou não mudaram a fidelidade; `β_face` 2–3 melhorou o retrato (+0,01 de correlação) com efeito neutro na Vênus. `shadowLift`/`torsoFeathering` foram removidos.
 
 ### 10. Arquitetura do Cargo Workspace e SharedArrayBuffer
 
@@ -275,38 +275,34 @@ Ao utilizar ou estender a Camada 2 para preparar imagens de tecelagem:
    - Instancie `let mut pipeline = DspPipeline::new(config);`.
    - Execute com `let diag = pipeline.execute(&rgba, Some(&loom), user_brush);`.
    - Obtenha os buffers RGBA diretamente via `diag.prepared_target_rgba`, `diag.importance_map_rgba`, `diag.edges_rgba`, `diag.radon_sinogram_rgba` ou `diag.edge_and_radon_preview_rgba()`.
-2. **Ajuste de Pesos Faciais**:
-   - `beta_face` (padrão 3.0): reforça o peso relativo dos olhos, boca e nariz.
-   - `beta_edge` (padrão 1.0): reforça o peso do contorno do rosto, sobrancelhas e armação de óculos.
-   - `high_freq_blend` (padrão 0.15): escurece fisicamente os pixels de borda na imagem alvo, induzindo o solver a traçar cordas diretamente sobre as linhas de expressão.
+2. **Ajuste de Pesos Faciais** (todos opcionais; padrão desligado salvo indicação):
+   - `beta_face` (padrão 2.0 na UI): reforça suavemente a região facial; o mapa é $W = 1 + \beta_f M + \beta_e E \ge 1$.
+   - `beta_edge` (padrão 0): reforço de bordas no mapa de importância.
+   - `high_freq_blend`, `sharpen_amount`, `clahe`: realces do alvo, desligados por padrão (pioraram o benchmark).
+   - `reference_linear_rgb()`: foto enquadrada sem realces — use-a como referência das métricas.
 
-### 20. Motor de Solvers e Métricas Incrementais (Camada 2 - `weaver-solvers`)
+### 20. Motor de Solvers e Métricas (Camada 2 - `weaver-solvers`)
 
 Ao implementar ou estender solvers gulosos, Beam Search ou FISTA na Camada 2:
 
 1. **Instanciação do Pipeline de Otimização**:
-   - Crie a matriz de estado SoA:
-     ```rust
-     let mut canvas = CanvasStateSoA::from_target_and_background(w, h, &target_linear, background, Some(&importance));
-     canvas.set_edge_map(&edges);
-     ```
-   - Instancie o avaliador óptico e o rastreador de telemetria:
-     ```rust
-     let evaluator = OpticalModelEvaluator::new(OpticalMixModelType::PorterDuffOcclusion, ColorErrorMetric::LinearRgb);
-     let mut tracker = IncrementalMetricsTracker::new(&canvas);
-     let mut scheduler = SpoolScheduler::new(strategy, max_steps, initial_spool);
-     ```
 
-2. **Avaliação e Aplicação de Cordas em Laço $O(|L|)$**:
-   - Para cada corda candidata $(a, b)$, obtenha a fatia de pixels da CSR `(pixels, weights) = matrix.get_chord(a, b)`.
-   - Calcule o ganho marginal instantâneo com `evaluator.chord_marginal_gain(&canvas, pixels, weights, &spool, alpha_eff)`.
-   - Desconte a penalidade de troca via `scheduler.switch_penalty(spool.id)`.
-   - Ao aplicar a melhor corda:
-     1. Salve as cores antigas dos pixels interceptados em um buffer temporário.
-     2. Aplique a corda: `evaluator.apply_chord(&mut canvas, pixels, weights, &spool, alpha_eff)`.
-     3. Atualize a telemetria em tempo $O(|L|)$: `tracker.update_pixels(&canvas, pixels, &old_colors)`.
-     4. Avance o agendador: `scheduler.advance_step(spool.id, &spools)`.
-     5. Se o agendador solicitar elevação de bordas (`scheduler.active_edge_boost() > 0.0`), atualize `canvas.apply_edge_importance_boost(boost)`.
+   ```rust
+   let canvas = CanvasStateSoA::from_target_and_background(w, h, &target_linear, LinearRgbColor::WHITE, Some(&importance));
+   let coverage = compute_effective_alpha(1.0, Millimeters(thread_mm), Pixels(res), Millimeters(diameter_mm));
+   let evaluator = OpticalModelEvaluator::new(OpticalMixModelType::PorterDuffOcclusion, ColorErrorMetric::CielabDeltaE2000)
+       .with_luma_only(true); // monocromático
+   let spools = vec![SpoolColor::new(0, LinearRgbColor::new(0.02, 0.02, 0.02), 1.0)]; // fio opaco
+   let mut session = SolverSession::new_greedy(cfg, canvas, matrix, evaluator, scheduler, spools, coverage)
+       .with_refinement(RefineConfig { passes: 0, ..Default::default() });
+   session.set_metrics_reference(dsp.reference_linear_rgb().unwrap());
+   while !session.is_finished() { session.step_batch(200); }
+   ```
+
+2. **Avaliação e Aplicação de Cordas**:
+   - `evaluator.chord_marginal_gain(&canvas, pixels, weights, &spool, coverage)` retorna a redução **exata** do erro perceptual; `apply_chord` / `remove_chord` aplicam e desfazem a corda.
+   - Não acrescente fatores empíricos ao ganho; se precisar priorizar regiões, use o mapa de importância e meça no benchmark.
+   - As métricas (`MetricsTracker`) são recalculadas pela própria `SolverSession` a cada 250 passos e ao final.
 
 ### 21. Instanciação e Execução dos Solvers com `SolverSession` (Camada 2 - `weaver-solvers`)
 
@@ -451,15 +447,16 @@ Ao conectar o motor Rust compilado ao frontend TypeScript:
 
 Para testar o pipeline completo fora do navegador com máximo desempenho e diagnóstico detalhado:
 
-1. **Executar Benchmark Ponta-a-Ponta**:
+1. **Benchmark de qualidade com foto real (obrigatório para julgar qualidade)**:
    ```powershell
    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-   cargo run --release -p weaver-cli
+   cargo build --release -p weaver-cli
+   .\target\release\weaver-cli.exe bench --image bench\fixtures\venus_botticelli_face.png --pins 288 --lines 4000 --face 2 --out bench-out --label venus
+   .\target\release\weaver-cli.exe bench --image <foto do usuário> --zoom 1.08 --pan-y 40 --pins 288 --lines 4000 --face 2 --out bench-out --label retrato
    ```
-2. **Critérios de Aceite**:
-   - 4.000 cordas resolvidas em $< 2.0\text{ s}$ (esperado: $\sim 0.9\text{ s}$ a $1.2\text{ s}$).
-   - Telemetria final esperada: $SSIM > 0.70$, $\Delta E < 3.5$, zero alocações por passo.
-   - Geração e exportação instantânea de arquivos CAM de validação (`test_drilling.svg`, `test_drilling.pdf`, `test_drilling.csv`, `test_drilling.nc`, `test_artwork.svg`, `test_bom.json`).
+   Flags: `--res --thread --repeats --gap --hp --face --edge --clahe --sharpen --refine --window --metric linear --len-gamma`. Grava `*_canvas.png`, `*_target.png`, `*_importance.png`.
+2. **Referências atuais (288 pinos, 4.000 linhas, `--face 2`)**: Vênus SSIM ≈ 0,83 / correlação ≈ 0,934; retrato do usuário SSIM ≈ 0,81 / correlação ≈ 0,91; brilho médio dentro de ±0,02 da foto. Uma mudança só é aceita se não piorar essas referências.
+3. **Benchmark de desempenho e CAM**: `cargo run --release -p weaver-cli` (sem argumentos) usa um retrato sintético apenas para medir tempo e exportações CAM — **não** use seus números de SSIM para julgar qualidade.
 
 ### 27. Renderizador Físico WebGL2 e Shaders de Simulação (`WebGLLoomRenderer`)
 

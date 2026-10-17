@@ -13,13 +13,12 @@ pub mod pipeline;
 pub mod radon;
 
 pub use contrast::{
-    adjust_radiometry, apply_brightness, apply_gamma, apply_portrait_tone_shaping,
-    apply_sigmoidal_contrast, apply_unsharp_mask, clahe_channel, clahe_gray, clahe_lab,
-    clahe_linear_rgb, compute_channel_entropy, ClaheConfig,
+    adjust_radiometry, apply_brightness, apply_gamma, apply_sigmoidal_contrast, apply_unsharp_mask,
+    clahe_channel, clahe_gray, clahe_lab, clahe_linear_rgb, compute_channel_entropy, ClaheConfig,
 };
 pub use edges::{
     canny, compute_multiscale_saliency, edges_to_rgba, fuse_high_frequency, gaussian_blur_5x5,
-    sobel, CannyConfig, SobelResult,
+    gaussian_blur_gray, sobel, CannyConfig, SobelResult,
 };
 pub use framing::{
     apply_affine_transform, compute_auto_framing, AutoFramingOptions, AutoFramingResult,
@@ -95,10 +94,20 @@ mod tests {
 
         // O desvio padrão (contraste local) deve aumentar substancialmente devido à equalização
         let mean_before: f32 = low_contrast.iter().sum::<f32>() / total as f32;
-        let std_before = (low_contrast.iter().map(|&v| (v - mean_before).powi(2)).sum::<f32>() / total as f32).sqrt();
+        let std_before = (low_contrast
+            .iter()
+            .map(|&v| (v - mean_before).powi(2))
+            .sum::<f32>()
+            / total as f32)
+            .sqrt();
 
         let mean_after: f32 = equalized.iter().sum::<f32>() / total as f32;
-        let std_after = (equalized.iter().map(|&v| (v - mean_after).powi(2)).sum::<f32>() / total as f32).sqrt();
+        let std_after = (equalized
+            .iter()
+            .map(|&v| (v - mean_after).powi(2))
+            .sum::<f32>()
+            / total as f32)
+            .sqrt();
 
         assert!(
             std_after > std_before * 2.0,
@@ -109,7 +118,10 @@ mod tests {
 
         // A amplitude dinâmica (max - min) deve ser ampliada expressivamente em relação à original
         let min_orig = low_contrast.iter().copied().fold(f32::INFINITY, f32::min);
-        let max_orig = low_contrast.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let max_orig = low_contrast
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
         let min_val = equalized.iter().copied().fold(f32::INFINITY, f32::min);
         let max_val = equalized.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
@@ -149,7 +161,10 @@ mod tests {
         for p in &pixels {
             assert_eq!(p.a, 25.0, "Canal a* não pode ser alterado por CLAHE");
             assert_eq!(p.b, -30.0, "Canal b* não pode ser alterado por CLAHE");
-            assert!(p.l >= 0.0 && p.l <= 100.0, "L* deve estar no intervalo CIELAB");
+            assert!(
+                p.l >= 0.0 && p.l <= 100.0,
+                "L* deve estar no intervalo CIELAB"
+            );
         }
     }
 
@@ -397,11 +412,17 @@ mod tests {
 
         // O gradiente deve ser alto na borda do bloco (x=8, y=12)
         let edge_mag = sobel_res.magnitude.get_pixel(8, 12)[0];
-        assert!(edge_mag > 0.20, "Magnitude de Sobel na borda deve ser significativa");
+        assert!(
+            edge_mag > 0.20,
+            "Magnitude de Sobel na borda deve ser significativa"
+        );
 
         // O centro do bloco (x=12, y=12) é homogêneo, logo gradiente deve ser nulo
         let center_mag = sobel_res.magnitude.get_pixel(12, 12)[0];
-        assert!(center_mag < 1e-4, "Região homogênea interna deve ter gradiente nulo");
+        assert!(
+            center_mag < 1e-4,
+            "Região homogênea interna deve ter gradiente nulo"
+        );
 
         // Canny detector completo
         let config = CannyConfig {
@@ -450,7 +471,11 @@ mod tests {
         imp.merge_user_brush(&brush);
 
         assert!((imp.get(8, 8) - (expected + 1.1)).abs() < 1e-4);
-        assert_eq!(imp.get(0, 0), 0.0, "Pincel negativo deve permitir zerar a importância");
+        assert_eq!(
+            imp.get(0, 0),
+            0.0,
+            "Pincel negativo deve permitir zerar a importância"
+        );
 
         // Preview RGBA
         let preview = imp.to_preview_rgba();
@@ -488,7 +513,10 @@ mod tests {
 
         // O centro (rho ~ 0, linha 8) deve ter valor alto de projeção
         let center_val = sinogram.get(8, 0);
-        assert!(center_val > 1.0, "Projeção central deve conter densidade absorvida");
+        assert!(
+            center_val > 1.0,
+            "Projeção central deve conter densidade absorvida"
+        );
 
         // Aplica o filtro de rampa (Ram-Lak)
         let filtered = apply_ramp_filter(&sinogram, Some(5));

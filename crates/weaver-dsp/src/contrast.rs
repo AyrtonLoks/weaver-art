@@ -153,118 +153,6 @@ pub fn apply_unsharp_mask(image: &mut GrayImage, sigma: f32, amount: f32) {
     }
 }
 
-/// Aplica modelagem tonal para retratos (`shadowLift` e `torsoFeathering`) em luminância perceptual sRGB.
-///
-/// - `shadow_lift` ($0.10 \dots 0.15$): eleva suavemente sombras profundas ($v < 0.35$) para evitar
-///   "buracos negros" de saturação de linhas, preservando inalterados os meios-tons ($v \ge 0.35$).
-/// - `torso_feathering` ($0.20 \dots 0.30$): atenua progressivamente regiões escuras na base do tear
-///   ($y > 0.58 H$) para impedir que roupas/tronco roubem cordas verticais da face.
-pub fn apply_portrait_tone_shaping(
-    image: &mut GrayImage,
-    shadow_lift: f32,
-    torso_feathering: f32,
-) {
-    let w = image.width;
-    let h = image.height;
-    if w == 0 || h == 0 || (shadow_lift <= 1e-4 && torso_feathering <= 1e-4) {
-        return;
-    }
-
-    let lift = shadow_lift.clamp(0.0, 0.35);
-    let feather = torso_feathering.clamp(0.0, 0.50);
-    let feather_strength = (feather * 2.8).clamp(0.0, 0.92);
-    let inv_h = 1.0 / (h.max(2) - 1) as f32;
-    let inv_w = 1.0 / (w.max(2) - 1) as f32;
-
-    for y in 0..h {
-        let y_norm = y as f32 * inv_h;
-        let dy_face = (y_norm - 0.52) / 0.25;
-
-        // Piso de saturação suave na calota superior do cabelo (y < 0.28) para que a massa capilar
-        // atinja o alvo após ~15% das cordas e pare de roubar fios dos olhos/óculos/boca
-        let crown_t = if y_norm < 0.28 {
-            let lin_t = ((0.28 - y_norm) / 0.28).clamp(0.0, 1.0);
-            0.5 * (1.0 - (std::f32::consts::PI * lin_t).cos())
-        } else {
-            0.0
-        };
-
-        for x in 0..w {
-            let x_norm = x as f32 * inv_w;
-            let x_lat = (x_norm - 0.50).abs() * 2.0;
-            let dx_face = (x_norm - 0.50) / 0.26;
-            let face_radial_sq = dx_face * dx_face + dy_face * dy_face;
-            // Transição gaussiana contínua (zero bordas visíveis entre o centro facial e a periferia)
-            let core_w = (-0.55 * face_radial_sq).exp();
-
-            let idx = (y * w + x) as usize;
-            let mut v = image.data[idx].clamp(0.0, 1.0);
-
-            // 1. Negros estruturais (pupilas, íris, óculos, narinas, linha labial) vs sombras periféricas
-            if v < 0.44 {
-                let dark_preserve = core_w;
-                let periph_lift = if lift > 1e-4 {
-                    let t = (0.44 - v) / 0.44;
-                    lift * 1.10 * t * (1.0 - v)
-                } else {
-                    0.0
-                };
-                let v_core = (v * 0.92).clamp(0.0, 1.0);
-                let v_periph = (v + periph_lift).clamp(0.0, 1.0);
-                v = v_core * dark_preserve + v_periph * (1.0 - dark_preserve);
-            }
-
-            // 2. Curva contínua de elevação de meios-tons claros (pele da testa, ponte do nariz,
-            //    bochechas e interior das lentes dos óculos):
-            if v > 0.30 && v < 0.95 {
-                let mid_t = ((v - 0.30) / 0.65).clamp(0.0, 1.0);
-                let bell = (std::f32::consts::PI * mid_t).sin();
-                let amp = 0.14 + 0.05 * core_w;
-                v = (v + amp * bell).clamp(0.0, 1.0);
-            }
-
-            // 3. Piso de sombra suave no topo do cabelo e têmporas laterais (fora das feições centrais):
-            let temple_t = if y_norm < 0.44 && x_lat > 0.50 {
-                let lat_t = ((x_lat - 0.50) / 0.50).clamp(0.0, 1.0);
-                let vert_t = ((0.44 - y_norm) / 0.44).clamp(0.0, 1.0);
-                0.5 * (1.0 - (std::f32::consts::PI * lat_t).cos()) * vert_t * 0.65
-            } else {
-                0.0
-            };
-            let hair_t = crown_t.max(temple_t) * (1.0 - 0.85 * core_w);
-            if lift > 1e-4 && hair_t > 1e-4 && v < 0.50 {
-                let target_hair_floor = 0.36 + 0.10 * hair_t;
-                if v < target_hair_floor {
-                    let blend = (hair_t * (0.60 + lift * 1.4)).clamp(0.0, 0.82);
-                    v = (v + blend * (target_hair_floor - v)).clamp(0.0, 1.0);
-                }
-            }
-
-            // 4. Atenuação progressiva do tronco/gola/capuz escuro na base do tear:
-            //    No centro (onde ficam a boca e o queixo), começa apenas abaixo de y > 0.76;
-            //    Nas laterais (onde sobe a gola/capuz do moletom), começa suavemente em y > 0.54.
-            let y_start = 0.76 - 0.22 * (x_lat.clamp(0.0, 1.0).powi(2));
-            let span = (1.0 - y_start).max(0.15);
-            let eff_torso_t = if y_norm > y_start {
-                let lin_t = ((y_norm - y_start) / span).clamp(0.0, 1.0);
-                0.5 * (1.0 - (std::f32::consts::PI * lin_t).cos())
-            } else {
-                0.0
-            };
-            if feather_strength > 1e-4 && eff_torso_t > 1e-4 && v < 0.88 {
-                let lateral_boost = 1.0 + 0.30 * x_lat * x_lat;
-                let blend = (feather_strength * eff_torso_t * lateral_boost).clamp(0.0, 0.90);
-                let target_fade = 0.86;
-                if v < target_fade {
-                    v = (v + blend * (target_fade - v)).clamp(0.0, 1.0);
-                }
-            }
-
-            image.data[idx] = v;
-        }
-    }
-}
-
 /// Configuração do equalizador adaptativo CLAHE.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClaheConfig {
@@ -438,7 +326,10 @@ pub fn clahe_lab(lab_pixels: &mut [LabColor], width: u32, height: u32, config: &
     assert_eq!(lab_pixels.len(), (width * height) as usize);
 
     // Extrai L* normalizado em [0.0, 1.0]
-    let mut l_channel: Vec<f32> = lab_pixels.iter().map(|c| (c.l / 100.0).clamp(0.0, 1.0)).collect();
+    let mut l_channel: Vec<f32> = lab_pixels
+        .iter()
+        .map(|c| (c.l / 100.0).clamp(0.0, 1.0))
+        .collect();
 
     // Aplica CLAHE
     clahe_channel(&mut l_channel, width, height, config);

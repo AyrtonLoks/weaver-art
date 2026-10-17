@@ -71,10 +71,8 @@ pub struct CanvasStateSoA {
 
     /// Mapa de importância espacial $W(p) \ge 0.0$ (saliência facial + bordas + pincel).
     pub importance_w: Vec<f32>,
-    /// Mapa base de importância espacial (preservado para restaurar ou modular épocas).
+    /// Mapa base de importância espacial (preservado para restaurar o pincel do usuário).
     pub base_importance_w: Vec<f32>,
-    /// Mapa de magnitude de bordas $E(p) \in [0.0, 1.0]$ para reforço dinâmico na Época 3.
-    pub edge_map: Vec<f32>,
 }
 
 impl CanvasStateSoA {
@@ -119,7 +117,6 @@ impl CanvasStateSoA {
             current_c2,
             importance_w,
             base_importance_w,
-            edge_map: vec![0.0; aligned_len],
         }
     }
 
@@ -169,35 +166,6 @@ impl CanvasStateSoA {
         state
     }
 
-    /// Define o mapa de bordas $E(x,y) \in [0.0, 1.0]$ para modulação dinâmica de nitidez em épocas.
-    pub fn set_edge_map(&mut self, edges: &[f32]) {
-        assert_eq!(
-            edges.len(),
-            self.num_pixels,
-            "edge_map length must match num_pixels"
-        );
-        for (i, &e) in edges.iter().enumerate() {
-            self.edge_map[i] = e.clamp(0.0, 1.0);
-        }
-    }
-
-    /// Aplica um reforço adicional de peso de bordas sobre o mapa de importância base:
-    /// $W(p) = W_{\text{base}}(p) + \Delta\beta_{\text{borda}} \cdot E(p)$.
-    ///
-    /// Usado na Época 3 (`CoarseToFineEpochs`) para forçar o carretel Preto (K) e Branco (W)
-    /// a focarem em contornos nítidos (óculos, pupilas, cílios e reflexos).
-    pub fn apply_edge_importance_boost(&mut self, extra_edge_beta: f32) {
-        if extra_edge_beta.abs() <= 1e-6 {
-            self.importance_w[..self.num_pixels]
-                .copy_from_slice(&self.base_importance_w[..self.num_pixels]);
-            return;
-        }
-        for i in 0..self.num_pixels {
-            self.importance_w[i] =
-                (self.base_importance_w[i] + extra_edge_beta * self.edge_map[i]).max(0.0);
-        }
-    }
-
     /// Restaura o estado atual da tela para uma cor uniforme de fundo.
     pub fn reset_current(&mut self, background: LinearRgbColor) {
         self.current_c0[..self.num_pixels].fill(background.r);
@@ -210,14 +178,18 @@ impl CanvasStateSoA {
     pub fn copy_from(&mut self, other: &CanvasStateSoA) {
         assert_eq!(self.width_px, other.width_px, "Larguras devem coincidir");
         assert_eq!(self.height_px, other.height_px, "Alturas devem coincidir");
-        assert_eq!(self.aligned_len, other.aligned_len, "Aligned len deve coincidir");
+        assert_eq!(
+            self.aligned_len, other.aligned_len,
+            "Aligned len deve coincidir"
+        );
 
         self.current_c0[..self.aligned_len].copy_from_slice(&other.current_c0[..self.aligned_len]);
         self.current_c1[..self.aligned_len].copy_from_slice(&other.current_c1[..self.aligned_len]);
         self.current_c2[..self.aligned_len].copy_from_slice(&other.current_c2[..self.aligned_len]);
-        self.importance_w[..self.aligned_len].copy_from_slice(&other.importance_w[..self.aligned_len]);
-        self.base_importance_w[..self.aligned_len].copy_from_slice(&other.base_importance_w[..self.aligned_len]);
-        self.edge_map[..self.aligned_len].copy_from_slice(&other.edge_map[..self.aligned_len]);
+        self.importance_w[..self.aligned_len]
+            .copy_from_slice(&other.importance_w[..self.aligned_len]);
+        self.base_importance_w[..self.aligned_len]
+            .copy_from_slice(&other.base_importance_w[..self.aligned_len]);
     }
 
     /// Obtém a cor alvo linear no índice de pixel `p`.
@@ -259,23 +231,15 @@ mod tests {
     fn test_effective_alpha_resolution_compensation() {
         // Quando t_f * R_px < D_mm, alpha_efetivo reduz proporcionalmente
         // Ex: fio 0.15 mm, res 500 px, tear 600 mm -> 0.15 * 500 / 600 = 75 / 600 = 0.125
-        let alpha_eff = compute_effective_alpha(
-            0.8,
-            Millimeters(0.15),
-            Pixels(500),
-            Millimeters(600.0),
-        );
+        let alpha_eff =
+            compute_effective_alpha(0.8, Millimeters(0.15), Pixels(500), Millimeters(600.0));
         let expected = 0.8 * (0.15 * 500.0 / 600.0);
         assert!((alpha_eff - expected).abs() < 1e-6);
 
         // Quando t_f * R_px >= D_mm (resolução muito alta onde o fio cobre >= 1 pixel inteiro),
         // o fator satura em 1.0 e alpha_efetivo == alpha_material
-        let alpha_saturated = compute_effective_alpha(
-            0.85,
-            Millimeters(0.5),
-            Pixels(2000),
-            Millimeters(500.0),
-        );
+        let alpha_saturated =
+            compute_effective_alpha(0.85, Millimeters(0.5), Pixels(2000), Millimeters(500.0));
         assert!((alpha_saturated - 0.85).abs() < 1e-6);
     }
 
@@ -283,7 +247,7 @@ mod tests {
     fn test_canvas_state_soa_layout_and_alignment() {
         let target = vec![LinearRgbColor::new(0.2, 0.4, 0.6); 10 * 10];
         let imp = vec![1.5f32; 100];
-        let mut state = CanvasStateSoA::from_target_and_background(
+        let state = CanvasStateSoA::from_target_and_background(
             10,
             10,
             &target,
@@ -300,13 +264,5 @@ mod tests {
         // Padding deve ter peso zero
         assert_eq!(state.importance_w[100], 0.0);
         assert_eq!(state.importance_w[111], 0.0);
-
-        let edges = vec![0.5f32; 100];
-        state.set_edge_map(&edges);
-        state.apply_edge_importance_boost(2.0);
-        assert!((state.importance_w[0] - 2.5).abs() < 1e-6);
-
-        state.apply_edge_importance_boost(0.0);
-        assert!((state.importance_w[0] - 1.5).abs() < 1e-6);
     }
 }

@@ -12,21 +12,19 @@ pub mod telemetry_metrics;
 
 use weaver_domain::PegSide;
 
-pub use optical_models::{
-    MetricWeights, OpticalMixModelType, OpticalModelEvaluator, SpoolColor,
-};
+pub use optical_models::{OpticalMixModelType, OpticalModelEvaluator, SpoolColor};
 pub use solver_runner::{
-    SolverBackend, SolverProgress, SolverSession, SolverStatus, WeaveStepRecord,
+    SolverBackend, SolverPhase, SolverProgress, SolverSession, SolverStatus, WeaveStepRecord,
 };
 pub use solvers::{
     BeamMove, BeamSearchConfig, BeamSearchSolver, BeamStepRecord, FistaStepRecord,
     GlobalFistaConfig, GlobalFistaSolver, GreedyChordCandidate, GreedyConfig, GreedySolver,
-    GreedyStepRecord,
+    GreedyStepRecord, PathRefiner, RefineConfig,
 };
 pub use spool_scheduler::{SpoolScheduler, SpoolSwitchStrategy};
 pub use state_matrix::{compute_effective_alpha, CanvasStateSoA, SOA_SIMD_LANE_ALIGNMENT};
 pub use telemetry_metrics::{
-    BlockSSIMState, IncrementalMetricsTracker, TelemetrySnapshot, BLOCK_SIZE,
+    gaussian_blur, inscribed_disc_mask, ssim_masked, MetricsTracker, TelemetrySnapshot,
 };
 
 /// Candidate chord step produced by a solver.

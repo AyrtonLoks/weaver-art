@@ -17,7 +17,6 @@ pub enum SpoolSwitchStrategy {
         detail_top_ratio: f32,
         black_spool_id: u8,
         white_spool_id: Option<u8>,
-        edge_importance_boost: f32,
     },
     SeparatedChannels {
         quotas: Vec<f32>,
@@ -230,29 +229,6 @@ impl SpoolScheduler {
         }
     }
 
-    pub fn active_edge_boost(&self) -> f32 {
-        match &self.strategy {
-            SpoolSwitchStrategy::CoarseToFineEpochs {
-                base_ratio,
-                refine_ratio,
-                edge_importance_boost,
-                ..
-            } => {
-                let progress = (self.schedule_cursor.max(self.current_step) as f32)
-                    / (self.max_steps as f32).max(1.0);
-                let detail_start = (*base_ratio + *refine_ratio).clamp(0.58, 0.85);
-                if progress >= detail_start {
-                    *edge_importance_boost
-                } else if progress >= 0.58 {
-                    *edge_importance_boost * 0.45
-                } else {
-                    0.0
-                }
-            }
-            _ => 0.0,
-        }
-    }
-
     pub fn occlusion_compensation_factor(&self, spool_idx: usize, total_spools: usize) -> f32 {
         match &self.strategy {
             SpoolSwitchStrategy::SeparatedChannels {
@@ -309,7 +285,6 @@ mod tests {
                 detail_top_ratio: 0.15,
                 black_spool_id: 3,
                 white_spool_id: None,
-                edge_importance_boost: 2.5,
             },
             6000,
             0,

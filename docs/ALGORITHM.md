@@ -407,13 +407,15 @@ Qualquer manutenção nos crates `weaver-dsp` e `weaver-solvers` deve obedecer e
 ## 1. Transformação Afim de Enquadramento (Invariância JS $\leftrightarrow$ Rust)
 
 Dada uma imagem de entrada de dimensões $(W_{\text{in}}, H_{\text{in}})$ e uma grade de saída $(W_{\text{out}}, H_{\text{out}})$ com raio útil $R_{\text{out}} = \frac{\min(W_{\text{out}}, H_{\text{out}})}{2}$:
+
 1. Define-se o raio base de referência pela menor dimensão da foto:
    $$R_{\text{in}} = \frac{\min(W_{\text{in}}, H_{\text{in}})}{2}$$
 2. Para um fator de `zoom` $> 0$ e deslocamentos normalizados $\text{pan}_x, \text{pan}_y \in [-1, 1]$:
    $$\text{scale} = \frac{R_{\text{in}}}{R_{\text{out}} \cdot \text{zoom}}$$
    $$x_{\text{in}} = \frac{W_{\text{in}} - 1}{2} - \text{pan}_x \cdot R_{\text{in}} + (\Delta x \cos\theta + \Delta y \sin\theta) \cdot \text{scale}$$
    $$y_{\text{in}} = \frac{H_{\text{in}} - 1}{2} - \text{pan}_y \cdot R_{\text{in}} + (-\Delta x \sin\theta + \Delta y \cos\theta) \cdot \text{scale}$$
-* **Atenção:** O sinal negativo em $-\text{pan}_x R_{\text{in}}$ e $-\text{pan}_y R_{\text{in}}$ garante que arrastar o mouse para a direita/baixo mova a imagem para a direita/baixo na tela. Tanto o preview rápido em TypeScript quanto o `apply_affine_transform` em Rust devem usar exatamente esta equação.
+
+- **Atenção:** O sinal negativo em $-\text{pan}_x R_{\text{in}}$ e $-\text{pan}_y R_{\text{in}}$ garante que arrastar o mouse para a direita/baixo mova a imagem para a direita/baixo na tela. Tanto o preview rápido em TypeScript quanto o `apply_affine_transform` em Rust devem usar exatamente esta equação.
 
 ---
 
@@ -427,9 +429,10 @@ Para validar a nitidez estrutural (óculos, olhos, nariz, boca), o modo **Monocr
    $$\text{Score}(L) = \frac{\sum_{p \in L} W(p) \cdot w_p \cdot \left( C^{(t)}(p) - T(p) \right)}{\left(\sum_{p \in L} w_p\right)^\gamma}$$
    onde $\gamma \in [0.85, 1.0]$ e o denominador usa a soma dos pesos sub-pixel $\sum w_p$ (e nunca `pixel_indices.len()`, evitando viés direcional de Xiaolin Wu).
 3. **Atualização da Tela (Atenuação):**
-   Ao escolher a corda vencedora $L^*$, escurece-se a tela ao longo de $L^*$ por uma taxa calibrada pelo orçamento de linhas ($\alpha_{\text{eff}} \approx \frac{120}{K_{\max}}$, tipicamente entre $0.02$ e $0.04$):
+   Ao escolher a corda vencedora $L^_$, escurece-se a tela ao longo de $L^_$ por uma taxa calibrada pelo orçamento de linhas ($\alpha_{\text{eff}} \approx \frac{120}{K_{\max}}$, tipicamente entre $0.02$ e $0.04$):
    $$C^{(t+1)}(p) = \max\left(0.0, \; C^{(t)}(p) - \alpha_{\text{eff}} \cdot w_p\right)$$
-* **Por que NÃO multiplicar por $(C(p) - s)$ no ganho do fio Preto?**
+
+- **Por que NÃO multiplicar por $(C(p) - s)$ no ganho do fio Preto?**
   Multiplicar o erro $(C - T)$ por $C(p)$ faz com que regiões muito escuras (como armações de óculos pretas, onde $T = 0$) percam metade do seu peso assim que $C(p)$ cai para $0.5$, fazendo o algoritmo abandonar os óculos cinzentos e espalhar fios na pele clara. O erro linear $(C^{(t)}(p) - T(p))$ garante que os óculos e pupilas continuem recebendo fios até atingirem $C(p) \approx T(p) = 0$.
 
 ---

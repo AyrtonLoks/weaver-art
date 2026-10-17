@@ -14,7 +14,6 @@ use weaver_domain::{LinearRgbColor, PegSide, SparseChordMatrixCSR};
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
-use crate::telemetry_metrics::IncrementalMetricsTracker;
 
 /// Configuração da Busca em Feixe (Beam Search).
 #[derive(Debug, Clone, PartialEq)]
@@ -127,12 +126,21 @@ impl BeamSearchSolver {
                 template_canvas.height_px,
                 LinearRgbColor::WHITE,
             );
-            state_a.target_c0.copy_from_slice(&template_canvas.target_c0);
-            state_a.target_c1.copy_from_slice(&template_canvas.target_c1);
-            state_a.target_c2.copy_from_slice(&template_canvas.target_c2);
-            state_a.base_importance_w.copy_from_slice(&template_canvas.base_importance_w);
-            state_a.importance_w.copy_from_slice(&template_canvas.importance_w);
-            state_a.edge_map.copy_from_slice(&template_canvas.edge_map);
+            state_a
+                .target_c0
+                .copy_from_slice(&template_canvas.target_c0);
+            state_a
+                .target_c1
+                .copy_from_slice(&template_canvas.target_c1);
+            state_a
+                .target_c2
+                .copy_from_slice(&template_canvas.target_c2);
+            state_a
+                .base_importance_w
+                .copy_from_slice(&template_canvas.base_importance_w);
+            state_a
+                .importance_w
+                .copy_from_slice(&template_canvas.importance_w);
 
             let state_b = state_a.clone();
             pool_a.push(state_a);
@@ -442,14 +450,14 @@ impl BeamSearchSolver {
     pub fn step(
         &mut self,
         canvas: &mut CanvasStateSoA,
-        tracker: &mut IncrementalMetricsTracker,
         scheduler: &mut SpoolScheduler,
         matrix: &SparseChordMatrixCSR,
         evaluator: &OpticalModelEvaluator,
         spools: &[SpoolColor],
         alpha_eff: f32,
     ) -> Option<BeamStepRecord> {
-        let best_move = self.find_best_move(canvas, matrix, evaluator, scheduler, spools, alpha_eff)?;
+        let best_move =
+            self.find_best_move(canvas, matrix, evaluator, scheduler, spools, alpha_eff)?;
 
         let (pixel_indices, subpixel_weights) = matrix.chord_slice(best_move.chord_idx);
         let spool = spools
@@ -457,26 +465,11 @@ impl BeamSearchSolver {
             .find(|s| s.id == best_move.spool_id)
             .expect("Spool must exist");
 
-        // Coleta cores antigas para atualização incremental de SSIM/RMSE/DeltaE em O(|L|)
-        self.old_colors_buf.clear();
-        for &p in pixel_indices {
-            self.old_colors_buf.push(canvas.current_color(p as usize));
-        }
-
         // Aplica a corda na tela principal
         evaluator.apply_chord(canvas, pixel_indices, subpixel_weights, spool, alpha_eff);
 
-        // Notifica o tracker incremental
-        tracker.update_pixels(canvas, pixel_indices, &self.old_colors_buf);
-
         // Avança o agendador de carretéis
         scheduler.advance_step(spool.id, spools);
-        if self.step_count % 250 == 0 {
-            let edge_boost = scheduler.active_edge_boost();
-            if edge_boost > 0.0 {
-                canvas.apply_edge_importance_boost(edge_boost);
-            }
-        }
 
         // Atualiza estado do solver
         self.chord_usage[best_move.chord_idx] += 1;
@@ -504,12 +497,11 @@ impl BeamSearchSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weaver_domain::{
-        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels,
-        RasterizerType,
-    };
     use crate::optical_models::OpticalMixModelType;
     use crate::spool_scheduler::SpoolSwitchStrategy;
+    use weaver_domain::{
+        ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Pixels, RasterizerType,
+    };
 
     fn setup_beam_test(
         pin_count: usize,
@@ -517,20 +509,14 @@ mod tests {
     ) -> (
         SparseChordMatrixCSR,
         CanvasStateSoA,
-        IncrementalMetricsTracker,
         OpticalModelEvaluator,
         SpoolScheduler,
         Vec<SpoolColor>,
     ) {
-        let spec = LoomPhysicalSpec::circle(
-            200.0,
-            pin_count,
-            2.0,
-            1.5,
-            10.0,
-        );
+        let spec = LoomPhysicalSpec::circle(200.0, pin_count, 2.0, 1.5, 10.0);
         let loom = LoomGeometry::new(spec);
-        let matrix = SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
+        let matrix =
+            SparseChordMatrixCSR::build(&loom, Pixels(res), 3, RasterizerType::BresenhamBinary);
 
         let bg = LinearRgbColor::WHITE;
         let mut target = vec![bg; (res * res) as usize];
@@ -547,21 +533,19 @@ mod tests {
         }
 
         let canvas = CanvasStateSoA::from_target_and_background(res, res, &target, bg, None);
-        let tracker = IncrementalMetricsTracker::new(&canvas);
         let evaluator = OpticalModelEvaluator::new(
             OpticalMixModelType::PorterDuffOcclusion,
             ColorErrorMetric::LinearRgb,
         );
         let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 100, 0);
-        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 0.3)];
+        let spools = vec![SpoolColor::new(0, LinearRgbColor::BLACK, 1.0)];
 
-        (matrix, canvas, tracker, evaluator, scheduler, spools)
+        (matrix, canvas, evaluator, scheduler, spools)
     }
 
     #[test]
     fn test_beam_search_pool_allocation_and_reduction() {
-        let (matrix, mut canvas, mut tracker, evaluator, mut scheduler, spools) =
-            setup_beam_test(24, 48);
+        let (matrix, mut canvas, evaluator, mut scheduler, spools) = setup_beam_test(24, 48);
 
         let config = BeamSearchConfig {
             beam_width: 4,
@@ -576,13 +560,13 @@ mod tests {
         assert_eq!(solver.pool_a.len(), 4);
         assert_eq!(solver.pool_b.len(), 4);
 
-        let initial_metrics = tracker.current_snapshot();
+        let initial_metrics =
+            crate::telemetry_metrics::MetricsTracker::new(&canvas).current_snapshot();
         let mut executed = 0;
 
         for _ in 0..10 {
             if let Some(step) = solver.step(
                 &mut canvas,
-                &mut tracker,
                 &mut scheduler,
                 &matrix,
                 &evaluator,
@@ -597,7 +581,7 @@ mod tests {
         }
 
         assert!(executed >= 5);
-        let final_metrics = tracker.current_snapshot();
+        let final_metrics = crate::telemetry_metrics::MetricsTracker::new(&canvas).compute(&canvas);
         assert!(final_metrics.delta_e < initial_metrics.delta_e);
         assert!(final_metrics.rmse < initial_metrics.rmse);
     }

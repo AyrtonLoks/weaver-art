@@ -4,8 +4,8 @@
 //! por $(\rho, \theta)$ e o filtro passa-alta em rampa no domínio discreto/espacial para
 //! pré-condicionamento de retroprojeção filtrada (FBP) e diagnóstico visual.
 
-use std::f32::consts::PI;
 use crate::image::{GrayImage, Rgba8Image};
+use std::f32::consts::PI;
 
 /// Opções para o cálculo do Sinograma via Transformada de Radon.
 #[derive(Debug, Clone, Copy, PartialEq)]

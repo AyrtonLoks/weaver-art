@@ -18,8 +18,8 @@ use weaver_dsp::{
 };
 use weaver_solvers::{
     compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig,
-    OpticalMixModelType, OpticalModelEvaluator, SolverSession, SolverStatus, SpoolColor,
-    SpoolScheduler, SpoolSwitchStrategy,
+    OpticalMixModelType, OpticalModelEvaluator, RefineConfig, SolverPhase, SolverSession,
+    SolverStatus, SpoolColor, SpoolScheduler, SpoolSwitchStrategy,
 };
 
 pub use weaver_cam::DrillHoleSpec;
@@ -32,6 +32,14 @@ pub const CTRL_INT32_STATUS_FLAG: usize = 0;
 pub const CTRL_INT32_CURRENT_STEP: usize = 1;
 pub const CTRL_INT32_ACTIVE_SPOOL: usize = 2;
 pub const CTRL_INT32_TOTAL_SWITCHES: usize = 3;
+/// Revisão do caminho: muda quando o refinamento reescreve passos já emitidos.
+pub const CTRL_INT32_PATH_REVISION: usize = 4;
+/// Fase do solver: 0 = construção, 1 = refinamento, 2 = preenchimento, 3 = concluído.
+pub const CTRL_INT32_SOLVER_PHASE: usize = 5;
+
+/// Padrões calibrados no benchmark com foto real (weaver-cli bench).
+pub const DEFAULT_HIGHLIGHT_PROTECTION: f32 = 0.0;
+pub const DEFAULT_REFINE_PASSES: usize = 0;
 
 pub const CTRL_FLOAT32_RMSE: usize = 0;
 pub const CTRL_FLOAT32_DELTA_E: usize = 1;
@@ -122,6 +130,18 @@ pub struct WasmWeaverConfig {
     pub brightness: f32,
     #[serde(default = "default_one")]
     pub gamma: f32,
+    /// Nitidez (unsharp) aplicada ao alvo (0 = desligada).
+    #[serde(default)]
+    pub sharpen_amount: f32,
+    /// Proteção de realces da função objetivo (0 = desligada).
+    #[serde(default = "default_highlight_protection")]
+    pub highlight_protection: f32,
+    /// Varreduras do passe de refinamento do caminho (0 = desligado).
+    #[serde(default = "default_refine_passes")]
+    pub refine_passes: usize,
+    /// Janela de pinos do refinamento (0 = todos os pinos).
+    #[serde(default)]
+    pub refine_window: usize,
 
     #[serde(default)]
     pub framing: Option<WasmFramingConfig>,
@@ -129,29 +149,81 @@ pub struct WasmWeaverConfig {
     pub target_resolution: u32,
 }
 
-fn default_shape() -> String { "CIRCULAR".to_string() }
-fn default_pin_count() -> usize { 200 }
-fn default_diameter_mm() -> f64 { 600.0 }
-fn default_polygon_sides() -> usize { 6 }
-fn default_pin_d_mm() -> f64 { 2.0 }
-fn default_thread_thickness_mm() -> f32 { 0.20 }
-fn default_drill_bit_mm() -> f64 { 2.0 }
-fn default_edge_margin_mm() -> f64 { 10.0 }
-fn default_palette_mode() -> String { "MONOCHROME".to_string() }
-fn default_optical_mix() -> String { "PORTER_DUFF_OCCLUSION".to_string() }
-fn default_error_metric() -> String { "LINEAR_RGB".to_string() }
-fn default_solver() -> String { "ITERATIVE_GREEDY".to_string() }
-fn default_max_lines() -> usize { 4000 }
-fn default_min_gap() -> usize { 12 }
-fn default_max_repeats() -> usize { 3 }
-fn default_spool_strategy() -> String { "FREE_GREEDY".to_string() }
-fn default_min_run_length() -> usize { 100 }
-fn default_rasterizer() -> String { "XIAOLIN_WU_ANTIALIASED".to_string() }
-fn default_clahe_clip() -> f32 { 2.0 }
-fn default_face_weight() -> f32 { 3.0 }
-fn default_edge_blend() -> f32 { 0.15 }
-fn default_one() -> f32 { 1.0 }
-fn default_resolution() -> u32 { 500 }
+fn default_shape() -> String {
+    "CIRCULAR".to_string()
+}
+fn default_pin_count() -> usize {
+    200
+}
+fn default_diameter_mm() -> f64 {
+    600.0
+}
+fn default_polygon_sides() -> usize {
+    6
+}
+fn default_pin_d_mm() -> f64 {
+    2.0
+}
+fn default_thread_thickness_mm() -> f32 {
+    0.20
+}
+fn default_drill_bit_mm() -> f64 {
+    2.0
+}
+fn default_edge_margin_mm() -> f64 {
+    10.0
+}
+fn default_palette_mode() -> String {
+    "MONOCHROME".to_string()
+}
+fn default_optical_mix() -> String {
+    "PORTER_DUFF_OCCLUSION".to_string()
+}
+fn default_error_metric() -> String {
+    "LINEAR_RGB".to_string()
+}
+fn default_solver() -> String {
+    "ITERATIVE_GREEDY".to_string()
+}
+fn default_max_lines() -> usize {
+    4000
+}
+fn default_min_gap() -> usize {
+    12
+}
+fn default_max_repeats() -> usize {
+    3
+}
+fn default_spool_strategy() -> String {
+    "FREE_GREEDY".to_string()
+}
+fn default_min_run_length() -> usize {
+    100
+}
+fn default_rasterizer() -> String {
+    "XIAOLIN_WU_ANTIALIASED".to_string()
+}
+fn default_clahe_clip() -> f32 {
+    0.0
+}
+fn default_face_weight() -> f32 {
+    2.0
+}
+fn default_edge_blend() -> f32 {
+    0.0
+}
+fn default_one() -> f32 {
+    1.0
+}
+fn default_resolution() -> u32 {
+    500
+}
+fn default_highlight_protection() -> f32 {
+    DEFAULT_HIGHLIGHT_PROTECTION
+}
+fn default_refine_passes() -> usize {
+    DEFAULT_REFINE_PASSES
+}
 
 impl Default for WasmWeaverConfig {
     fn default() -> Self {
@@ -183,6 +255,10 @@ impl Default for WasmWeaverConfig {
             contrast: 1.0,
             brightness: 0.0,
             gamma: 1.0,
+            sharpen_amount: 0.0,
+            highlight_protection: default_highlight_protection(),
+            refine_passes: default_refine_passes(),
+            refine_window: 0,
             framing: None,
             target_resolution: default_resolution(),
         }
@@ -204,7 +280,13 @@ pub struct WasmWeavingEngine {
     base_importance_weights: Vec<f32>,
     current_importance_weights: Vec<f32>,
 
-    cached_matrix: Option<(LoomPhysicalSpec, Pixels, u16, RasterizerType, Arc<SparseChordMatrixCSR>)>,
+    cached_matrix: Option<(
+        LoomPhysicalSpec,
+        Pixels,
+        u16,
+        RasterizerType,
+        Arc<SparseChordMatrixCSR>,
+    )>,
     solver_session: Option<SolverSession>,
     spool_infos: Vec<SpoolInfo>,
 
@@ -216,6 +298,7 @@ pub struct WasmWeavingEngine {
 
     total_thread_meters: f32,
     spool_thread_meters: [f32; 16],
+    last_path_revision: u32,
 }
 
 #[wasm_bindgen]
@@ -225,10 +308,13 @@ impl WasmWeavingEngine {
         let byte_length = js_sys::Reflect::get(&shared_buffer, &JsValue::from_str("byteLength"))
             .map_err(|_| JsValue::from_str("Invalid buffer: missing byteLength"))?
             .as_f64()
-            .ok_or_else(|| JsValue::from_str("byteLength is not a number"))? as usize;
+            .ok_or_else(|| JsValue::from_str("byteLength is not a number"))?
+            as usize;
 
         if byte_length < 128 {
-            return Err(JsValue::from_str("Buffer is smaller than 128-byte ControlBlock"));
+            return Err(JsValue::from_str(
+                "Buffer is smaller than 128-byte ControlBlock",
+            ));
         }
 
         let capacity_steps = (byte_length - 128) / 8;
@@ -240,8 +326,10 @@ impl WasmWeavingEngine {
             .map(|name| name == "SharedArrayBuffer")
             .unwrap_or(false);
 
-        let control_int32 = js_sys::Int32Array::new_with_byte_offset_and_length(&shared_buffer, 0, 8);
-        let control_float32 = js_sys::Float32Array::new_with_byte_offset_and_length(&shared_buffer, 32, 24);
+        let control_int32 =
+            js_sys::Int32Array::new_with_byte_offset_and_length(&shared_buffer, 0, 8);
+        let control_float32 =
+            js_sys::Float32Array::new_with_byte_offset_and_length(&shared_buffer, 32, 24);
         let path_uint8 = js_sys::Uint8Array::new_with_byte_offset_and_length(
             &shared_buffer,
             128,
@@ -271,6 +359,7 @@ impl WasmWeavingEngine {
             diagnostic_dimensions: [0; 8],
             total_thread_meters: 0.0,
             spool_thread_meters: [0.0; 16],
+            last_path_revision: 0,
         })
     }
 
@@ -293,22 +382,23 @@ impl WasmWeavingEngine {
 
         let mut dsp_config = DspPipelineConfig::default();
         dsp_config.target_resolution = res;
-        dsp_config.beta_face = config.face_importance_weight;
-        dsp_config.beta_edge = config.edge_blend_weight;
-        dsp_config.high_freq_blend = config.edge_blend_weight.min(0.35);
+        dsp_config.beta_face = config.face_importance_weight.max(0.0);
+        dsp_config.beta_edge = config.edge_blend_weight.max(0.0);
+        dsp_config.high_freq_blend = 0.0;
+        dsp_config.sharpen_amount = config.sharpen_amount.max(0.0);
         dsp_config.monochrome_target = config.palette_mode.eq_ignore_ascii_case("MONOCHROME");
         dsp_config.contrast = config.contrast;
         dsp_config.brightness = config.brightness;
         dsp_config.gamma = config.gamma;
 
-        if config.clahe_clip_limit > 0.0 {
-            dsp_config.clahe = Some(ClaheConfig {
+        dsp_config.clahe = if config.clahe_clip_limit > 0.0 {
+            Some(ClaheConfig {
                 clip_limit: config.clahe_clip_limit,
                 ..Default::default()
-            });
+            })
         } else {
-            dsp_config.clahe = None;
-        }
+            None
+        };
 
         if let Some(f) = &config.framing {
             dsp_config.framing = FramingConfig {
@@ -425,8 +515,13 @@ impl WasmWeavingEngine {
                     min_gap as usize,
                     rasterizer,
                 ));
-                self.cached_matrix =
-                    Some((loom.spec.clone(), Pixels(res), min_gap, rasterizer, m.clone()));
+                self.cached_matrix = Some((
+                    loom.spec.clone(),
+                    Pixels(res),
+                    min_gap,
+                    rasterizer,
+                    m.clone(),
+                ));
                 m
             }
         };
@@ -450,19 +545,13 @@ impl WasmWeavingEngine {
             None
         };
 
-        let mut canvas = CanvasStateSoA::from_target_and_background(
+        let canvas = CanvasStateSoA::from_target_and_background(
             res,
             res,
             &target_colors,
             LinearRgbColor::WHITE,
             importance_slice,
         );
-
-        if let Some(sobel) = self.dsp_pipeline.sobel_result() {
-            if sobel.magnitude.data.len() == (res * res) as usize {
-                canvas.set_edge_map(&sobel.magnitude.data);
-            }
-        }
 
         let mix_model = match config.optical_mix_model.to_uppercase().as_str() {
             "LINEAR_SUBTRACTIVE" => OpticalMixModelType::LinearSubtractive,
@@ -476,8 +565,10 @@ impl WasmWeavingEngine {
             _ => ColorErrorMetric::LinearRgb,
         };
 
+        let mono = config.palette_mode.eq_ignore_ascii_case("MONOCHROME");
         let evaluator = OpticalModelEvaluator::new(mix_model, err_metric)
-            .with_highlight_protection(2.8);
+            .with_highlight_protection(config.highlight_protection.max(0.0))
+            .with_luma_only(mono);
         let (spools, spool_infos) = build_spools(&config);
         self.spool_infos = spool_infos;
 
@@ -502,7 +593,6 @@ impl WasmWeavingEngine {
                     0
                 },
                 white_spool_id: None,
-                edge_importance_boost: 2.5,
             },
             "SEPARATED_CHANNELS" => {
                 let n = spools.len();
@@ -521,24 +611,20 @@ impl WasmWeavingEngine {
 
         let scheduler = SpoolScheduler::new(strat, config.max_lines, 0);
 
-        // Calibra alpha_eff fisicamente a partir da opacidade do fio, espessura (mm), resolução (px) e diâmetro (mm)
-        let primary_alpha = spools
-            .last()
-            .map(|s| s.alpha_material)
-            .unwrap_or(0.35);
+        // Cobertura física do fio por pixel: espessura (mm) x resolução (px) / extensão do tear (mm).
+        // A opacidade de cada carretel (lpha_material) é aplicada pelo avaliador óptico.
         let loom_extent_mm = loom
             .spec
             .diameter_mm
             .max(loom.spec.width_mm)
             .max(loom.spec.height_mm)
-            .max(100.0);
-        let alpha_eff = compute_effective_alpha(
-            primary_alpha,
-            Millimeters(config.thread_thickness_mm.max(0.05)),
+            .max(1.0);
+        let coverage = compute_effective_alpha(
+            1.0,
+            Millimeters(config.thread_thickness_mm.max(0.01)),
             Pixels(res),
             Millimeters(loom_extent_mm as f32),
-        )
-        .clamp(0.012, 0.085);
+        );
 
         let session = match config.solver.to_uppercase().as_str() {
             "BEAM_SEARCH" => {
@@ -551,7 +637,7 @@ impl WasmWeavingEngine {
                     start_pin: 0,
                 };
                 SolverSession::new_beam_search(
-                    b_cfg, canvas, matrix, evaluator, scheduler, spools, alpha_eff,
+                    b_cfg, canvas, matrix, evaluator, scheduler, spools, coverage,
                 )
             }
             "GLOBAL_NNLS_FISTA" => {
@@ -564,7 +650,7 @@ impl WasmWeavingEngine {
                     start_pin: 0,
                 };
                 SolverSession::new_global_fista(
-                    f_cfg, canvas, matrix, evaluator, scheduler, spools, alpha_eff,
+                    f_cfg, canvas, matrix, evaluator, scheduler, spools, coverage,
                 )
             }
             _ => {
@@ -575,16 +661,35 @@ impl WasmWeavingEngine {
                     start_pin: 0,
                     tabu_history_size: 12,
                 };
+                let max_rep = g_cfg.max_chord_repeats;
                 SolverSession::new_greedy(
-                    g_cfg, canvas, matrix, evaluator, scheduler, spools, alpha_eff,
+                    g_cfg, canvas, matrix, evaluator, scheduler, spools, coverage,
                 )
+                .with_refinement(RefineConfig {
+                    // O refinamento remove cordas invertendo a mistura óptica: exato para um único
+                    // fio neutro (monocromático); no CMYK fica desligado até a Fase 5.
+                    passes: if mono { config.refine_passes } else { 0 },
+                    window: config.refine_window,
+                    allow_removal: true,
+                    max_chord_repeats: max_rep,
+                })
             }
         };
+
+        let mut session = session;
+        if let Some(reference) = self.dsp_pipeline.reference_linear_rgb() {
+            if reference.len() == (res * res) as usize {
+                session.set_metrics_reference(reference);
+            }
+        }
 
         self.solver_session = Some(session);
         self.loom = Some(loom);
         self.total_thread_meters = 0.0;
         self.spool_thread_meters = [0.0; 16];
+        self.last_path_revision = 0;
+        self.write_control_i32(CTRL_INT32_PATH_REVISION, 0);
+        self.write_control_i32(CTRL_INT32_SOLVER_PHASE, 0);
 
         self.write_status(SolverStatus::Idle);
         self.write_step_index(0);
@@ -603,7 +708,9 @@ impl WasmWeavingEngine {
     ) -> Result<String, JsValue> {
         let expected_len = (width as usize) * (height as usize) * 4;
         if raw_rgba.len() != expected_len || width == 0 || height == 0 {
-            return Err(JsValue::from_str("Invalid RGBA dimensions for smart framing"));
+            return Err(JsValue::from_str(
+                "Invalid RGBA dimensions for smart framing",
+            ));
         }
         let img = Rgba8Image::new(width, height, 4, raw_rgba.to_vec());
         let opts = AutoFramingOptions {
@@ -643,72 +750,47 @@ impl WasmWeavingEngine {
         let session = self.solver_session.as_mut().unwrap();
         let prev_step = session.history_steps.len();
         let progress = session.step_batch(batch_size as usize);
-        let batch_len = progress.batch_steps.len();
 
-        let loom_ref = self.loom.as_ref();
-        let pin_d = loom_ref.map(|l| l.spec.pin_diameter_mm).unwrap_or(2.0);
-
-        if batch_len > 0 {
-            let mut packed_bytes = Vec::with_capacity(batch_len * 8);
-
-            for (idx, step) in progress.batch_steps.iter().enumerate() {
-                let step_idx = prev_step + idx;
-                if step_idx >= self.capacity_steps {
-                    break;
-                }
-
-                let from_bytes = step.from_pin.to_le_bytes();
-                let to_bytes = step.to_pin.to_le_bytes();
-                let spool_byte = step.spool_id;
-                let dep_flag = if step.departure_winding == PegSide::CounterClockwise {
-                    1u8
-                } else {
-                    0u8
-                };
-                let arr_flag = if step.arrival_winding == PegSide::CounterClockwise {
-                    2u8
-                } else {
-                    0u8
-                };
-                let flags = dep_flag | arr_flag;
-                let score_bytes = step.score_normalized.to_le_bytes();
-
-                packed_bytes.push(from_bytes[0]);
-                packed_bytes.push(from_bytes[1]);
-                packed_bytes.push(to_bytes[0]);
-                packed_bytes.push(to_bytes[1]);
-                packed_bytes.push(spool_byte);
-                packed_bytes.push(flags);
-                packed_bytes.push(score_bytes[0]);
-                packed_bytes.push(score_bytes[1]);
-
-                let chord_len_mm = if let Some(loom) = loom_ref {
-                    let p_a = loom.pin_position(step.from_pin as usize);
-                    let p_b = loom.pin_position(step.to_pin as usize);
-                    let dx = p_a.0 - p_b.0;
-                    let dy = p_a.1 - p_b.1;
-                    (dx * dx + dy * dy).sqrt() + std::f64::consts::PI * pin_d
-                } else {
-                    500.0
-                };
-                let chord_meters = (chord_len_mm / 1000.0) as f32;
-                self.total_thread_meters += chord_meters;
-                let s_id = step.spool_id as usize;
-                if s_id < 16 {
-                    self.spool_thread_meters[s_id] += chord_meters;
-                }
-            }
-
-            let start_byte_offset = (prev_step * 8) as u32;
-            let end_byte_offset = start_byte_offset + packed_bytes.len() as u32;
+        // Se o refinamento reescreveu passos anteriores, regrava o caminho inteiro;
+        // caso contrário, anexa apenas os passos novos.
+        let rewrite_all = progress.path_revision != self.last_path_revision;
+        let first = if rewrite_all { 0 } else { prev_step };
+        let steps = &session.history_steps[first.min(session.history_steps.len())..];
+        let writable = steps.len().min(self.capacity_steps.saturating_sub(first));
+        if writable > 0 {
+            let bytes = encode_steps(&steps[..writable]);
+            let start = (first * 8) as u32;
             self.path_uint8
-                .subarray(start_byte_offset, end_byte_offset)
-                .copy_from(&packed_bytes);
+                .subarray(start, start + bytes.len() as u32)
+                .copy_from(&bytes);
         }
 
+        if rewrite_all {
+            self.total_thread_meters = 0.0;
+            self.spool_thread_meters = [0.0; 16];
+        }
+        if let Some(loom) = self.loom.as_ref() {
+            for step in steps {
+                let m = chord_meters(loom, step.from_pin as usize, step.to_pin as usize);
+                self.total_thread_meters += m;
+                if (step.spool_id as usize) < 16 {
+                    self.spool_thread_meters[step.spool_id as usize] += m;
+                }
+            }
+        }
+        self.last_path_revision = progress.path_revision;
+
+        let phase_code = match progress.phase {
+            SolverPhase::Construct => 0,
+            SolverPhase::Refine => 1,
+            SolverPhase::Fill => 2,
+            SolverPhase::Finished => 3,
+        };
         self.write_step_index(progress.current_step as i32);
         self.write_active_spool(progress.active_spool_id as i32);
         self.write_total_switches(progress.total_switches as i32);
+        self.write_control_i32(CTRL_INT32_PATH_REVISION, progress.path_revision as i32);
+        self.write_control_i32(CTRL_INT32_SOLVER_PHASE, phase_code);
         self.write_status(progress.status);
 
         self.control_float32
@@ -719,7 +801,6 @@ impl WasmWeavingEngine {
             .set_index(CTRL_FLOAT32_SSIM as u32, progress.telemetry.ssim);
         self.control_float32
             .set_index(CTRL_FLOAT32_TOTAL_METERS as u32, self.total_thread_meters);
-
         for (i, &meters) in self.spool_thread_meters.iter().enumerate().take(16) {
             self.control_float32
                 .set_index((CTRL_FLOAT32_SPOOL_METERS_BASE + i) as u32, meters);
@@ -727,7 +808,6 @@ impl WasmWeavingEngine {
 
         progress.status == SolverStatus::Running
     }
-
     pub fn get_prepared_target_rgba(&self) -> Vec<u8> {
         self.diagnostic_prepared_rgba.clone()
     }
@@ -835,11 +915,8 @@ impl WasmWeavingEngine {
 
     fn write_step_index(&self, step: i32) {
         if self.is_shared {
-            let _ = js_sys::Atomics::store(
-                &self.control_int32,
-                CTRL_INT32_CURRENT_STEP as u32,
-                step,
-            );
+            let _ =
+                js_sys::Atomics::store(&self.control_int32, CTRL_INT32_CURRENT_STEP as u32, step);
         } else {
             self.control_int32
                 .set_index(CTRL_INT32_CURRENT_STEP as u32, step);
@@ -848,11 +925,8 @@ impl WasmWeavingEngine {
 
     fn write_active_spool(&self, spool: i32) {
         if self.is_shared {
-            let _ = js_sys::Atomics::store(
-                &self.control_int32,
-                CTRL_INT32_ACTIVE_SPOOL as u32,
-                spool,
-            );
+            let _ =
+                js_sys::Atomics::store(&self.control_int32, CTRL_INT32_ACTIVE_SPOOL as u32, spool);
         } else {
             self.control_int32
                 .set_index(CTRL_INT32_ACTIVE_SPOOL as u32, spool);
@@ -869,6 +943,14 @@ impl WasmWeavingEngine {
         } else {
             self.control_int32
                 .set_index(CTRL_INT32_TOTAL_SWITCHES as u32, switches);
+        }
+    }
+
+    fn write_control_i32(&self, index: usize, val: i32) {
+        if self.is_shared {
+            let _ = js_sys::Atomics::store(&self.control_int32, index as u32, val);
+        } else {
+            self.control_int32.set_index(index as u32, val);
         }
     }
 
@@ -902,6 +984,34 @@ impl WasmWeavingEngine {
             })
             .collect()
     }
+}
+
+/// Codifica passos no layout de 8 bytes do `WeavingPathBuffer` (ADR-003).
+fn encode_steps(steps: &[weaver_solvers::WeaveStepRecord]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(steps.len() * 8);
+    for s in steps {
+        let dep = u8::from(s.departure_winding == PegSide::CounterClockwise);
+        let arr = if s.arrival_winding == PegSide::CounterClockwise {
+            2u8
+        } else {
+            0u8
+        };
+        out.extend_from_slice(&s.from_pin.to_le_bytes());
+        out.extend_from_slice(&s.to_pin.to_le_bytes());
+        out.push(s.spool_id);
+        out.push(dep | arr);
+        out.extend_from_slice(&s.score_normalized.to_le_bytes());
+    }
+    out
+}
+
+/// Comprimento de fio (m) de uma corda, incluindo meia volta em torno do pino.
+fn chord_meters(loom: &LoomGeometry, from: usize, to: usize) -> f32 {
+    let a = loom.pin_position(from);
+    let b = loom.pin_position(to);
+    let len_mm = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+        + std::f64::consts::PI * loom.spec.pin_diameter_mm;
+    (len_mm / 1000.0) as f32
 }
 
 fn build_loom_from_config(cfg: &WasmWeaverConfig) -> LoomGeometry {
@@ -950,10 +1060,10 @@ fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
         "CMYK_SUBTRACTIVE" => {
             // Pigmentos CMYK reais calibrados em Linear RGB (evitando neon sintético)
             let spools = vec![
-                SpoolColor::new(0, LinearRgbColor::new(0.95, 0.85, 0.02), 0.22), // Amarelo
-                SpoolColor::new(1, LinearRgbColor::new(0.82, 0.04, 0.45), 0.24), // Magenta
-                SpoolColor::new(2, LinearRgbColor::new(0.02, 0.58, 0.85), 0.24), // Ciano
-                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35), // Preto (K)
+                SpoolColor::new(0, LinearRgbColor::new(0.95, 0.85, 0.02), 1.0), // Amarelo
+                SpoolColor::new(1, LinearRgbColor::new(0.82, 0.04, 0.45), 1.0), // Magenta
+                SpoolColor::new(2, LinearRgbColor::new(0.02, 0.58, 0.85), 1.0), // Ciano
+                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 1.0), // Preto (K)
             ];
             let infos = vec![
                 SpoolInfo::new(0, "Amarelo", "#f5dd05"),
@@ -965,10 +1075,10 @@ fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
         }
         "RGB_OCCLUSIVE" => {
             let spools = vec![
-                SpoolColor::new(0, LinearRgbColor::new(0.85, 0.05, 0.05), 0.28),
-                SpoolColor::new(1, LinearRgbColor::new(0.05, 0.75, 0.10), 0.28),
-                SpoolColor::new(2, LinearRgbColor::new(0.05, 0.15, 0.85), 0.28),
-                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35),
+                SpoolColor::new(0, LinearRgbColor::new(0.85, 0.05, 0.05), 1.0),
+                SpoolColor::new(1, LinearRgbColor::new(0.05, 0.75, 0.10), 1.0),
+                SpoolColor::new(2, LinearRgbColor::new(0.05, 0.15, 0.85), 1.0),
+                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 1.0),
             ];
             let infos = vec![
                 SpoolInfo::new(0, "Vermelho", "#e01010"),
@@ -979,7 +1089,11 @@ fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
             (spools, infos)
         }
         _ => {
-            let spools = vec![SpoolColor::new(0, LinearRgbColor::new(0.02, 0.02, 0.02), 0.35)];
+            let spools = vec![SpoolColor::new(
+                0,
+                LinearRgbColor::new(0.02, 0.02, 0.02),
+                1.0,
+            )];
             let infos = vec![SpoolInfo::new(0, "Preto", "#141414")];
             (spools, infos)
         }
