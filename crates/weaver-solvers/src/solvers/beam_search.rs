@@ -61,6 +61,7 @@ pub struct BeamMove {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct BeamBranch {
     current_pin: usize,
+    prev_pin: Option<usize>,
     cumulative_score: f32,
     first_move: Option<BeamMove>,
     state_idx: usize,
@@ -92,6 +93,7 @@ pub struct BeamStepRecord {
 pub struct BeamSearchSolver {
     pub config: BeamSearchConfig,
     pub current_pin: usize,
+    pub prev_pin: Option<usize>,
     pub step_count: usize,
     chord_usage: Vec<u16>,
 
@@ -140,6 +142,7 @@ impl BeamSearchSolver {
         Self {
             config,
             current_pin,
+            prev_pin: None,
             step_count: 0,
             chord_usage: vec![0; chord_count],
             pool_a,
@@ -154,6 +157,7 @@ impl BeamSearchSolver {
     /// Reinicia o solver.
     pub fn reset(&mut self, start_pin: usize) {
         self.current_pin = start_pin;
+        self.prev_pin = None;
         self.step_count = 0;
         self.chord_usage.fill(0);
         self.candidate_expansions.clear();
@@ -197,6 +201,7 @@ impl BeamSearchSolver {
         self.branches_a.clear();
         self.branches_a.push(BeamBranch {
             current_pin: self.current_pin,
+            prev_pin: self.prev_pin,
             cumulative_score: 0.0,
             first_move: None,
             state_idx: 0,
@@ -238,6 +243,9 @@ impl BeamSearchSolver {
                     if next_pin == branch.current_pin {
                         continue;
                     }
+                    if branch.prev_pin == Some(next_pin) {
+                        continue;
+                    }
 
                     let chord_idx = match SparseChordMatrixCSR::try_canonical_chord_index(
                         branch.current_pin,
@@ -262,8 +270,13 @@ impl BeamSearchSolver {
                         continue;
                     }
 
-                    let chord_len = pixel_indices.len() as f32;
-                    let len_factor = if gamma == 0.0 {
+                    // Usa a integral de cobertura sub-pixel real da corda em vez de pixel_indices.len(),
+                    // eliminando o viés geométrico de 41% entre linhas verticais e diagonais em Xiaolin Wu!
+                    let weight_sum: u32 = subpixel_weights.iter().map(|&w| w as u32).sum();
+                    let chord_len = ((weight_sum as f32) * (1.0 / 255.0)).max(1.0);
+                    let len_factor = if gamma == 1.0 {
+                        chord_len
+                    } else if gamma == 0.0 {
                         1.0
                     } else {
                         chord_len.powf(gamma).max(1e-5)
@@ -353,6 +366,7 @@ impl BeamSearchSolver {
 
                     self.branches_b.push(BeamBranch {
                         current_pin: cand.next_move.to_pin,
+                        prev_pin: Some(parent_branch.current_pin),
                         cumulative_score: cand.total_score,
                         first_move: if level == 0 {
                             Some(cand.next_move)
@@ -388,6 +402,7 @@ impl BeamSearchSolver {
 
                     self.branches_a.push(BeamBranch {
                         current_pin: cand.next_move.to_pin,
+                        prev_pin: Some(parent_branch.current_pin),
                         cumulative_score: cand.total_score,
                         first_move: if level == 0 {
                             Some(cand.next_move)
@@ -456,15 +471,18 @@ impl BeamSearchSolver {
 
         // Avança o agendador de carretéis
         scheduler.advance_step(spool.id, spools);
-        let edge_boost = scheduler.active_edge_boost();
-        if edge_boost > 0.0 {
-            canvas.apply_edge_importance_boost(edge_boost);
+        if self.step_count % 250 == 0 {
+            let edge_boost = scheduler.active_edge_boost();
+            if edge_boost > 0.0 {
+                canvas.apply_edge_importance_boost(edge_boost);
+            }
         }
 
         // Atualiza estado do solver
         self.chord_usage[best_move.chord_idx] += 1;
         let from = self.current_pin;
         let to = best_move.to_pin;
+        self.prev_pin = Some(from);
         self.current_pin = to;
         self.step_count += 1;
 

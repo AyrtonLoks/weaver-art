@@ -9,16 +9,17 @@ use weaver_cam::{
     WeavingStep,
 };
 use weaver_domain::{
-    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, PegSide, Pixels,
+    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Millimeters, PegSide, Pixels,
     RasterizerType, SparseChordMatrixCSR, WindingDirection,
 };
 use weaver_dsp::{
-    ClaheConfig, DspPipeline, DspPipelineConfig, FramingConfig, ImportanceMap, Rgba8Image,
+    compute_auto_framing, AutoFramingOptions, ClaheConfig, DspPipeline, DspPipelineConfig,
+    FramingConfig, ImportanceMap, Rgba8Image,
 };
 use weaver_solvers::{
-    BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig, OpticalMixModelType,
-    OpticalModelEvaluator, SolverSession, SolverStatus, SpoolColor, SpoolScheduler,
-    SpoolSwitchStrategy,
+    compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig,
+    OpticalMixModelType, OpticalModelEvaluator, SolverSession, SolverStatus, SpoolColor,
+    SpoolScheduler, SpoolSwitchStrategy,
 };
 
 pub use weaver_cam::DrillHoleSpec;
@@ -449,13 +450,19 @@ impl WasmWeavingEngine {
             None
         };
 
-        let canvas = CanvasStateSoA::from_target_and_background(
+        let mut canvas = CanvasStateSoA::from_target_and_background(
             res,
             res,
             &target_colors,
             LinearRgbColor::WHITE,
             importance_slice,
         );
+
+        if let Some(sobel) = self.dsp_pipeline.sobel_result() {
+            if sobel.magnitude.data.len() == (res * res) as usize {
+                canvas.set_edge_map(&sobel.magnitude.data);
+            }
+        }
 
         let mix_model = match config.optical_mix_model.to_uppercase().as_str() {
             "LINEAR_SUBTRACTIVE" => OpticalMixModelType::LinearSubtractive,
@@ -469,7 +476,8 @@ impl WasmWeavingEngine {
             _ => ColorErrorMetric::LinearRgb,
         };
 
-        let evaluator = OpticalModelEvaluator::new(mix_model, err_metric);
+        let evaluator = OpticalModelEvaluator::new(mix_model, err_metric)
+            .with_highlight_protection(2.8);
         let (spools, spool_infos) = build_spools(&config);
         self.spool_infos = spool_infos;
 
@@ -513,9 +521,24 @@ impl WasmWeavingEngine {
 
         let scheduler = SpoolScheduler::new(strat, config.max_lines, 0);
 
-        // Calibra alpha_eff de acordo com max_lines para que o solver NUNCA pare na metade (3.459 linhas)
-        // e utilize todas as 6.500 ou 8.000 linhas para refinar óculos, olhos, nariz e sombras:
-        let alpha_eff = (130.0 / (config.max_lines.max(2000) as f32)).clamp(0.014, 0.055);
+        // Calibra alpha_eff fisicamente a partir da opacidade do fio, espessura (mm), resolução (px) e diâmetro (mm)
+        let primary_alpha = spools
+            .last()
+            .map(|s| s.alpha_material)
+            .unwrap_or(0.35);
+        let loom_extent_mm = loom
+            .spec
+            .diameter_mm
+            .max(loom.spec.width_mm)
+            .max(loom.spec.height_mm)
+            .max(100.0);
+        let alpha_eff = compute_effective_alpha(
+            primary_alpha,
+            Millimeters(config.thread_thickness_mm.max(0.05)),
+            Pixels(res),
+            Millimeters(loom_extent_mm as f32),
+        )
+        .clamp(0.012, 0.085);
 
         let session = match config.solver.to_uppercase().as_str() {
             "BEAM_SEARCH" => {
@@ -569,6 +592,32 @@ impl WasmWeavingEngine {
         self.write_total_switches(0);
 
         Ok(())
+    }
+
+    pub fn compute_smart_framing_wasm(
+        &self,
+        raw_rgba: &[u8],
+        width: u32,
+        height: u32,
+        target_ratio: f32,
+    ) -> Result<String, JsValue> {
+        let expected_len = (width as usize) * (height as usize) * 4;
+        if raw_rgba.len() != expected_len || width == 0 || height == 0 {
+            return Err(JsValue::from_str("Invalid RGBA dimensions for smart framing"));
+        }
+        let img = Rgba8Image::new(width, height, 4, raw_rgba.to_vec());
+        let opts = AutoFramingOptions {
+            target_ratio: target_ratio.clamp(0.50, 0.92),
+            ..AutoFramingOptions::default()
+        };
+        let res = compute_auto_framing(&img, &opts);
+        let json = serde_json::json!({
+            "zoom": res.config.zoom,
+            "panXPercent": res.config.pan_x * 100.0,
+            "panYPercent": res.config.pan_y * 100.0,
+            "confidence": res.confidence,
+        });
+        Ok(json.to_string())
     }
 
     pub fn step_solver_batch(&mut self, batch_size: u32) -> bool {

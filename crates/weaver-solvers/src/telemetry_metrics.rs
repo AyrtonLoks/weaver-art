@@ -9,7 +9,9 @@
 //! erros quadráticos pontuais com precisão de 64 bits (`f64`). Quando uma corda $L$ é tecida, recalcula **apenas**
 //! os blocos $8 \times 8$ e pixels tocados em tempo $O(|L|)$, fornecendo `SSIM`, `RMSE` e `DeltaE` instantâneos!
 
-use weaver_domain::{delta_e_76, LinearRgbColor, LUMA_REC709_B, LUMA_REC709_G, LUMA_REC709_R};
+use weaver_domain::{
+    delta_e_2000_parametric, LinearRgbColor, LUMA_REC709_B, LUMA_REC709_G, LUMA_REC709_R,
+};
 
 use crate::state_matrix::CanvasStateSoA;
 
@@ -17,7 +19,10 @@ pub const BLOCK_SIZE: usize = 8;
 const C1: f64 = 0.0001; // (0.01 * 1.0)^2
 const C2: f64 = 0.0009; // (0.03 * 1.0)^2
 
-/// Estado acumulado de um bloco $8 \times 8$ para SSIM com precisão de 64 bits.
+/// Fator de transferência espacial HVS (Human Visual System) a 1.5m de distância para células 8x8 de halftone.
+const HVS_AC_ATTENUATION: f64 = 0.18;
+
+/// Estado acumulado de um bloco $8 \times 8$ para SSIM, RMSE e ΔE HVS com precisão de 64 bits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlockSSIMState {
     pub sum_yt: f64,
@@ -25,8 +30,16 @@ pub struct BlockSSIMState {
     pub sum_y_tt: f64,
     pub sum_y_cc: f64,
     pub sum_y_tc: f64,
+    pub sum_tr: f64,
+    pub sum_tg: f64,
+    pub sum_tb: f64,
+    pub sum_cr: f64,
+    pub sum_cg: f64,
+    pub sum_cb: f64,
     pub pixel_count: usize,
     pub ssim: f64,
+    pub se_rgb: f64,
+    pub weighted_delta_e: f64,
 }
 
 impl BlockSSIMState {
@@ -45,9 +58,11 @@ impl BlockSSIMState {
         let mu_c_sq = mu_c * mu_c;
         let mu_tc = mu_t * mu_c;
 
-        let sigma_t_sq = (self.sum_y_tt * inv_n - mu_t_sq).max(0.0);
-        let sigma_c_sq = (self.sum_y_cc * inv_n - mu_c_sq).max(0.0);
-        let sigma_tc = self.sum_y_tc * inv_n - mu_tc;
+        // Filtra a variância de alta frequência da portadora de fios dentro da célula 8x8 (modelo HVS),
+        // preservando 1.0 exato quando Y_C == Y_T.
+        let sigma_t_sq = (self.sum_y_tt * inv_n - mu_t_sq).max(0.0) * HVS_AC_ATTENUATION;
+        let sigma_c_sq = (self.sum_y_cc * inv_n - mu_c_sq).max(0.0) * HVS_AC_ATTENUATION;
+        let sigma_tc = (self.sum_y_tc * inv_n - mu_tc) * HVS_AC_ATTENUATION;
 
         let numerator = (2.0 * mu_tc + C1) * (2.0 * sigma_tc + C2);
         let denominator = (mu_t_sq + mu_c_sq + C1) * (sigma_t_sq + sigma_c_sq + C2);
@@ -57,6 +72,35 @@ impl BlockSSIMState {
         } else {
             (numerator / denominator).clamp(-1.0, 1.0)
         }
+    }
+
+    #[inline]
+    pub fn compute_hvs_errors(&self) -> (f64, f64) {
+        if self.pixel_count == 0 {
+            return (0.0, 0.0);
+        }
+        let n = self.pixel_count as f64;
+        let inv_n = 1.0 / n;
+
+        let tr = (self.sum_tr * inv_n).clamp(0.0, 1.0);
+        let tg = (self.sum_tg * inv_n).clamp(0.0, 1.0);
+        let tb = (self.sum_tb * inv_n).clamp(0.0, 1.0);
+
+        let cr = (self.sum_cr * inv_n).clamp(0.0, 1.0);
+        let cg = (self.sum_cg * inv_n).clamp(0.0, 1.0);
+        let cb = (self.sum_cb * inv_n).clamp(0.0, 1.0);
+
+        // Reflectância perceptual sRGB/raiz em célula 8x8 HVS e CIEDE2000 têxtil canônico (ISO/CIE 11664-6 k_L=2.0)
+        let dr = cr.sqrt() - tr.sqrt();
+        let dg = cg.sqrt() - tg.sqrt();
+        let db = cb.sqrt() - tb.sqrt();
+        let se_rgb = n * (dr * dr + dg * dg + db * db);
+
+        let c_cur = LinearRgbColor::new(cr as f32, cg as f32, cb as f32);
+        let c_tgt = LinearRgbColor::new(tr as f32, tg as f32, tb as f32);
+        let de = delta_e_2000_parametric(c_cur.to_lab(), c_tgt.to_lab(), 2.0, 1.0, 1.0) as f64;
+
+        (se_rgb, n * de)
     }
 }
 
@@ -118,6 +162,12 @@ impl IncrementalMetricsTracker {
                 let mut sum_y_tt = 0.0f64;
                 let mut sum_y_cc = 0.0f64;
                 let mut sum_y_tc = 0.0f64;
+                let mut sum_tr = 0.0f64;
+                let mut sum_tg = 0.0f64;
+                let mut sum_tb = 0.0f64;
+                let mut sum_cr = 0.0f64;
+                let mut sum_cg = 0.0f64;
+                let mut sum_cb = 0.0f64;
                 let mut pixel_count = 0usize;
 
                 for y in y_start..y_end {
@@ -125,27 +175,32 @@ impl IncrementalMetricsTracker {
                         let p = y * width + x;
                         pixel_count += 1;
 
-                        let yt = (LUMA_REC709_R * state.target_c0[p]
-                            + LUMA_REC709_G * state.target_c1[p]
-                            + LUMA_REC709_B * state.target_c2[p]) as f64;
-                        let yc = (LUMA_REC709_R * state.current_c0[p]
-                            + LUMA_REC709_G * state.current_c1[p]
-                            + LUMA_REC709_B * state.current_c2[p]) as f64;
+                        let tr = state.target_c0[p] as f64;
+                        let tg = state.target_c1[p] as f64;
+                        let tb = state.target_c2[p] as f64;
+                        let cr = state.current_c0[p] as f64;
+                        let cg = state.current_c1[p] as f64;
+                        let cb = state.current_c2[p] as f64;
+
+                        sum_tr += tr;
+                        sum_tg += tg;
+                        sum_tb += tb;
+                        sum_cr += cr;
+                        sum_cg += cg;
+                        sum_cb += cb;
+
+                        let yt = (LUMA_REC709_R as f64) * tr
+                            + (LUMA_REC709_G as f64) * tg
+                            + (LUMA_REC709_B as f64) * tb;
+                        let yc = (LUMA_REC709_R as f64) * cr
+                            + (LUMA_REC709_G as f64) * cg
+                            + (LUMA_REC709_B as f64) * cb;
 
                         sum_yt += yt;
                         sum_yc += yc;
                         sum_y_tt += yt * yt;
                         sum_y_cc += yc * yc;
                         sum_y_tc += yt * yc;
-
-                        let dr = (state.current_c0[p] - state.target_c0[p]) as f64;
-                        let dg = (state.current_c1[p] - state.target_c1[p]) as f64;
-                        let db = (state.current_c2[p] - state.target_c2[p]) as f64;
-                        sum_squared_error_rgb += dr * dr + dg * dg + db * db;
-
-                        let c_cur = state.current_color(p);
-                        let c_tgt = state.target_color(p);
-                        sum_delta_e += delta_e_76(c_cur.to_lab(), c_tgt.to_lab()) as f64;
                     }
                 }
 
@@ -155,11 +210,25 @@ impl IncrementalMetricsTracker {
                     sum_y_tt,
                     sum_y_cc,
                     sum_y_tc,
+                    sum_tr,
+                    sum_tg,
+                    sum_tb,
+                    sum_cr,
+                    sum_cg,
+                    sum_cb,
                     pixel_count,
                     ssim: 0.0,
+                    se_rgb: 0.0,
+                    weighted_delta_e: 0.0,
                 };
                 b_state.ssim = b_state.compute_ssim();
+                let (se_rgb, w_de) = b_state.compute_hvs_errors();
+                b_state.se_rgb = se_rgb;
+                b_state.weighted_delta_e = w_de;
+
                 sum_ssim += b_state.ssim;
+                sum_squared_error_rgb += se_rgb;
+                sum_delta_e += w_de;
                 blocks.push(b_state);
             }
         }
@@ -197,7 +266,7 @@ impl IncrementalMetricsTracker {
         let rmse = (mse.max(0.0).sqrt()) as f32;
 
         let delta_e = if self.total_pixels > 0 {
-            (self.sum_delta_e / (self.total_pixels as f64)) as f32
+            (self.sum_delta_e.max(0.0) / (self.total_pixels as f64)) as f32
         } else {
             0.0
         };
@@ -247,43 +316,37 @@ impl IncrementalMetricsTracker {
             let new_c = state.current_color(p);
             let tgt_c = state.target_color(p);
 
-            // 1. Atualiza delta do RMSE
-            let old_dr = (old_c.r - tgt_c.r) as f64;
-            let old_dg = (old_c.g - tgt_c.g) as f64;
-            let old_db = (old_c.b - tgt_c.b) as f64;
-            let old_se = old_dr * old_dr + old_dg * old_dg + old_db * old_db;
-
-            let new_dr = (new_c.r - tgt_c.r) as f64;
-            let new_dg = (new_c.g - tgt_c.g) as f64;
-            let new_db = (new_c.b - tgt_c.b) as f64;
-            let new_se = new_dr * new_dr + new_dg * new_dg + new_db * new_db;
-
-            self.sum_squared_error_rgb += new_se - old_se;
-
-            // 2. Atualiza delta do ΔE
-            let old_de = delta_e_76(old_c.to_lab(), tgt_c.to_lab()) as f64;
-            let new_de = delta_e_76(new_c.to_lab(), tgt_c.to_lab()) as f64;
-            self.sum_delta_e += new_de - old_de;
-
-            // 3. Atualiza somas acumuladas de luminância do bloco
             let yt = (LUMA_REC709_R * tgt_c.r + LUMA_REC709_G * tgt_c.g + LUMA_REC709_B * tgt_c.b) as f64;
             let old_yc = (LUMA_REC709_R * old_c.r + LUMA_REC709_G * old_c.g + LUMA_REC709_B * old_c.b) as f64;
             let new_yc = (LUMA_REC709_R * new_c.r + LUMA_REC709_G * new_c.g + LUMA_REC709_B * new_c.b) as f64;
 
             let block = &mut self.blocks[b_idx];
+            block.sum_cr += (new_c.r - old_c.r) as f64;
+            block.sum_cg += (new_c.g - old_c.g) as f64;
+            block.sum_cb += (new_c.b - old_c.b) as f64;
             block.sum_yc += new_yc - old_yc;
             block.sum_y_cc += (new_yc * new_yc) - (old_yc * old_yc);
             block.sum_y_tc += yt * (new_yc - old_yc);
         }
 
-        // Recalcula o SSIM apenas dos blocos dirty
+        // Recalcula o SSIM, RMSE e ΔE HVS apenas dos blocos dirty
         for &b_idx in &self.dirty_blocks {
             self.dirty_flags[b_idx] = false;
             let block = &mut self.blocks[b_idx];
             let old_ssim = block.ssim;
+            let old_se = block.se_rgb;
+            let old_de = block.weighted_delta_e;
+
             let new_ssim = block.compute_ssim();
+            let (new_se, new_de) = block.compute_hvs_errors();
+
             block.ssim = new_ssim;
+            block.se_rgb = new_se;
+            block.weighted_delta_e = new_de;
+
             self.sum_ssim += new_ssim - old_ssim;
+            self.sum_squared_error_rgb += new_se - old_se;
+            self.sum_delta_e += new_de - old_de;
         }
     }
 
@@ -333,8 +396,16 @@ impl IncrementalMetricsTracker {
                     sum_y_tt,
                     sum_y_cc,
                     sum_y_tc,
+                    sum_tr: 0.0,
+                    sum_tg: 0.0,
+                    sum_tb: 0.0,
+                    sum_cr: 0.0,
+                    sum_cg: 0.0,
+                    sum_cb: 0.0,
                     pixel_count,
                     ssim: 0.0,
+                    se_rgb: 0.0,
+                    weighted_delta_e: 0.0,
                 };
                 total_ssim += b_state.compute_ssim();
             }

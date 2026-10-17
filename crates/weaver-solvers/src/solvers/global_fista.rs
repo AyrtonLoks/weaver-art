@@ -144,7 +144,7 @@ pub fn estimate_lipschitz_constant(
     norm * 1.10
 }
 
-/// Computa o vetor de densidade alvo $b \ge 0$ para um carretel específico a partir do canvas.
+/// Computa o vetor de densidade óptica alvo $b \ge 0$ ($-\ln T$) para um carretel específico a partir do canvas.
 pub fn compute_target_density(
     canvas: &CanvasStateSoA,
     spool: &SpoolColor,
@@ -163,12 +163,15 @@ pub fn compute_target_density(
         if imp <= 0.0 {
             continue;
         }
-        let target_abs_r = (1.0 - canvas.target_c0[p]).max(0.0);
-        let target_abs_g = (1.0 - canvas.target_c1[p]).max(0.0);
-        let target_abs_b = (1.0 - canvas.target_c2[p]).max(0.0);
+        // Densidade óptica logarítmica de Beer-Lambert: D = -ln(max(T, 0.05))
+        let opt_r = -canvas.target_c0[p].clamp(0.05, 1.0).ln();
+        let opt_g = -canvas.target_c1[p].clamp(0.05, 1.0).ln();
+        let opt_b = -canvas.target_c2[p].clamp(0.05, 1.0).ln();
 
-        let proj = (target_abs_r * abs_r + target_abs_g * abs_g + target_abs_b * abs_b) / spool_strength;
-        out_b[p] = (proj.max(0.0) * imp).clamp(0.0, 10.0);
+        let proj = (opt_r * abs_r + opt_g * abs_g + opt_b * abs_b) / spool_strength;
+        // Ponderação suave da importância sem multiplicar linearmente a densidade alvo
+        let imp_factor = imp.clamp(0.25, 2.0).sqrt();
+        out_b[p] = (proj.max(0.0) * imp_factor).clamp(0.0, 5.0);
     }
 }
 

@@ -122,6 +122,9 @@ impl SpoolColor {
 pub struct OpticalModelEvaluator {
     pub mix_model: OpticalMixModelType,
     pub error_metric: ColorErrorMetric,
+    /// Fator de proteção assimétrica de realces ($2.0 \dots 4.0$, padrão $2.5$).
+    /// Penaliza progressivamente cordas que escurecem regiões de alta luminosidade ($T > 0.35$).
+    pub highlight_protection: f32,
 }
 
 impl OpticalModelEvaluator {
@@ -129,7 +132,13 @@ impl OpticalModelEvaluator {
         Self {
             mix_model,
             error_metric,
+            highlight_protection: 2.5,
         }
+    }
+
+    pub const fn with_highlight_protection(mut self, highlight_protection: f32) -> Self {
+        self.highlight_protection = highlight_protection;
+        self
     }
 
     /// Calcula a cor atualizada $C^{(t+1)}$ de um pixel $p$ sob a aplicação de um fio de cor $\mathbf{s}_k$
@@ -267,7 +276,8 @@ impl OpticalModelEvaluator {
     /// Calcula o ganho marginal acumulado ao longo de uma corda rasterizada:
     /// $\text{Ganho}_{\text{corda}} = \sum_{p \in \text{corda}} \text{Ganho}(p, k)$.
     ///
-    /// Consulta os pixels e pesos sub-pixel diretamente da struct `CanvasStateSoA`.
+    /// Consulta os pixels e pesos sub-pixel diretamente da struct `CanvasStateSoA`,
+    /// aplicando proteção assimétrica de realces (`highlight_protection`) sobre regiões claras ($T > 0.35$).
     pub fn chord_marginal_gain(
         &self,
         state: &CanvasStateSoA,
@@ -290,20 +300,26 @@ impl OpticalModelEvaluator {
         let s_max = s0.max(s1).max(s2);
         let s_min = s0.min(s1).min(s2);
         let is_chromatic_spool = (s_max - s_min) > 0.20;
+        let s_luma = 0.2126 * s0 + 0.7152 * s1 + 0.0722 * s2;
+        let hl_prot = self.highlight_protection.max(0.0);
 
         let inv_255 = alpha_eff * (1.0 / 255.0);
 
         if !is_chromatic_spool {
             // MODO MONOCROMÁTICO / CARRETEL PRETO (K):
-            // Formulação Linear Direta de Petros Vrellis (sem decaimento quadrático por C(p)!).
-            // Garante que óculos, pupilas, sobrancelhas e sombras recebam prioridade máxima
-            // até atingirem a escuridão real da fotografia!
+            // Ponderação perceptual consistente (tanto para ganho positivo quanto para sobre-escurecimento)
+            // combinada com proteção assimétrica de realces faciais (T > 0.35).
             for i in 0..len {
                 let p = pixel_indices[i] as usize;
                 let imp = state.importance_w[p];
                 if imp <= 0.0 {
                     continue;
                 }
+                let imp_eff = if imp < 1.0 {
+                    imp
+                } else {
+                    1.0 + (imp - 1.0).clamp(0.0, 8.0) * 0.82
+                };
                 let aw = (subpixel_weights_u8[i] as f32) * inv_255;
 
                 let c_luma = 0.2126 * state.current_c0[p]
@@ -313,24 +329,73 @@ impl OpticalModelEvaluator {
                     + 0.7152 * state.target_c1[p]
                     + 0.0722 * state.target_c2[p];
 
-                // Erro residual de luminância: positivo quando o pixel precisa escurecer mais
-                let err = c_luma - t_luma - 0.5 * aw;
+                let delta = match self.mix_model {
+                    OpticalMixModelType::LinearSubtractive => aw * (1.0 - s_luma).max(0.0),
+                    OpticalMixModelType::PorterDuffOcclusion
+                    | OpticalMixModelType::BeerLambertTransmittance => {
+                        aw * (c_luma - s_luma).max(0.0)
+                    }
+                };
+                if delta <= 1e-7 {
+                    continue;
+                }
 
-                // Se err < 0 (ex: passando pelo fundo branco ao redor da cabeça para chegar aos olhos),
-                // aplica penalidade leve (0.32) para não bloquear as cordas que cruzam o centro do rosto!
-                let weighted_err = if err >= 0.0 { err } else { err * 0.32 };
-                total_gain += imp * aw * weighted_err;
+                let ref_luma = c_luma.max(t_luma).max(0.38);
+                let perc_weight = 1.0 / ref_luma.sqrt();
+
+                // Erro residual de luminância: positivo quando o pixel precisa escurecer mais
+                let err = c_luma - t_luma - 0.5 * delta;
+
+                if err >= 0.0 {
+                    // Atenua o ganho positivo em áreas claras de pele (t_luma > 0.42 Linear)
+                    // para que o solver priorize feições escuras (olhos, óculos, boca) e deixe
+                    // que os meios-tons claros da pele sejam sombreados naturalmente por cordas colaterais.
+                    let bright_damp = if t_luma > 0.42 {
+                        (1.0 - ((t_luma - 0.42) / 0.58) * 0.70).clamp(0.30, 1.0)
+                    } else {
+                        1.0
+                    };
+                    total_gain += 2.0 * imp_eff * bright_damp * perc_weight * delta * err;
+                } else {
+                    // Fundo de estúdio claro fora da cabeça (imp < 0.35): penalidade reduzida para
+                    // permitir que cordas horizontais atravessem os olhos, óculos e boca até os pinos laterais.
+                    let is_studio_bg = imp < 0.35 && t_luma > 0.80;
+                    let imp_neg = if is_studio_bg {
+                        (imp * 0.55).max(0.08)
+                    } else {
+                        imp_eff.clamp(0.70, 2.4)
+                    };
+                    let highlight_penalty = if is_studio_bg {
+                        0.75
+                    } else if t_luma > 0.35 {
+                        1.15 + hl_prot * 0.72 * (t_luma - 0.35)
+                    } else {
+                        1.12
+                    };
+                    total_gain += 2.0 * imp_neg * delta * err * highlight_penalty;
+                }
             }
         } else {
-            // CARRETÉIS CROMÁTICOS (Amarelo, Magenta, Ciano / RGB) com Separação GCR:
-            // O componente neutro escuro (K) é reservado para o fio Preto, impedindo que
-            // fios Amarelos ou Cianos criem manchas ou bordas sobre o moletom preto e óculos.
+            // CARRETÉIS CROMÁTICOS (Amarelo, Magenta, Ciano / RGB) com Separação UCR/GCR seletiva por canal:
+            // Reserva uma fração moderada de sombras neutras para o Preto (K) final e pondera cada canal
+            // pela seletividade espectral do pigmento (w_i = (a_i / a_max)^2), impedindo que Y e M
+            // esgotem o ganho do Ciano (C) no canal Vermelho!
+            let a_max = a0.max(a1).max(a2).max(1e-4);
+            let w0 = (a0 / a_max).powi(2);
+            let w1 = (a1 / a_max).powi(2);
+            let w2 = (a2 / a_max).powi(2);
+
             for i in 0..len {
                 let p = pixel_indices[i] as usize;
                 let imp = state.importance_w[p];
                 if imp <= 0.0 {
                     continue;
                 }
+                let imp_eff = if imp < 1.0 {
+                    imp
+                } else {
+                    1.0 + (imp - 1.0).clamp(0.0, 8.0) * 0.82
+                };
                 let aw = (subpixel_weights_u8[i] as f32) * inv_255;
 
                 let raw_t0 = state.target_c0[p];
@@ -340,26 +405,59 @@ impl OpticalModelEvaluator {
                 let t_max = raw_t0.max(raw_t1).max(raw_t2);
                 let t_min = raw_t0.min(raw_t1).min(raw_t2);
                 let chroma = t_max - t_min;
-
-                let (t0, t1, t2) = if chroma < 0.03 {
-                    // Área neutra (preto, cinza ou branco): fio colorido não deve atuar aqui
-                    (1.0, 1.0, 1.0)
+                let k_neutral = (1.0 - t_max).clamp(0.0, 1.0);
+                let k_reserve = if chroma < 0.03 {
+                    k_neutral * 0.42
                 } else {
-                    let k_neutral = 1.0 - t_max;
-                    (
-                        (raw_t0 + k_neutral * 0.90).clamp(0.0, 1.0),
-                        (raw_t1 + k_neutral * 0.90).clamp(0.0, 1.0),
-                        (raw_t2 + k_neutral * 0.90).clamp(0.0, 1.0),
-                    )
+                    k_neutral * 0.32
                 };
 
-                let e0 = state.current_c0[p] - t0 - 0.5 * aw * a0;
-                let e1 = state.current_c1[p] - t1 - 0.5 * aw * a1;
-                let e2 = state.current_c2[p] - t2 - 0.5 * aw * a2;
+                let t0 = (raw_t0 + k_reserve).clamp(0.0, 1.0);
+                let t1 = (raw_t1 + k_reserve).clamp(0.0, 1.0);
+                let t2 = (raw_t2 + k_reserve).clamp(0.0, 1.0);
 
-                let dot = e0 * a0 + e1 * a1 + e2 * a2;
-                let weighted_dot = if dot >= 0.0 { dot } else { dot * 0.45 };
-                total_gain += imp * aw * weighted_dot;
+                let d0 = match self.mix_model {
+                    OpticalMixModelType::LinearSubtractive => a0,
+                    _ => (state.current_c0[p] - s0).max(0.0),
+                };
+                let d1 = match self.mix_model {
+                    OpticalMixModelType::LinearSubtractive => a1,
+                    _ => (state.current_c1[p] - s1).max(0.0),
+                };
+                let d2 = match self.mix_model {
+                    OpticalMixModelType::LinearSubtractive => a2,
+                    _ => (state.current_c2[p] - s2).max(0.0),
+                };
+
+                let e0 = state.current_c0[p] - t0 - 0.5 * aw * d0;
+                let e1 = state.current_c1[p] - t1 - 0.5 * aw * d1;
+                let e2 = state.current_c2[p] - t2 - 0.5 * aw * d2;
+
+                let dot = w0 * e0 * d0 + w1 * e1 * d1 + w2 * e2 * d2;
+                let t_luma = 0.2126 * raw_t0 + 0.7152 * raw_t1 + 0.0722 * raw_t2;
+                if dot >= 0.0 {
+                    let bright_damp = if t_luma > 0.48 && chroma < 0.12 {
+                        (1.0 - ((t_luma - 0.48) / 0.52) * 0.65).clamp(0.35, 1.0)
+                    } else {
+                        1.0
+                    };
+                    total_gain += 2.0 * imp_eff * bright_damp * aw * dot;
+                } else {
+                    let is_studio_bg = imp < 0.35 && t_luma > 0.80;
+                    let imp_neg = if is_studio_bg {
+                        (imp * 0.55).max(0.08)
+                    } else {
+                        imp_eff.clamp(0.70, 2.4)
+                    };
+                    let highlight_penalty = if is_studio_bg {
+                        0.75
+                    } else if t_luma > 0.35 {
+                        1.15 + hl_prot * 0.75 * (t_luma - 0.35)
+                    } else {
+                        1.12
+                    };
+                    total_gain += 2.0 * imp_neg * aw * dot * highlight_penalty;
+                }
             }
         }
 

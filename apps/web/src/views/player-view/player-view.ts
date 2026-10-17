@@ -405,8 +405,7 @@ export class PlayerView {
 
     if (s) {
       let layerTransition:
-        | { isStart?: boolean; prevThreadName?: string; nextThreadName?: string; prevPin?: number }
-        | undefined;
+        { isStart?: boolean; prevThreadName?: string; nextThreadName?: string; prevPin?: number } | undefined;
 
       if (r.options.threads.length > 1) {
         if (isLayered) {

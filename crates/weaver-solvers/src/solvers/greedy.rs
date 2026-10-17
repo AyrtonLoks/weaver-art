@@ -542,5 +542,148 @@ mod tests {
         println!("Steps taken: {}", steps_taken);
         assert!(steps_taken > 0, "Deveria ter executado passos!");
     }
+
+    #[test]
+    fn test_greedy_portrait_4000_lines_highlight_protection_and_rmse() {
+        use crate::state_matrix::compute_effective_alpha;
+        use weaver_domain::Millimeters;
+
+        let pin_count = 160;
+        let res = 160u32;
+        let diameter_mm = 600.0;
+        let spec = LoomPhysicalSpec::circle(diameter_mm, pin_count, 2.0, 1.5, 10.0);
+        let loom = LoomGeometry::new(spec);
+        let matrix = SparseChordMatrixCSR::build(
+            &loom,
+            Pixels(res),
+            10,
+            RasterizerType::XiaolinWuAntialiased,
+        );
+
+        let bg = LinearRgbColor::WHITE;
+        let mut target = vec![bg; (res * res) as usize];
+        let mut importance = vec![1.0f32; (res * res) as usize];
+        let center = (res as f32 - 1.0) * 0.5;
+        let r_loom = center;
+
+        for y in 0..res {
+            for x in 0..res {
+                let nx = (x as f32 - center) / r_loom;
+                let ny = (y as f32 - center) / r_loom;
+                let r = (nx * nx + ny * ny).sqrt();
+                let idx = (y * res + x) as usize;
+
+                if r > 0.96 {
+                    importance[idx] = 0.0;
+                    continue;
+                }
+
+                // Cabeça oval ocupando ~75% do diâmetro útil
+                let head_dist = (nx / 0.52).powi(2) + ((ny + 0.04) / 0.65).powi(2);
+                if head_dist <= 1.0 {
+                    // Pele iluminada com realces nas bochechas/testa (T ~ 0.65) e sombra lateral (T ~ 0.25)
+                    let shading = (0.68 - 0.32 * head_dist - 0.10 * nx.abs()).clamp(0.18, 0.78);
+                    target[idx] = LinearRgbColor::new(shading, shading, shading);
+                    importance[idx] = 2.5;
+
+                    // Olhos escuros no terço superior
+                    let eye_l = ((nx + 0.18) / 0.09).powi(2) + ((ny + 0.16) / 0.05).powi(2);
+                    let eye_r = ((nx - 0.18) / 0.09).powi(2) + ((ny + 0.16) / 0.05).powi(2);
+                    // Sobrancelhas e boca
+                    let mouth = (nx / 0.18).powi(2) + ((ny - 0.24) / 0.04).powi(2);
+                    // Cabelo escuro no topo
+                    let hair = ny < -0.32 && head_dist > 0.45;
+                    if eye_l <= 1.0 || eye_r <= 1.0 || mouth <= 1.0 || hair {
+                        target[idx] = LinearRgbColor::new(0.05, 0.05, 0.05);
+                        importance[idx] = 4.0;
+                    }
+                }
+            }
+        }
+
+        let mut canvas =
+            CanvasStateSoA::from_target_and_background(res, res, &target, bg, Some(&importance));
+        let mut tracker = IncrementalMetricsTracker::new(&canvas);
+        let evaluator = OpticalModelEvaluator::new(
+            OpticalMixModelType::PorterDuffOcclusion,
+            ColorErrorMetric::CielabDeltaE2000,
+        )
+        .with_highlight_protection(2.8);
+
+        let spools = vec![SpoolColor::new(
+            0,
+            LinearRgbColor::new(0.02, 0.02, 0.02),
+            0.35,
+        )];
+        let alpha_eff = compute_effective_alpha(
+            0.35,
+            Millimeters(0.15),
+            Pixels(res),
+            Millimeters(diameter_mm as f32),
+        );
+
+        let mut scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 4000, 0);
+        let config = GreedyConfig {
+            max_steps: 4000,
+            max_chord_repeats: 2,
+            length_exponent_gamma: 1.0,
+            start_pin: 0,
+            tabu_history_size: 8,
+        };
+        let mut solver = GreedySolver::new(config, matrix.chord_count());
+
+        let initial_rmse = tracker.current_snapshot().rmse;
+        let mut rmse_at_1000 = initial_rmse;
+
+        let mut steps_executed = 0;
+        for step_idx in 0..4000 {
+            if solver
+                .step(
+                    &mut canvas,
+                    &mut tracker,
+                    &mut scheduler,
+                    &matrix,
+                    &evaluator,
+                    &spools,
+                    alpha_eff,
+                )
+                .is_some()
+            {
+                steps_executed += 1;
+                if step_idx + 1 == 1000 {
+                    rmse_at_1000 = tracker.current_snapshot().rmse;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let final_snap = tracker.current_snapshot();
+        assert!(
+            steps_executed >= 800,
+            "Deve tecer número substancial de cordas para o retrato, obtido: {}",
+            steps_executed
+        );
+        assert!(
+            rmse_at_1000 < initial_rmse,
+            "RMSE em 1000 linhas ({}) deve ser menor que o inicial ({})",
+            rmse_at_1000,
+            initial_rmse
+        );
+        assert!(
+            final_snap.rmse <= rmse_at_1000 + 1e-4 && final_snap.rmse < initial_rmse * 0.65,
+            "RMSE final ({}) deve convergir sem degradar a imagem (inicial={})",
+            final_snap.rmse,
+            initial_rmse
+        );
+
+        // Verifica que o fundo branco e os realces da testa não sofreram "buraco negro"
+        let bg_sample_idx = (15 * res + 15) as usize;
+        assert!(
+            canvas.current_c0[bg_sample_idx] > 0.70,
+            "Fundo claro deve permanecer limpo (> 0.70), obtido: {}",
+            canvas.current_c0[bg_sample_idx]
+        );
+    }
 }
 

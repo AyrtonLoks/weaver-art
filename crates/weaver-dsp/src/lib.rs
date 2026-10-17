@@ -13,8 +13,9 @@ pub mod pipeline;
 pub mod radon;
 
 pub use contrast::{
-    adjust_radiometry, apply_brightness, apply_gamma, apply_sigmoidal_contrast, clahe_channel,
-    clahe_gray, clahe_lab, clahe_linear_rgb, compute_channel_entropy, ClaheConfig,
+    adjust_radiometry, apply_brightness, apply_gamma, apply_portrait_tone_shaping,
+    apply_sigmoidal_contrast, apply_unsharp_mask, clahe_channel, clahe_gray, clahe_lab,
+    clahe_linear_rgb, compute_channel_entropy, ClaheConfig,
 };
 pub use edges::{
     canny, compute_multiscale_saliency, edges_to_rgba, fuse_high_frequency, gaussian_blur_5x5,

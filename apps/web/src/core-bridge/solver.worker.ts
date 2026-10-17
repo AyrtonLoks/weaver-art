@@ -50,6 +50,13 @@ export type ToSolverWorkerMessage =
       camType: CamExportType;
       exportId: string;
       configJson?: string;
+    }
+  | {
+      type: 'SMART_FRAME';
+      rawRgba: ArrayBuffer;
+      width: number;
+      height: number;
+      targetRatio: number;
     };
 
 /** Messages dispatched by the solver worker to the Main Thread. */
@@ -103,6 +110,10 @@ export type FromSolverWorkerMessage =
       type: 'CAM_EXPORT_RESULT';
       exportId: string;
       result: string | Uint8Array;
+    }
+  | {
+      type: 'SMART_FRAME_RESULT';
+      resultJson: string;
     }
   | {
       type: 'ERROR';
@@ -352,6 +363,23 @@ function handleExportCam(msg: Extract<ToSolverWorkerMessage, { type: 'EXPORT_CAM
   }
 }
 
+function handleSmartFrame(msg: Extract<ToSolverWorkerMessage, { type: 'SMART_FRAME' }>): void {
+  if (!wasmEngine) {
+    post({ type: 'ERROR', message: 'Wasm engine not initialized' });
+    return;
+  }
+  try {
+    const rawBytes = new Uint8Array(msg.rawRgba);
+    const resultJson = wasmEngine.compute_smart_framing_wasm(rawBytes, msg.width, msg.height, msg.targetRatio);
+    post({ type: 'SMART_FRAME_RESULT', resultJson });
+  } catch (err) {
+    post({
+      type: 'ERROR',
+      message: `Erro no auto-enquadramento facial: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 // Escuta de mensagens do Worker
 self.onmessage = (e: MessageEvent<ToSolverWorkerMessage>): void => {
   const msg = e.data;
@@ -379,6 +407,9 @@ self.onmessage = (e: MessageEvent<ToSolverWorkerMessage>): void => {
       break;
     case 'EXPORT_CAM':
       handleExportCam(msg);
+      break;
+    case 'SMART_FRAME':
+      handleSmartFrame(msg);
       break;
   }
 };

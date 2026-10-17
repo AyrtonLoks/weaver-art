@@ -41,6 +41,13 @@ export interface ProgressNotification {
   totalThreadMeters: number;
 }
 
+export interface SmartFramingResult {
+  zoom: number;
+  panXPercent: number;
+  panYPercent: number;
+  confidence: number;
+}
+
 /**
  * High-performance client that bridges the UI thread to the background Wasm solver worker.
  */
@@ -63,6 +70,8 @@ export class WeaverEngineClient {
     null;
   private pendingSolverInit: { resolve: () => void; reject: (err: unknown) => void } | null = null;
   private pendingBrushApply: { resolve: (buf: ArrayBuffer) => void; reject: (err: unknown) => void } | null = null;
+  private pendingSmartFrame: { resolve: (res: SmartFramingResult) => void; reject: (err: unknown) => void } | null =
+    null;
 
   constructor(options?: EngineClientOptions) {
     this.memory = new SharedWorkspaceMemory(options?.capacitySteps, {
@@ -177,6 +186,18 @@ export class WeaverEngineClient {
               break;
             }
 
+            case 'SMART_FRAME_RESULT':
+              if (this.pendingSmartFrame) {
+                try {
+                  const parsed = JSON.parse(msg.resultJson) as SmartFramingResult;
+                  this.pendingSmartFrame.resolve(parsed);
+                } catch (err) {
+                  this.pendingSmartFrame.reject(err);
+                }
+                this.pendingSmartFrame = null;
+              }
+              break;
+
             case 'ERROR':
               if (this.pendingImagePrepare) {
                 this.pendingImagePrepare.reject(new Error(msg.message));
@@ -185,6 +206,10 @@ export class WeaverEngineClient {
               if (this.pendingSolverInit) {
                 this.pendingSolverInit.reject(new Error(msg.message));
                 this.pendingSolverInit = null;
+              }
+              if (this.pendingSmartFrame) {
+                this.pendingSmartFrame.reject(new Error(msg.message));
+                this.pendingSmartFrame = null;
               }
               for (const cb of this.onErrorCallbacks) {
                 cb(msg.message);
@@ -282,6 +307,44 @@ export class WeaverEngineClient {
         brushWeights,
       };
       this.worker!.postMessage(msg);
+    });
+  }
+
+  /**
+   * Computes automatic facial saliency framing (zoom, panXPercent, panYPercent) via the Rust Wasm DSP engine.
+   */
+  public async computeSmartFraming(
+    rawRgba: Uint8Array | ArrayBuffer,
+    width: number,
+    height: number,
+    targetRatio = 0.8,
+  ): Promise<SmartFramingResult> {
+    if (!this.worker) {
+      throw new Error("Worker não inicializado. Chame 'await client.init()' primeiro.");
+    }
+
+    let rawBuffer: ArrayBuffer;
+    if (rawRgba instanceof Uint8Array) {
+      rawBuffer = new ArrayBuffer(rawRgba.byteLength);
+      new Uint8Array(rawBuffer).set(rawRgba);
+    } else if (rawRgba instanceof ArrayBuffer) {
+      rawBuffer = rawRgba.slice(0);
+    } else {
+      const u8 = new Uint8Array(rawRgba);
+      rawBuffer = new ArrayBuffer(u8.byteLength);
+      new Uint8Array(rawBuffer).set(u8);
+    }
+
+    return new Promise((resolve, reject) => {
+      this.pendingSmartFrame = { resolve, reject };
+      const msg: ToSolverWorkerMessage = {
+        type: 'SMART_FRAME',
+        rawRgba: rawBuffer,
+        width,
+        height,
+        targetRatio,
+      };
+      this.worker!.postMessage(msg, [rawBuffer]);
     });
   }
 

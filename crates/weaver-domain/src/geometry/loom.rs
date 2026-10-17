@@ -183,15 +183,13 @@ impl LoomContour for CircularContour {
 
     #[inline]
     fn point_at_arc_length(&self, s: f64) -> (f64, f64) {
-        // Pino 0 no topo (-PI/2 = 12 horas), avançando no sentido horário,
-        // idêntico ao WebGLLoomRenderer e ao Modo Tecelagem.
-        let theta = -PI / 2.0 + (s.rem_euclid(self.perimeter)) / self.radius;
+        let theta = (s.rem_euclid(self.perimeter)) / self.radius;
         (self.radius * theta.cos(), self.radius * theta.sin())
     }
 
     #[inline]
     fn normal_at_arc_length(&self, s: f64) -> (f64, f64) {
-        let theta = -PI / 2.0 + (s.rem_euclid(self.perimeter)) / self.radius;
+        let theta = (s.rem_euclid(self.perimeter)) / self.radius;
         (theta.cos(), theta.sin())
     }
 }

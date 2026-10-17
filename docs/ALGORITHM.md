@@ -398,9 +398,49 @@ A tecelagem de string art possui uma natureza inerentemente sequencial: a escolh
 - O dispatch de pipelines de computação em GPU envolve latências de barreira e sincronização de buffer entre 0,5 ms e 2 ms por chamada. Em 4.000 passos sequenciais, apenas o overhead de sincronização da GPU consumiria de 2 a 8 segundos.
 - Por outro lado, a combinação de CPU SIMD (`f32x4`), cache LRU em memória L1/L2 e poda preguiçosa de Minoux atinge latências inferiores a 0,1 ms por passo, garantindo desempenho interativo superior com menor consumo energético e compatibilidade universal em qualquer navegador sem necessidade de suporte a WebGPU.
 
-## 18. Próximos passos (v0.6)
+## Especificação Matemática e Algorítmica
 
-- **Visualização 3D em Tempo Real (WebGL/Three.js)**: Renderização tridimensional interativa da peça física montada, simulando relevo das camadas sobrepostas de fio, iluminação ambiente rasante e textura dos pinos de latão/madeira.
-- **G-code 3D com Eixo Z e Cabeçote Rotativo**: Suporte a máquinas de tecelagem com elevação progressiva de cabeçote (evitando colisão com camadas densas de fio) e cabeçote dispensador com orientação tangencial controlada.
-- **Exportação para Formatos 3D Padrão**: Exportação de malhas e curvas de fios em OBJ, glTF 2.0 e USDZ para prototipagem em realidade aumentada e renderizadores físicos (Blender, Maya).
-- **Refinamento Global em Lote via WebGPU**: Aplicação de computação em GPU dedicada exclusivamente ao estágio de refinamento global em matriz densa, onde múltiplos nós independentes podem sofrer perturbação paralela simultânea.
+Qualquer manutenção nos crates `weaver-dsp` e `weaver-solvers` deve obedecer estritamente às formulações abaixo.
+
+---
+
+## 1. Transformação Afim de Enquadramento (Invariância JS $\leftrightarrow$ Rust)
+
+Dada uma imagem de entrada de dimensões $(W_{\text{in}}, H_{\text{in}})$ e uma grade de saída $(W_{\text{out}}, H_{\text{out}})$ com raio útil $R_{\text{out}} = \frac{\min(W_{\text{out}}, H_{\text{out}})}{2}$:
+1. Define-se o raio base de referência pela menor dimensão da foto:
+   $$R_{\text{in}} = \frac{\min(W_{\text{in}}, H_{\text{in}})}{2}$$
+2. Para um fator de `zoom` $> 0$ e deslocamentos normalizados $\text{pan}_x, \text{pan}_y \in [-1, 1]$:
+   $$\text{scale} = \frac{R_{\text{in}}}{R_{\text{out}} \cdot \text{zoom}}$$
+   $$x_{\text{in}} = \frac{W_{\text{in}} - 1}{2} - \text{pan}_x \cdot R_{\text{in}} + (\Delta x \cos\theta + \Delta y \sin\theta) \cdot \text{scale}$$
+   $$y_{\text{in}} = \frac{H_{\text{in}} - 1}{2} - \text{pan}_y \cdot R_{\text{in}} + (-\Delta x \sin\theta + \Delta y \cos\theta) \cdot \text{scale}$$
+* **Atenção:** O sinal negativo em $-\text{pan}_x R_{\text{in}}$ e $-\text{pan}_y R_{\text{in}}$ garante que arrastar o mouse para a direita/baixo mova a imagem para a direita/baixo na tela. Tanto o preview rápido em TypeScript quanto o `apply_affine_transform` em Rust devem usar exatamente esta equação.
+
+---
+
+## 2. O Algoritmo Monocromático de Petros Vrellis (Referência Base)
+
+Para validar a nitidez estrutural (óculos, olhos, nariz, boca), o modo **Monocromático (Fio Preto sobre Fundo Branco)** é o padrão de referência e funciona por subtração linear direta na matriz de luminância:
+
+1. **Inicialização:** A tela inicia branca ($C(p) = 1.0$) e o alvo $T(p) \in [0.0, 1.0]$ representa a luminância preparada (com CLAHE ativo). Portanto, a "escuridão desejada" (erro inicial) em cada pixel é $E^{(0)}(p) = 1.0 - T(p) = C^{(0)}(p) - T(p)$.
+2. **Pontuação da Corda Candidata $L$:**
+   Para cada corda candidata com pesos sub-pixel $w_p = \frac{\text{weight\_u8}(p)}{255.0}$, calcula-se a integral ponderada pelo Mapa de Importância Facial $W(p)$ dividida pela integral de cobertura da corda:
+   $$\text{Score}(L) = \frac{\sum_{p \in L} W(p) \cdot w_p \cdot \left( C^{(t)}(p) - T(p) \right)}{\left(\sum_{p \in L} w_p\right)^\gamma}$$
+   onde $\gamma \in [0.85, 1.0]$ e o denominador usa a soma dos pesos sub-pixel $\sum w_p$ (e nunca `pixel_indices.len()`, evitando viés direcional de Xiaolin Wu).
+3. **Atualização da Tela (Atenuação):**
+   Ao escolher a corda vencedora $L^*$, escurece-se a tela ao longo de $L^*$ por uma taxa calibrada pelo orçamento de linhas ($\alpha_{\text{eff}} \approx \frac{120}{K_{\max}}$, tipicamente entre $0.02$ e $0.04$):
+   $$C^{(t+1)}(p) = \max\left(0.0, \; C^{(t)}(p) - \alpha_{\text{eff}} \cdot w_p\right)$$
+* **Por que NÃO multiplicar por $(C(p) - s)$ no ganho do fio Preto?**
+  Multiplicar o erro $(C - T)$ por $C(p)$ faz com que regiões muito escuras (como armações de óculos pretas, onde $T = 0$) percam metade do seu peso assim que $C(p)$ cai para $0.5$, fazendo o algoritmo abandonar os óculos cinzentos e espalhar fios na pele clara. O erro linear $(C^{(t)}(p) - T(p))$ garante que os óculos e pupilas continuem recebendo fios até atingirem $C(p) \approx T(p) = 0$.
+
+---
+
+## 3. Extensão Policromática CMYK com Remoção de Sub-Cor (UCR / GCR)
+
+Para evitar que fios coloridos (Amarelo, Magenta, Ciano) tentem escurecer roupas pretas ou óculos (o que gera anéis amarelos na borda e borra o rosto):
+
+1. Para cada pixel $p$ com alvo colorido $T(p) = [R_T, G_T, B_T]$:
+   - Calcula-se o componente acromático preto: $K_T(p) = 1.0 - \max(R_T, G_T, B_T)$.
+   - Calcula-se o croma real: $\text{Chroma}(p) = \max(R_T, G_T, B_T) - \min(R_T, G_T, B_T)$.
+2. **Quando o carretel avaliado é Cromático ($C, M, Y$):**
+   - Se $\text{Chroma}(p) < 0.04$ (pixel neutro: fundo branco, moletom preto, cabelo preto, armação de óculos), o alvo cromático efetivo para este fio é $[1.0, 1.0, 1.0]$ (nenhum fio colorido deve ser depositado ali!).
+   - Caso contrário, remove-se $90\%$ do componente preto ($T_{\text{croma}}(p) = \min(1.0, T(p) + 0.90 \cdot K_T(p))$), de modo que o fio colorido atue **exclusivamente no matiz e saturação** (pele, lábios), deixando a sombra escura para o fio Preto ($K$).

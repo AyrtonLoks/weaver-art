@@ -199,6 +199,87 @@ impl ImportanceMap {
 
         Rgba8Image::new(self.width, self.height, 4, data)
     }
+
+    /// Modula o mapa de importância para retratos (Padrão Petros Vrellis):
+    /// 1. Atenua o fundo claro vazio nas laterais da cabeça para permitir que cordas horizontais
+    ///    cruzem livremente os olhos, óculos, nariz e boca até os pinos laterais;
+    /// 2. Atenua progressivamente o tronco/roupa na base do tear ($y > 0.60 H$);
+    /// 3. Atenua suavemente o topo extremo do cabelo ($y < 0.22 H$) para evitar pilares verticais.
+    pub fn modulate_portrait_importance(
+        &mut self,
+        prepared_srgb_luma: &GrayImage,
+        facial_saliency: &GrayImage,
+        edges: &GrayImage,
+    ) {
+        let w = self.width;
+        let h = self.height;
+        let total = (w * h) as usize;
+        if prepared_srgb_luma.data.len() != total
+            || facial_saliency.data.len() != total
+            || edges.data.len() != total
+            || w < 4
+            || h < 4
+        {
+            return;
+        }
+
+        let inv_h = 1.0 / (h - 1) as f32;
+        let inv_w = 1.0 / (w - 1) as f32;
+        for y in 0..h {
+            let y_norm = y as f32 * inv_h;
+
+            // Fade cosseno na região inferior do tronco/gola (y > 0.56)
+            let torso_fade = if y_norm > 0.56 {
+                let t = ((y_norm - 0.56) / 0.44).clamp(0.0, 1.0);
+                1.0 - 0.82 * (0.5 * (1.0 - (std::f32::consts::PI * t).cos()))
+            } else {
+                1.0
+            };
+
+            // Atenuação na calota superior do cabelo (y < 0.27) para evitar cortinas verticais cabelo-tronco
+            let crown_fade = if y_norm < 0.27 {
+                let t = (y_norm / 0.27).clamp(0.0, 1.0);
+                0.32 + 0.68 * (0.5 * (1.0 - (std::f32::consts::PI * t).cos()))
+            } else {
+                1.0
+            };
+
+            for x in 0..w {
+                let x_norm = x as f32 * inv_w;
+                let x_lat = (x_norm - 0.50).abs() * 2.0;
+                let i = (y * w + x) as usize;
+                let luma = prepared_srgb_luma.data[i];
+                let face = facial_saliency.data[i];
+                let edge = edges.data[i];
+
+                let mut weight = self.weights[i];
+
+                // 1. Fundo de estúdio claro fora da face: reduz peso para permitir cordas horizontais
+                //    cruzando livremente os olhos, óculos, nariz e boca até os pinos laterais
+                if luma > 0.80 && face < 0.16 && edge < 0.10 {
+                    let bg_t = ((luma - 0.80) / 0.20).clamp(0.0, 1.0);
+                    let non_face = (1.0 - face / 0.16).clamp(0.0, 1.0);
+                    weight *= 1.0 - 0.80 * bg_t * non_face;
+                } else if luma > 0.56 && edge < 0.12 && face < 0.22 {
+                    // 2. Pele lisa clara (testa, ponte do nariz, bochechas, interior das lentes dos óculos):
+                    //    Mantém importância moderada-baixa (~0.55..0.75) para que o solver não tente
+                    //    preencher pele lisa com cordas escuras e preserve o contraste das feições.
+                    let skin_smooth_t = ((luma - 0.56) / 0.30).clamp(0.0, 1.0);
+                    weight = (weight * (1.0 - 0.42 * skin_smooth_t)).min(0.85);
+                }
+
+                // Atenuação lateral de cabelo/capuz fora do oval central de feições
+                let lateral_fade = if x_lat > 0.52 && (y_norm < 0.36 || y_norm > 0.50) {
+                    1.0 - 0.55 * ((x_lat - 0.52) / 0.48).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+
+                weight *= torso_fade * crown_fade * lateral_fade;
+                self.weights[i] = weight.max(0.05);
+            }
+        }
+    }
 }
 
 /// Extrai a probabilidade de pele em $[0.0, 1.0]$ no espaço YCbCr e crominância normalizada.
@@ -240,8 +321,10 @@ pub fn compute_skin_probability(image: &Rgba8Image) -> Vec<f32> {
 
 /// Calcula o mapa de saliência facial $M_{\text{saliência\_facial}}(x, y) \in [0.0, 1.0]$.
 ///
-/// Integra altas frequências estruturais (bordas), probabilidade cromática de pele
-/// e prior elíptico central posicionado na zona áurea facial.
+/// Concentra o peso de saliência estritamente nas feições anatômicas escuras e bordas estruturais
+/// (pupilas, íris, cílios, sobrancelhas, armação dos óculos, narinas e linha labial), mantendo a pele
+/// lisa clara (testa, ponte do nariz, bochechas e interior das lentes) com saliência próxima de zero
+/// para evitar sobre-escurecimento facial (Padrão Petros Vrellis).
 pub fn compute_facial_saliency_map(rgba: &Rgba8Image) -> GrayImage {
     let w = rgba.width;
     let h = rgba.height;
@@ -249,32 +332,67 @@ pub fn compute_facial_saliency_map(rgba: &Rgba8Image) -> GrayImage {
         return GrayImage::zeros(w, h, 1);
     }
 
-    let gray = rgba.to_gray();
-    let edge_saliency = compute_multiscale_saliency(&gray, 0.70);
+    let perceptual_gray = rgba.to_perceptual_luma_gray();
+    let edge_saliency = compute_multiscale_saliency(&perceptual_gray, 0.65);
     let skin_prob = compute_skin_probability(rgba);
 
     let cx = w as f32 * 0.50;
-    let cy = h as f32 * 0.45; // Olhos e nariz no terço superior
-    let inv_rx_sq = 1.0 / (0.38 * w as f32).max(1.0).powi(2);
-    let inv_ry_sq = 1.0 / (0.42 * h as f32).max(1.0).powi(2);
+    let cy = h as f32 * 0.46; // Centro das micro-feições (olhos, óculos, nariz e boca)
+    let inv_rx_sq = 1.0 / (0.28 * w as f32).max(1.0).powi(2);
+    let inv_ry_sq = 1.0 / (0.22 * h as f32).max(1.0).powi(2);
 
     let total = (w * h) as usize;
     let mut saliency = Vec::with_capacity(total);
 
     for y in 0..h {
+        let y_norm = y as f32 / (h.max(1) as f32);
         let dy = y as f32 - cy;
         let dy_sq = dy * dy * inv_ry_sq;
 
+        // Zonas anatômicas horizontais:
+        // 1. Banda ocular + sobrancelhas + armação de óculos (y ∈ [0.31, 0.49])
+        let in_eye_glasses_band = y_norm >= 0.31 && y_norm <= 0.49;
+        // 2. Banda de narinas + filtro + boca/lábios (y ∈ [0.50, 0.65])
+        let in_nose_mouth_band = y_norm >= 0.50 && y_norm <= 0.65;
+
         for x in 0..w {
+            let x_norm = x as f32 / (w.max(1) as f32);
             let dx = x as f32 - cx;
             let dx_sq = dx * dx * inv_rx_sq;
-            let center_weight = (-0.5 * (dx_sq + dy_sq)).exp();
+            let radial_sq = dx_sq + dy_sq;
+            let center_envelope = (-0.55 * radial_sq).exp();
 
             let idx = (y * w + x) as usize;
+            let luma = perceptual_gray.data[idx];
             let edge = edge_saliency.data[idx];
             let skin = skin_prob[idx];
 
-            let s = edge * (0.35 + 0.65 * skin) * center_weight;
+            let in_eye_zone = in_eye_glasses_band && x_norm >= 0.22 && x_norm <= 0.78 && radial_sq <= 1.30;
+            let in_mouth_zone = in_nose_mouth_band && x_norm >= 0.32 && x_norm <= 0.68 && radial_sq <= 1.20;
+            let in_core_face = in_eye_zone || in_mouth_zone;
+
+            // Escuridão estrutural local: preenche o interior sólido das pupilas, íris, sobrancelhas,
+            // hastes/aros de óculos, narinas e linha dos lábios (eliminando buracos negros onde gradiente=0)
+            let dark_feature = if in_core_face && luma < 0.52 {
+                ((0.52 - luma) / 0.52).clamp(0.0, 1.0).powf(1.20)
+            } else {
+                0.0
+            };
+
+            let zone_boost = if in_eye_zone {
+                1.45
+            } else if in_mouth_zone {
+                1.35
+            } else if y_norm >= 0.27 && y_norm <= 0.68 && radial_sq <= 1.40 {
+                0.70
+            } else {
+                0.15
+            };
+
+            let structural_term = (0.72 * edge + 0.68 * dark_feature) * zone_boost;
+            let skin_fallback = 0.02 * skin * center_envelope;
+
+            let s = (structural_term * (0.45 + 0.55 * center_envelope)) + skin_fallback;
             saliency.push(s.clamp(0.0, 1.0));
         }
     }

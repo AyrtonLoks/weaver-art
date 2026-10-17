@@ -34,8 +34,8 @@ impl Default for SvgArtworkOptions {
         Self {
             margin_mm: 15.0,
             background_color: "#ffffff".to_string(),
-            default_thread_thickness_mm: 0.20,
-            default_opacity: 0.70,
+            default_thread_thickness_mm: 0.18,
+            default_opacity: 0.22,
             draw_pegs: true,
             peg_number_base: 1,
         }

@@ -5,6 +5,7 @@ export class WasmWeavingEngine {
     free(): void;
     [Symbol.dispose](): void;
     apply_user_importance_brush(brush_weights: Float32Array): void;
+    compute_smart_framing_wasm(raw_rgba: Uint8Array, width: number, height: number, target_ratio: number): string;
     generate_artwork_svg(): string;
     generate_cnc_gcode(): string;
     generate_drilling_blueprint_pdf(): Uint8Array;
@@ -28,6 +29,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmweavingengine_free: (a: number, b: number) => void;
     readonly wasmweavingengine_apply_user_importance_brush: (a: number, b: number, c: number) => void;
+    readonly wasmweavingengine_compute_smart_framing_wasm: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly wasmweavingengine_generate_artwork_svg: (a: number) => [number, number, number, number];
     readonly wasmweavingengine_generate_cnc_gcode: (a: number) => [number, number, number, number];
     readonly wasmweavingengine_generate_drilling_blueprint_pdf: (a: number) => [number, number, number, number];

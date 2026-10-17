@@ -65,9 +65,10 @@ export class StudioViewManager {
   private cachedPreparedRgba: Uint8ClampedArray | null = null;
   private cachedSimRgba: Uint8ClampedArray | null = null;
 
-  // Listeners & Wasm Brush callback
+  // Listeners & Wasm Brush / SmartFraming callbacks
   private onFramingChange?: () => void;
   private onBrushApplyHandler?: (weights: Float32Array) => Promise<ArrayBuffer | void> | void;
+  private onSmartFrameHandler?: () => Promise<{ zoom: number; panXPercent: number; panYPercent: number } | null> | void;
   private brushApplyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(el: StudioFramingElements, onFramingChange?: () => void) {
@@ -137,6 +138,12 @@ export class StudioViewManager {
 
   public setBrushApplyHandler(handler: (weights: Float32Array) => Promise<ArrayBuffer | void> | void): void {
     this.onBrushApplyHandler = handler;
+  }
+
+  public setSmartFrameHandler(
+    handler: () => Promise<{ zoom: number; panXPercent: number; panYPercent: number } | null> | void,
+  ): void {
+    this.onSmartFrameHandler = handler;
   }
 
   public getManualBrushMask(): Float32Array | null {
@@ -417,7 +424,6 @@ export class StudioViewManager {
       const newPanX = Math.round(Math.max(-100, Math.min(100, startPanX + deltaPanX)));
       const newPanY = Math.round(Math.max(-100, Math.min(100, startPanY + deltaPanY)));
 
-      this.el.panXInput.mountValue?.(newPanX);
       this.el.panXInput.value = String(newPanX);
       this.el.panYInput.value = String(newPanY);
       this.onFramingChange?.();
@@ -468,13 +474,31 @@ export class StudioViewManager {
       });
     });
 
-    // Smart frame 80% (Petros Vrellis standard)
+    // Smart frame 80% (Petros Vrellis standard + Wasm auto-saliency detection)
     this.el.btnSmartFrame?.addEventListener('click', () => {
       this.el.zoomInput.value = '1.25';
       this.el.panYInput.value = '-6';
       this.el.panXInput.value = '0';
       if (this.el.rotationInput) this.el.rotationInput.value = '0';
       this.onFramingChange?.();
+
+      if (this.onSmartFrameHandler) {
+        Promise.resolve(this.onSmartFrameHandler())
+          .then((res) => {
+            if (res && typeof res.zoom === 'number') {
+              const clampedZoom = Math.max(0.6, Math.min(3.5, res.zoom));
+              const clampedPanX = Math.round(Math.max(-60, Math.min(60, res.panXPercent)));
+              const clampedPanY = Math.round(Math.max(-60, Math.min(60, res.panYPercent)));
+              this.el.zoomInput.value = clampedZoom.toFixed(2);
+              this.el.panXInput.value = String(clampedPanX);
+              this.el.panYInput.value = String(clampedPanY);
+              this.onFramingChange?.();
+            }
+          })
+          .catch(() => {
+            // Keep synchronous fallback 1.25 / -6
+          });
+      }
     });
 
     // Reset crop

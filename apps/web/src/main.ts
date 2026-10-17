@@ -7,10 +7,8 @@ import {
   formatDuration,
   loomPegCount,
   parsePegsCSV,
-  prepareTarget,
   toCSV,
   toInstructions,
-  toRGBA,
   toSVG,
   type WeaveStep,
   type ThreadSummary,
@@ -239,13 +237,13 @@ const studioManager = new StudioViewManager(
     targetCaption: document.getElementById('targetCaption') as HTMLElement | undefined,
   },
   () => {
-    //presetStore.setParam('framing', {
-      //zoom: Number(fields.cropZoom.value) || 1.0,
-      //panXPercent: Number(fields.cropPanX.value) || 0,
-      //panYPercent: Number(fields.cropPanY.value) || 0,
-      //rotationDeg: Number(cropRotationInput.value) || 0,
-      //autoFaceTargetRatio: 0,
-    //});
+    presetStore.setParam('framing', {
+      zoom: Number(fields.cropZoom.value) || 1.0,
+      panXPercent: Number(fields.cropPanX.value) || 0,
+      panYPercent: Number(fields.cropPanY.value) || 0,
+      rotationDeg: Number(cropRotationInput.value) || 0,
+      autoFaceTargetRatio: 0,
+    });
     updateOutputs();
     updateTargetPreview(false);
   },
@@ -299,6 +297,10 @@ engineClient
     studioManager.setBrushApplyHandler(async (weights) => {
       return await engineClient.applyImportanceBrush(weights);
     });
+    studioManager.setSmartFrameHandler(async () => {
+      if (!image || !engineClient.isReady()) return null;
+      return await engineClient.computeSmartFraming(image.data.slice().buffer, image.width, image.height, 0.8);
+    });
     engineClient.onDone(async () => {
       if (isWasmRunning) {
         await finishWasmRun(true);
@@ -331,7 +333,7 @@ function generateEllipticalPegs(widthMm: number, heightMm: number, pegCount: num
   const ry = heightMm / 2;
   const pegs: { x: number; y: number }[] = [];
   for (let i = 0; i < pegCount; i++) {
-    const angle = -Math.PI / 2 + (2 * Math.PI * i) / pegCount;
+    const angle = (2 * Math.PI * i) / pegCount;
     pegs.push({
       x: rx + rx * Math.cos(angle),
       y: ry + ry * Math.sin(angle),
@@ -344,7 +346,7 @@ function generateRegularPolygonPegs(diameterMm: number, sides: number, totalPegs
   const r = diameterMm / 2;
   const vertices: { x: number; y: number }[] = [];
   for (let s = 0; s < sides; s++) {
-    const angle = -Math.PI / 2 + (2 * Math.PI * s) / sides;
+    const angle = (2 * Math.PI * s) / sides;
     vertices.push({
       x: r + r * Math.cos(angle),
       y: r + r * Math.sin(angle),
@@ -420,7 +422,7 @@ export function getCurrentLoomConfig(): LoomConfig {
     diameterMm: Number(fields.diameter.value) || 600,
     pegCount: Math.max(3, Math.round(Number(fields.pegs.value) || 200)),
     pegDiameterMm,
-    startAngleDeg: -90,
+    startAngleDeg: 0,
   };
 }
 
@@ -438,6 +440,9 @@ function updateLoomPreview(): void {
 
 // ------------------------------------------------------------- Preset Store Reactivity
 function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
+  if (preset.value !== cfg.presetProfileId) {
+    preset.value = cfg.presetProfileId;
+  }
   loomShape.value = cfg.shape;
   document.body.dataset.loomShape = cfg.shape;
 
@@ -450,6 +455,7 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   fields.diameter.value = cfg.diameterMm.toFixed(1);
   fields.pegDiameter.value = String(cfg.pinDiameterMm);
   fields.threadWidth.value = String(cfg.threadThicknessMm);
+  loomRenderer.setThreadThickness(cfg.threadThicknessMm);
 
   rasterizerSelect.value = cfg.rasterizer;
   paletteModeSelect.value = cfg.paletteMode;
@@ -478,17 +484,20 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   switchPenaltyLambdaInput.value = String(cfg.switchPenaltyLambda);
   minRunLengthInput.value = String(cfg.minRunLength);
 
-  fields.claheClip.value = String(cfg.claheClipLimit);
+  fields.clahe.checked = cfg.claheClipLimit > 0;
+  const claheControlsEl = document.getElementById('clahe-controls');
+  if (claheControlsEl) claheControlsEl.hidden = !fields.clahe.checked;
+  fields.claheClip.value = String(cfg.claheClipLimit > 0 ? cfg.claheClipLimit : 2.0);
   faceImportanceWeightInput.value = String(cfg.faceImportanceWeight);
   edgeDetectorSelect.value = cfg.edgeDetector;
   controlEdgeBlendWeight.hidden = cfg.edgeDetector === 'NONE';
   edgeBlendWeightInput.value = String(cfg.edgeBlendWeight);
   morphologyOpSelect.value = cfg.morphologyOp;
 
-  //fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
-  //fields.cropPanX.value = String(cfg.framing.panXPercent);
-  //fields.cropPanY.value = String(cfg.framing.panYPercent);
-  //cropRotationInput.value = String(cfg.framing.rotationDeg);
+  fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
+  fields.cropPanX.value = String(cfg.framing.panXPercent);
+  fields.cropPanY.value = String(cfg.framing.panYPercent);
+  cropRotationInput.value = String(cfg.framing.rotationDeg);
 
   btnResetPresetDefaults.hidden = !isDirty;
 
@@ -667,6 +676,12 @@ function updateOutputs(): void {
 
   const rotEl = document.getElementById('cropRotation-out');
   if (rotEl) rotEl.textContent = `${Math.round(Number(cropRotationInput.value))}°`;
+
+  const faceImpEl = document.getElementById('faceImportanceWeight-out');
+  if (faceImpEl) faceImpEl.textContent = Number(faceImportanceWeightInput.value).toFixed(1);
+
+  const edgeBlendEl = document.getElementById('edgeBlendWeight-out');
+  if (edgeBlendEl) edgeBlendEl.textContent = Number(edgeBlendWeightInput.value).toFixed(2);
 }
 
 function computeActiveCrop(): { x: number; y: number; size: number } | undefined {
@@ -692,6 +707,7 @@ function computeActiveCrop(): { x: number; y: number; size: number } | undefined
 
 function buildRuntimeWasmConfig(): Record<string, unknown> {
   const cfg = presetStore.getConfig();
+  const edgeDetector = (edgeDetectorSelect.value || cfg.edgeDetector) as WeaverConfig['edgeDetector'];
   return {
     ...cfg,
     pinCount: Number(fields.pegs.value) || cfg.pinCount,
@@ -703,6 +719,9 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
     maxChordRepeats: Number(fields.repeats.value) || cfg.maxChordRepeats,
     targetResolution: Number(fields.resolution.value) || 500,
     claheClipLimit: fields.clahe.checked ? Number(fields.claheClip.value) || 2.0 : 0.0,
+    faceImportanceWeight: Number(faceImportanceWeightInput.value) || cfg.faceImportanceWeight,
+    edgeDetector,
+    edgeBlendWeight: edgeDetector === 'NONE' ? 0.0 : Number(edgeBlendWeightInput.value) || cfg.edgeBlendWeight,
     contrast: Number(fields.contrast.value) || 1.0,
     brightness: Number(fields.brightness.value) || 0.0,
     gamma: Number(fields.gamma.value) || 1.0,
@@ -763,7 +782,7 @@ function renderInstantClientFramingPreview(): void {
   ctx.restore();
 }
 
-function updateTargetPreview(): void {
+function updateTargetPreview(_force?: boolean): void {
   if (!image) return;
   if (studioManager.getActiveStage() === 'prepared') {
     renderInstantClientFramingPreview();
@@ -774,12 +793,7 @@ function updateTargetPreview(): void {
     if (!image || !engineClient.isReady()) return;
     const runtimeCfg = buildRuntimeWasmConfig();
     engineClient
-      .loadAndPrepareImage(
-        image.data.slice().buffer,
-        image.width,
-        image.height,
-        JSON.stringify(runtimeCfg),
-      )
+      .loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, JSON.stringify(runtimeCfg))
       .then((res) => {
         studioManager.setDiagnosticBuffers(res);
       })
@@ -799,7 +813,14 @@ function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions[
       { id: 'cmyk-y', name: 'Amarelo', color: '#f5dd05', widthMm, opacity: 0.22, startPeg: 0 },
       { id: 'cmyk-m', name: 'Magenta', color: '#d90a75', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 4) },
       { id: 'cmyk-c', name: 'Ciano', color: '#0594d9', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 2) },
-      { id: 'cmyk-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+      {
+        id: 'cmyk-k',
+        name: 'Preto',
+        color: '#141414',
+        widthMm,
+        opacity: 0.35,
+        startPeg: Math.floor((3 * totalPegs) / 4),
+      },
     ];
   }
   if (mode === 'RGB_OCCLUSIVE') {
@@ -807,7 +828,14 @@ function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions[
       { id: 'rgb-r', name: 'Vermelho', color: '#e01010', widthMm, opacity: 0.28, startPeg: 0 },
       { id: 'rgb-g', name: 'Verde', color: '#10c020', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 4) },
       { id: 'rgb-b', name: 'Azul', color: '#1030e0', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 2) },
-      { id: 'rgb-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: Math.floor((3 * totalPegs) / 4) },
+      {
+        id: 'rgb-k',
+        name: 'Preto',
+        color: '#141414',
+        widthMm,
+        opacity: 0.35,
+        startPeg: Math.floor((3 * totalPegs) / 4),
+      },
     ];
   }
   return [{ id: 'mono-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: 0 }];
@@ -948,7 +976,8 @@ function setStats(
   switches?: number | null,
   manualEstTime?: string | null,
 ): void {
-  $('s-lines').textContent = lines.toLocaleString('pt-BR');$('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
+  $('s-lines').textContent = lines.toLocaleString('pt-BR');
+  $('s-length').textContent = `${(lengthMm / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`;
   const switchesEl = document.getElementById('s-switches');
   if (switchesEl) {
     switchesEl.textContent = switches !== undefined && switches !== null ? switches.toLocaleString('pt-BR') : '0';
@@ -1209,6 +1238,7 @@ runBtn.addEventListener('click', async () => {
   result = null;
   loomRenderer.reset();
   loomRenderer.setLoom(options.loom);
+  loomRenderer.setThreadThickness(Number(fields.threadWidth.value) || 0.18);
   loomRenderer.setPalette(paletteModeSelect.value as ColorPaletteMode);
   exportButtons.forEach((b) => (b.disabled = true));
   spoolBreakdown.hidden = true;
@@ -1226,9 +1256,6 @@ runBtn.addEventListener('click', async () => {
       runtimeCfgJson,
     );
     studioManager.setDiagnosticBuffers(prepRes);
-    if (studioManager.getActiveStage() === 'prepared') {
-      renderInstantClientFramingPreview();
-    }
     await engineClient.initSolver(runtimeCfgJson);
     engineClient.startSolver(50);
     start60HzTelemetryLoop();

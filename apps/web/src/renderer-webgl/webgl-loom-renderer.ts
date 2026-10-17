@@ -54,28 +54,28 @@ export function hexToLinearRgb(hex: string): LinearRgb {
   };
 }
 
-/** Opacidades físicas sub-pixel calibradas com o solver (evita saturação neon/escura). */
+/** Opacidades físicas de material calibradas com o solver e conservação de energia sub-pixel. */
 export const DEFAULT_PALETTES: Record<ColorPaletteMode, [number, number, number, number][]> = {
   MONOCHROME: [
-    [0.02, 0.02, 0.02, 0.14], // Preto com densidade óptica real
+    [0.02, 0.02, 0.02, 0.35], // Preto com densidade óptica real
   ],
   CMYK_SUBTRACTIVE: [
-    [0.95, 0.82, 0.02, 0.09], // Amarelo
-    [0.82, 0.04, 0.45, 0.10], // Magenta
-    [0.02, 0.55, 0.85, 0.10], // Ciano
-    [0.02, 0.02, 0.02, 0.15], // Preto (K)
+    [0.95, 0.82, 0.02, 0.22], // Amarelo
+    [0.82, 0.04, 0.45, 0.24], // Magenta
+    [0.02, 0.55, 0.85, 0.24], // Ciano
+    [0.02, 0.02, 0.02, 0.35], // Preto (K)
   ],
   RGB_OCCLUSIVE: [
-    [0.85, 0.05, 0.05, 0.11],
-    [0.05, 0.75, 0.10, 0.11],
-    [0.05, 0.15, 0.85, 0.11],
-    [0.02, 0.02, 0.02, 0.15],
+    [0.85, 0.05, 0.05, 0.25],
+    [0.05, 0.75, 0.1, 0.25],
+    [0.05, 0.15, 0.85, 0.25],
+    [0.02, 0.02, 0.02, 0.35],
   ],
   USER_CUSTOM: [
-    [0.85, 0.1, 0.1, 0.11],
-    [0.1, 0.7, 0.2, 0.11],
-    [0.1, 0.3, 0.9, 0.11],
-    [0.02, 0.02, 0.02, 0.15],
+    [0.85, 0.1, 0.1, 0.25],
+    [0.1, 0.7, 0.2, 0.25],
+    [0.1, 0.3, 0.9, 0.25],
+    [0.02, 0.02, 0.02, 0.35],
   ],
 };
 
@@ -142,13 +142,13 @@ export class WebGLLoomRenderer {
     const initialPalette = options?.paletteMode ?? 'MONOCHROME';
     this.spoolColors = DEFAULT_PALETTES[initialPalette].slice();
 
-    // Default 200-pin circular loom
+    // Default 200-pin circular loom aligned with weaver-domain Pin 0 at 0 rad (3 o'clock)
     const defaultLoomConfig: LoomConfig = {
       shape: 'circle',
       diameterMm: options?.extentMm ?? 600,
       pegCount: 200,
       pegDiameterMm: 2.0,
-      startAngleDeg: -90,
+      startAngleDeg: 0,
     };
     this.loom = createLoom(defaultLoomConfig);
 
@@ -660,7 +660,10 @@ export class WebGLLoomRenderer {
 
     ctx.save();
     ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(0.5, this.threadThicknessMm * scale);
+    const rawWidth = this.threadThicknessMm * scale;
+    const lineWidth = Math.max(0.5, rawWidth);
+    const coverageScale = Math.min(1.0, rawWidth / lineWidth);
+    ctx.lineWidth = lineWidth;
 
     for (let i = 0; i < count; i++) {
       const stepIdx = startStep + i;
@@ -675,7 +678,8 @@ export class WebGLLoomRenderer {
       const seg = tangentSegment(pegs[fromPin], sa, pegs[toPin], sb, loom.pegRadiusMm);
 
       const spool = this.spoolColors[spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.35];
-      ctx.strokeStyle = `rgba(${Math.round(spool[0] * 255)}, ${Math.round(spool[1] * 255)}, ${Math.round(spool[2] * 255)}, ${spool[3]})`;
+      const effAlpha = Math.max(0.01, Math.min(1.0, spool[3] * coverageScale));
+      ctx.strokeStyle = `rgba(${Math.round(spool[0] * 255)}, ${Math.round(spool[1] * 255)}, ${Math.round(spool[2] * 255)}, ${effAlpha})`;
 
       ctx.beginPath();
       ctx.moveTo(seg.x0 * scale, seg.y0 * scale);
@@ -697,7 +701,10 @@ export class WebGLLoomRenderer {
 
     ctx.save();
     ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(0.5, this.threadThicknessMm * scale);
+    const rawWidth = this.threadThicknessMm * scale;
+    const lineWidth = Math.max(0.5, rawWidth);
+    const coverageScale = Math.min(1.0, rawWidth / lineWidth);
+    ctx.lineWidth = lineWidth;
 
     for (const s of steps) {
       const fromPin = s.fromPin % pegCount;
@@ -707,7 +714,8 @@ export class WebGLLoomRenderer {
       const seg = tangentSegment(pegs[fromPin], sa, pegs[toPin], sb, loom.pegRadiusMm);
 
       const spool = this.spoolColors[s.spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.35];
-      ctx.strokeStyle = `rgba(${Math.round(spool[0] * 255)}, ${Math.round(spool[1] * 255)}, ${Math.round(spool[2] * 255)}, ${spool[3]})`;
+      const effAlpha = Math.max(0.01, Math.min(1.0, spool[3] * coverageScale));
+      ctx.strokeStyle = `rgba(${Math.round(spool[0] * 255)}, ${Math.round(spool[1] * 255)}, ${Math.round(spool[2] * 255)}, ${effAlpha})`;
 
       ctx.beginPath();
       ctx.moveTo(seg.x0 * scale, seg.y0 * scale);

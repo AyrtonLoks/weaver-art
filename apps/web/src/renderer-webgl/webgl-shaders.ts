@@ -26,6 +26,7 @@ uniform float u_aaPaddingMm;                 // Antialiasing expansion margin in
 out float v_distAcross;                      // Normalized distance across thread in [-1.0, 1.0]
 out vec4 v_color;                            // Thread color in Linear RGB + opacity
 out vec2 v_tangent;                          // Normalized travel tangent vector
+out float v_energyScale;                     // Sub-pixel optical energy conservation factor
 
 void main() {
     vec2 delta = a_endMm - a_startMm;
@@ -48,6 +49,7 @@ void main() {
     v_distAcross = a_unitPos.y;
     v_color = a_color;
     v_tangent = dir;
+    v_energyScale = clamp(a_thicknessMm / max(1.36 * halfWidth, 1e-4), 0.05, 1.0);
 }
 `;
 
@@ -57,6 +59,7 @@ precision highp float;
 in float v_distAcross;
 in vec4 v_color;
 in vec2 v_tangent;
+in float v_energyScale;
 
 out vec4 fragColor;
 
@@ -75,8 +78,8 @@ void main() {
     // Analytical edge antialiasing
     float edgeAlpha = 1.0 - smoothstep(1.0 - u_aaRamp, 1.0, dist);
 
-    // Final linear alpha attenuation
-    float alpha = clamp(v_color.a * cylinder * edgeAlpha, 0.0, 1.0);
+    // Final linear alpha attenuation with sub-pixel optical energy conservation
+    float alpha = clamp(v_color.a * v_energyScale * cylinder * edgeAlpha, 0.0, 1.0);
 
     // Output in Linear RGB with alpha for Porter-Duff GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
     fragColor = vec4(v_color.rgb, alpha);
@@ -183,15 +186,15 @@ void main() {
         }
     }
 
-    // 3. Metallic Pegs
+    // 3. Metallic Pegs (0 rad at +X, counterclockwise in loom coordinates)
     if (u_showPins && u_pinCount > 0 && r < u_loomRadius + u_rimWidth + 0.02) {
         float twoPi = 6.283185307179586;
         float angleStep = twoPi / float(u_pinCount);
-        float phi = atan(p.y, p.x) + 1.5707963267948966;
+        float phi = atan(p.y, p.x);
         if (phi < 0.0) phi += twoPi;
 
         float pinIndex = floor(phi / angleStep + 0.5);
-        float pinAngle = pinIndex * angleStep - 1.5707963267948966;
+        float pinAngle = pinIndex * angleStep;
         vec2 pinCenter = u_loomRadius * vec2(cos(pinAngle), sin(pinAngle));
         float distToPin = length(p - pinCenter);
 

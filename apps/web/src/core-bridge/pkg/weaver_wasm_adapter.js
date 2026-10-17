@@ -20,6 +20,33 @@ export class WasmWeavingEngine {
         wasm.wasmweavingengine_apply_user_importance_brush(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * @param {Uint8Array} raw_rgba
+     * @param {number} width
+     * @param {number} height
+     * @param {number} target_ratio
+     * @returns {string}
+     */
+    compute_smart_framing_wasm(raw_rgba, width, height, target_ratio) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray8ToWasm0(raw_rgba, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.wasmweavingengine_compute_smart_framing_wasm(this.__wbg_ptr, ptr0, len0, width, height, target_ratio);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * @returns {string}
      */
     generate_artwork_svg() {

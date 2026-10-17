@@ -280,7 +280,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
   - **Cadência Humana Adaptativa**:
     - O tempo restante estimado é recalculado dinamicamente com base nos passos restantes multiplicados pela média móvel dos intervalos reais dos passos recentes executados pelo artesão, com fallback gracioso para o modelo analítico `estimateWeave`.
   - **Interrupção e Alerta Automático de Troca de Carretel**:
-    - Sempre que o passo atual exigir mudança de fio (`step[t].thread !== step[t-1].thread` ou `layerIndex !== prevStep.layerIndex`), o temporizador de avanço automático é pausado imediatamente, um chime de camada é reproduzido e um card de destaque exibe a instrução: *"Troca de Carretel: Amarre e finalize o fio [Cor Anterior] no pino [X] e inicie o carretel [Nova Cor]"*.
+    - Sempre que o passo atual exigir mudança de fio (`step[t].thread !== step[t-1].thread` ou `layerIndex !== prevStep.layerIndex`), o temporizador de avanço automático é pausado imediatamente, um chime de camada é reproduzido e um card de destaque exibe a instrução: _"Troca de Carretel: Amarre e finalize o fio [Cor Anterior] no pino [X] e inicie o carretel [Nova Cor]"_.
   - **Síntese de Voz Hands-Free (Web Speech API) com Utterance Watchdog**:
     - Ditado em `pt-BR` de forma clara e concisa (`"[Pino Destino], [horário / anti-horário]"`).
     - No modo automático (`"Avançar sozinho a cada X s"`), o contador regressivo para o próximo passo só é disparado após a conclusão da fala (`utterance.onend`), evitando atropelar a pronúncia, com watchdog de segurança contra stalls do motor de síntese.
@@ -305,3 +305,62 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
   - Em handlers de conclusão de workers ou eventos assíncronos, atribua imediatamente a variável a uma constante local imutável (`const activeResult = result;` ou `const steps = result.steps;`) antes de invocar operadores funcionais, evitando erros `TS18047: 'result' is possibly 'null'`.
 - **Verificação Obrigatória**:
   - Antes de concluir qualquer tarefa, execute a checagem integrada: `$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"; cargo check --workspace; cargo test --workspace; npm run check; npm run build`. Todos os testes e compilações devem passar com 0 erros.
+
+## Formas de Atuação
+
+Você está atuando em um sistema de alta precisão matemática e mecânica (**Weaver Art**): um motor de *String Art* computacional policromático e manufatura assistida (CAM) construído em **Rust (WebAssembly SIMD)** e **TypeScript (WebGL2)**.
+
+Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e obedecer rigorosamente a este documento e às especificações em `docs/REQUIREMENTS.md`, `docs/ARCHITECTURE.md` e `docs/ALGORITHM.md`.
+
+---
+
+## 1. Protocolo de Trabalho Incremental (REGRA DE OURO)
+
+1. **Uma Única Responsabilidade por Tarefa (Mudanças Atômicas):**
+   - **PROIBIDO** alterar simultaneamente o Frontend (UI/Canvas), o Pipeline DSP e a Matemática do Solver na mesma tarefa.
+   - Se o usuário relatar um problema visual, isole primeiro se a falha está: (a) na renderização/UI (`apps/web`), (b) no pré-processamento (`weaver-dsp`), ou (c) na otimização (`weaver-solvers`), e corrija **um único elo por vez**.
+2. **Proibição de Código Prematuro sem Diagnóstico:**
+   - Nunca proponha ou aplique "chutes" em constantes mágicas. Toda alteração em equações deve ser justificada matematicamente com base em `docs/ALGORITHM.md`.
+3. **Expurgo Estrito de Legado:**
+   - É terminantemente proibido duplicar controles no DOM ou manter código morto "por segurança". A pasta legada `packages/` não faz parte da arquitetura ativa; toda a lógica reside em `crates/*` (Rust) e `apps/web/src/*` (TypeScript).
+
+---
+
+## 2. Invariantes Críticas do Sistema (NUNCA VIOLE)
+
+### Invariante 1: Unificação do Sistema de Coordenadas (Rust $\leftrightarrow$ Canvas 2D $\leftrightarrow$ WebGL2)
+* **Convenção do Pino 0 e Sentido de Rotação:**
+  - Em **TODOS** os módulos (`weaver-domain`, `WebGLLoomRenderer`, `BlueprintCanvas` e `PlayerView`), o **Pino 0 (`index = 0`) DEVE iniciar no topo (12 horas, ângulo $-\frac{\pi}{2}\text{ rad}$ ou $-90^\circ$)** e avançar no **sentido horário (CW)**.
+  - Nunca inicie o contorno circular em $0\text{ rad}$ (3 horas) no Rust, pois isso rotaciona a obra em $90^\circ$ em relação à tela.
+* **Convenção do Eixo Vertical ($Y$):**
+  - Na imagem alvo (`weaver-dsp`) e no Canvas 2D (`core-helpers.ts`), a origem $(0,0)$ fica no **canto superior esquerdo** ($Y$ cresce para baixo).
+  - No **WebGL2 (`webgl-loom-renderer.ts`)**, o framebuffer possui origem no **canto inferior esquerdo** ($Y$ cresce para cima). Portanto, ao enviar os vértices das cordas (`seg.y0`, `seg.y1`) para o WebGL2, **DEVE-SE** converter a coordenada vertical fazendo `y_webgl = extentMm - seg.y`, e no arraste do mouse (`pointermove`) o deslocamento `panY` no WebGL deve subtrair `dy`.
+
+### Invariante 2: Integridade de Dimensões de Buffers de Imagem
+* Nunca desenhe um `Uint8ClampedArray` em um `<canvas>` assumindo dimensões fixas sem antes validar se `data.length === width * height * 4`.
+* Caso a pré-visualização instantânea opere em `256x256` e o Wasm opere em `500x500`, o método de pintura deve inferir `actualSide = Math.round(Math.sqrt(data.length / 4))` e redimensionar o `canvas.width` e `canvas.height` antes de chamar `ctx.putImageData()`, evitando o bug de listras diagonais corrompidas.
+
+### Invariante 3: Imutabilidade do Enquadramento do Usuário (`Pan / Zoom / Rotação`)
+* Quando o usuário posicionar a foto manualmente (via mouse ou sliders `cropZoom`, `cropPanX`, `cropPanY`, `cropRotation`), **NENHUM** evento de mudança de Preset, mudança de número de linhas ou retorno assíncrono do Worker Wasm pode sobrescrever os valores dos sliders de enquadramento na UI.
+* O arraste da foto na aba `1. Alvo` deve ser renderizado instantaneamente a 60 FPS no cliente via `ctx.drawImage` acelerado por GPU, aplicando *debounce* ($\ge 200\text{ ms}$) nas chamadas `loadAndPrepareImage` do Wasm para jamais travar a *Main Thread*.
+
+### Invariante 4: Sincronização de Fonte Única da Verdade (Estúdio $\leftrightarrow$ BOM $\leftrightarrow$ Modo Tecelagem)
+* A tabela de `Estimativa de Carretéis`, os contadores de rodapé (`LINHAS`, `FIO`, `TROCAS / NÓS`) e o `Modo Tecelagem` devem ler **exatamente a mesma sequência de passos e a mesma paleta de cores ativa** (`MONOCHROME`, `CMYK_SUBTRACTIVE`, `RGB_OCCLUSIVE` ou `USER_CUSTOM`).
+
+---
+
+## 3. Lista Negra de Anti-Padrões (PROIBIDO IMPLEMENTAR)
+
+1. **PROIBIDO converter o alvo para escala de cinza quando `paletteMode !== 'MONOCHROME'`:** Em modos coloridos, o CLAHE e ajustes tonais atuam apenas na luminância, preservando 100% da cromaticidade RGB.
+2. **PROIBIDO permitir que fios coloridos (C, M, Y) atuem em pixels acromáticos/pretos:** Sem separação UCR/GCR, o carretel Amarelo tenta reduzir a distância euclidiana RGB em roupas pretas ou óculos escuros, criando bordas amarelas artificiais na periferia do aro.
+3. **PROIBIDO penalizar excessivamente o fundo branco (> 0.5x):** Toda corda que desenha os olhos e óculos no centro precisa atravessar o fundo claro nas laterais da cabeça. Uma penalidade severa no fundo branco bloqueia o centro do retrato e aborta o solver prematuramente.
+4. **PROIBIDO alocar memória na Heap ou recalcular mapas inteiros dentro do *hot loop*:** Nunca execute cópias de `250.000` pixels a cada passo individual do solver.
+
+---
+
+## 4. Comandos de Verificação Obrigatória após cada Tarefa
+
+Antes de dar qualquer tarefa por concluída, execute e valide:
+1. `cargo test --workspace` (Todos os testes unitários e de integração em Rust devem passar).
+2. `npm run build:wasm` (O pacote WebAssembly em `apps/web/src/core-bridge/pkg` deve ser atualizado sempre que arquivos `.rs` forem tocados).
+3. `npm --prefix apps/web run typecheck` (`tsc --noEmit` deve passar com zero erros).

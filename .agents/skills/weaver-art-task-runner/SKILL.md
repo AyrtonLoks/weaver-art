@@ -151,17 +151,18 @@ Ao modificar os algoritmos de tecelagem em `crates/weaver-solvers`:
    - Zero alocações na heap durante o laço interno de avaliação de cordas.
    - Respeito integral às regras de Clean Architecture (`workspace-structure.test.ts`).
 
-
 ## 10. Validação do Modo Tecelagem, Voz TTS, Persistência e QR Code (Task 4.3)
 
 Ao modificar os componentes em `apps/web/src/views/player-view/`:
 
 1. **Executar a Suíte de Testes Dedicada**:
+
    ```powershell
    node ./node_modules/vitest/vitest.mjs run apps/web/test/sprint4-task4-3-player-view.test.ts
    ```
 
 2. **Checagem de Tipagem TypeScript**:
+
    ```powershell
    node ./node_modules/typescript/bin/tsc --noEmit -p apps/web/tsconfig.json
    ```
@@ -169,14 +170,14 @@ Ao modificar os componentes em `apps/web/src/views/player-view/`:
 3. **Invariantes para Mocks em Ambiente Vitest/Node**:
    - Em rotinas que agendam timers com fallback, utilize resolução segura:
      ```typescript
-     const timerFn = typeof window !== 'undefined' && typeof window.setTimeout === 'function' ? window.setTimeout : setTimeout;
+     const timerFn =
+       typeof window !== 'undefined' && typeof window.setTimeout === 'function' ? window.setTimeout : setTimeout;
      ```
    - Ao disparar eventos sintéticos no mock de elementos HTML, faça cast para `Event`:
      ```typescript
      el.dispatchEvent({ type: 'change' } as unknown as Event);
      ```
    - Mocks de `speechSynthesis` devem implementar `speak: vi.fn()` e `cancel: vi.fn()`, e a classe `SpeechSynthesisUtterance` deve estar acessível tanto em `window` quanto em `globalThis`.
-
 
 ## 11. Verificação de Deploy Estático, Build Unificado e Cross-Origin Isolation (COOP/COEP) (Task 4.4)
 

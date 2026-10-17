@@ -566,7 +566,6 @@ Para conectar e manipular as etapas de visão computacional na vista Estúdio:
    } as unknown as Event);
    ```
 
-
 ### 29. Modo Tecelagem Físico, Tangência Dupla, Hands-Free Voice TTS e Sincronização Mobile (`PlayerView`)
 
 Ao desenvolver, estender ou debugar o assistente de tecelagem passo a passo (`src/views/player-view/`):
@@ -588,7 +587,7 @@ Ao desenvolver, estender ou debugar o assistente de tecelagem passo a passo (`sr
      - Pause o temporizador automático (`stopTimer()`, `el.auto.checked = false`);
      - Reproduza o chime harmônico de camada (`playChime('layer')`);
      - Exiba card de destaque com instrução clara:  
-       *"Troca de Carretel: Amarre e finalize o fio [Cor Anterior] no pino [X] e inicie o carretel [Nova Cor]"*.
+       _"Troca de Carretel: Amarre e finalize o fio [Cor Anterior] no pino [X] e inicie o carretel [Nova Cor]"_.
 
 4. **Cadência Humana Adaptativa**:
    - Calcule a média móvel dos intervalos reais dos passos recentes do artesão (últimos 3 a 8 passos válidos entre 0.5 s e 90 s).
