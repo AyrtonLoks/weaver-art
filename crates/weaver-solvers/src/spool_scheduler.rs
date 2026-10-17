@@ -162,46 +162,45 @@ impl SpoolScheduler {
     fn compute_epoch_spool(
         step: usize,
         max_steps: usize,
-        base_ratio: f32,
-        refine_ratio: f32,
+        _base_ratio: f32,
+        _refine_ratio: f32,
         black_spool_id: u8,
         white_spool_id: Option<u8>,
         spools: &[SpoolColor],
     ) -> u8 {
-        let all_non_white: Vec<u8> = spools
+        let chromatic: Vec<u8> = spools
             .iter()
             .map(|s| s.id)
-            .filter(|&id| Some(id) != white_spool_id)
+            .filter(|&id| id != black_spool_id && Some(id) != white_spool_id)
             .collect();
 
-        if all_non_white.is_empty() {
+        if chromatic.is_empty() {
             return black_spool_id;
         }
 
         let progress = (step as f32) / (max_steps as f32).max(1.0);
-        let epoch1_limit = base_ratio;
-        let epoch2_limit = base_ratio + refine_ratio;
 
-        if progress >= epoch2_limit {
-            // Época 3 (Acabamento de Nitidez e Contornos no Topo): Preto (K) e Branco (W)
-            let epoch3_progress = (progress - epoch2_limit) / (1.0 - epoch2_limit).max(1e-4);
-            if epoch3_progress < 0.85 || white_spool_id.is_none() {
-                black_spool_id
-            } else {
-                white_spool_id.unwrap()
-            }
-        } else if progress < epoch1_limit {
-            // Época 1 (Base Estrutural e Cromática): Inclui todos os carretéis (C, M, Y, K)
-            let n = all_non_white.len();
-            let p1 = progress / epoch1_limit.max(1e-4);
-            let idx = ((p1 * (n as f32)).floor() as usize).min(n - 1);
-            all_non_white[idx]
+        // Cronograma Petros Vrellis para Retratos Policromáticos:
+        // 1. [0.00 .. 0.30]: Base Tonal Preta (constrói anatomia, olhos, cabelo e sombras base)
+        // 2. [0.30 .. 0.70]: Camadas Cromáticas (Y, M, C) apenas para matiz de pele e roupa
+        // 3. [0.70 .. 1.00]: Acabamento de Alta Nitidez em Preto (K) por cima para óculos, pupilas e contornos!
+        // 1. [0.00 .. 0.35]: Base Estrutural Preta (35%)
+        // 2. [0.35 .. 0.65]: Toque Cromático Suave Y, M, C (apenas 30% combinados, com UCR ativo!)
+        // 3. [0.65 .. 1.00]: Nitidez Final Preta no Topo (35% para óculos, pupilas e contornos!)
+        if progress < 0.35 {
+            black_spool_id
+        } else if progress < 0.65 {
+            let c_prog = (progress - 0.35) / 0.30;
+            let n = chromatic.len();
+            let idx = ((c_prog * (n as f32)).floor() as usize).min(n - 1);
+            chromatic[idx]
         } else {
-            // Época 2 (Refinamento Cromático e Sombra):
-            let n = all_non_white.len();
-            let p2 = (progress - epoch1_limit) / refine_ratio.max(1e-4);
-            let idx = ((p2 * (n as f32)).floor() as usize).min(n - 1);
-            all_non_white[idx]
+            if let Some(w_id) = white_spool_id {
+                if progress >= 0.94 {
+                    return w_id;
+                }
+            }
+            black_spool_id
         }
     }
 

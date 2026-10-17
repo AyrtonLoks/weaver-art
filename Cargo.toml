@@ -16,6 +16,7 @@ exclude = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/weaver-art/weaver-art"
 
 [profile.release]
 opt-level = 3

@@ -3,6 +3,7 @@ name = "weaver-wasm-adapter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Camada 3 (Wasm Adapter): Ponte wasm-bindgen e SharedArrayBuffer RingBuffer."
 
 [lib]

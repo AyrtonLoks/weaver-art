@@ -162,7 +162,7 @@ impl DspPipeline {
         let framed_rgba = Rgba8Image::new(res, res, 4, framed_rgba_data);
         let framed_gray = framed_rgba.to_gray();
 
-        // 3. Pré-processamento radiométrico e CLAHE na luminância
+        // 3. Pré-processamento radiométrico e CLAHE suave
         let mut prepared_gray = framed_gray.clone();
         if (self.config.contrast - 1.0).abs() > 1e-3 || self.config.brightness.abs() > 1e-3 {
             adjust_brightness_contrast_gray(
@@ -183,58 +183,95 @@ impl DspPipeline {
         let canny_edges = canny(&prepared_gray, &self.config.canny);
 
         if self.config.high_freq_blend > 0.0 {
-            prepared_gray =
-                fuse_high_frequency(&prepared_gray, &canny_edges, self.config.high_freq_blend);
+            prepared_gray = fuse_high_frequency(
+                &prepared_gray,
+                &sobel_res.magnitude,
+                self.config.high_freq_blend.min(0.25),
+            );
         }
 
-        // 5. Reconstrução Cromática em LinearRGB (Preserva cores em CMYK/RGB e aplica ganho de luminância local)
+        // 5. Reconstrução Cromática contínua (sem degraus artificiais) com suavização na borda do aro
         let total_px = (res * res) as usize;
         let mut prepared_linear_rgb = Vec::with_capacity(total_px);
         let mut prepared_rgba_bytes = Vec::with_capacity(total_px * 4);
 
-        for i in 0..total_px {
-            let new_luma = prepared_gray.data[i].clamp(0.0, 1.0);
-            if self.config.monochrome_target {
-                let lin = SrgbColor::new(new_luma, new_luma, new_luma).to_linear();
-                prepared_linear_rgb.push(lin);
-                let u = (new_luma * 255.0).round() as u8;
-                prepared_rgba_bytes.extend_from_slice(&[u, u, u, 255]);
-            } else {
-                let r_srgb = framed_rgba.data[i * 4] as f32 / 255.0;
-                let g_srgb = framed_rgba.data[i * 4 + 1] as f32 / 255.0;
-                let b_srgb = framed_rgba.data[i * 4 + 2] as f32 / 255.0;
-                let orig_luma = framed_gray.data[i].max(1e-4);
+        let center = (res as f32 - 1.0) * 0.5;
+        let max_r = center.max(1.0);
 
-                // Modula a luminância preservando o matiz e saturação originais
-                let ratio = (new_luma / orig_luma).clamp(0.25, 3.0);
-                let nr = (r_srgb * ratio).clamp(0.0, 1.0);
-                let ng = (g_srgb * ratio).clamp(0.0, 1.0);
-                let nb = (b_srgb * ratio).clamp(0.0, 1.0);
+        for y in 0..res {
+            let dy = (y as f32 - center) / max_r;
+            for x in 0..res {
+                let dx = (x as f32 - center) / max_r;
+                let r_norm = (dx * dx + dy * dy).sqrt();
+                let i = (y * res + x) as usize;
 
-                let lin = SrgbColor::new(nr, ng, nb).to_linear();
-                prepared_linear_rgb.push(lin);
+                // Suaviza suavemente os últimos 10% junto aos pinos e a base do moletom
+                // para o algoritmo focar 100% da energia no rosto e óculos
+                let mut vignette = if r_norm > 0.88 {
+                    ((1.0 - r_norm) / 0.12).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                if dy > 0.55 {
+                    vignette *= ((1.0 - dy) / 0.45).clamp(0.15, 1.0);
+                }
 
-                prepared_rgba_bytes.extend_from_slice(&[
-                    (nr * 255.0).round() as u8,
-                    (ng * 255.0).round() as u8,
-                    (nb * 255.0).round() as u8,
-                    255,
-                ]);
+                let luma_in = prepared_gray.data[i].clamp(0.0, 1.0);
+                let new_luma = 1.0 - (1.0 - luma_in) * vignette;
+
+                if self.config.monochrome_target {
+                    let lin = SrgbColor::new(new_luma, new_luma, new_luma).to_linear();
+                    prepared_linear_rgb.push(lin);
+                    let u = (new_luma * 255.0).round() as u8;
+                    prepared_rgba_bytes.extend_from_slice(&[u, u, u, 255]);
+                } else {
+                    let r_srgb = framed_rgba.data[i * 4] as f32 / 255.0;
+                    let g_srgb = framed_rgba.data[i * 4 + 1] as f32 / 255.0;
+                    let b_srgb = framed_rgba.data[i * 4 + 2] as f32 / 255.0;
+                    let orig_luma = framed_gray.data[i].max(1e-4);
+
+                    let ratio = (luma_in / orig_luma).clamp(0.3, 2.2);
+                    let nr = 1.0 - (1.0 - (r_srgb * ratio).clamp(0.0, 1.0)) * vignette;
+                    let ng = 1.0 - (1.0 - (g_srgb * ratio).clamp(0.0, 1.0)) * vignette;
+                    let nb = 1.0 - (1.0 - (b_srgb * ratio).clamp(0.0, 1.0)) * vignette;
+
+                    let lin = SrgbColor::new(nr, ng, nb).to_linear();
+                    prepared_linear_rgb.push(lin);
+
+                    prepared_rgba_bytes.extend_from_slice(&[
+                        (nr * 255.0).round() as u8,
+                        (ng * 255.0).round() as u8,
+                        (nb * 255.0).round() as u8,
+                        255,
+                    ]);
+                }
             }
         }
 
         let prepared_target_rgba = Rgba8Image::new(res, res, 4, prepared_rgba_bytes);
 
-        // 6. Saliência facial e Composição do Mapa de Importância W(x,y)
+        // 6. Mapa de Importância W(x,y) contínuo e suave (Gaussiana central + Bordas Sobel)
         let facial_saliency = compute_facial_saliency_map(&framed_rgba);
         let mut importance_map = ImportanceMap::compose_auto(
             res,
             res,
             Some(&facial_saliency),
-            Some(&canny_edges),
+            Some(&sobel_res.magnitude),
             self.config.beta_face,
-            self.config.beta_edge,
+            self.config.beta_edge * 3.0,
         );
+
+        for y in 0..res {
+            let dy = (y as f32 - center) / max_r;
+            for x in 0..res {
+                let dx = (x as f32 - center) / max_r;
+                let r_sq = dx * dx + dy * dy;
+                let i = (y * res + x) as usize;
+                // Ponderação Gaussiana suave: sem degraus que criem linhas retas artificiais!
+                let gaussian_focus = (-1.2 * r_sq).exp();
+                importance_map.weights[i] *= 0.25 + 1.75 * gaussian_focus;
+            }
+        }
 
         if let Some(brush) = user_brush_mask {
             importance_map.merge_user_brush(brush);

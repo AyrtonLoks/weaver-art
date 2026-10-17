@@ -9,17 +9,16 @@ use weaver_cam::{
     WeavingStep,
 };
 use weaver_domain::{
-    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, Millimeters, PegSide,
-    Pixels, RasterizerType, SparseChordMatrixCSR, WindingDirection,
+    ColorErrorMetric, LinearRgbColor, LoomGeometry, LoomPhysicalSpec, PegSide, Pixels,
+    RasterizerType, SparseChordMatrixCSR, WindingDirection,
 };
 use weaver_dsp::{
-    AutoFramingOptions, ClaheConfig, DspPipeline, DspPipelineConfig, FramingConfig, ImportanceMap,
-    Rgba8Image,
+    ClaheConfig, DspPipeline, DspPipelineConfig, FramingConfig, ImportanceMap, Rgba8Image,
 };
 use weaver_solvers::{
-    compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig,
-    OpticalMixModelType, OpticalModelEvaluator, SolverSession, SolverStatus, SpoolColor,
-    SpoolScheduler, SpoolSwitchStrategy,
+    BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig, OpticalMixModelType,
+    OpticalModelEvaluator, SolverSession, SolverStatus, SpoolColor, SpoolScheduler,
+    SpoolSwitchStrategy,
 };
 
 pub use weaver_cam::DrillHoleSpec;
@@ -409,7 +408,8 @@ impl WasmWeavingEngine {
             _ => RasterizerType::XiaolinWuAntialiased,
         };
 
-        let min_gap = config.min_peg_gap.max(3) as u16;
+        // Garante que nenhuma corda curta fique colada à borda do aro (mínimo de ~8% do aro)
+        let min_gap = config.min_peg_gap.max(config.pin_count / 12).max(16) as u16;
 
         let matrix: Arc<SparseChordMatrixCSR> = match &self.cached_matrix {
             Some((spec, r, gap, rast, m))
@@ -513,12 +513,9 @@ impl WasmWeavingEngine {
 
         let scheduler = SpoolScheduler::new(strat, config.max_lines, 0);
 
-        let alpha_eff = compute_effective_alpha(
-            0.22,
-            Millimeters(config.thread_thickness_mm),
-            Pixels(res),
-            Millimeters(config.diameter_mm as f32),
-        );
+        // Calibra alpha_eff de acordo com max_lines para que o solver NUNCA pare na metade (3.459 linhas)
+        // e utilize todas as 6.500 ou 8.000 linhas para refinar óculos, olhos, nariz e sombras:
+        let alpha_eff = (130.0 / (config.max_lines.max(2000) as f32)).clamp(0.014, 0.055);
 
         let session = match config.solver.to_uppercase().as_str() {
             "BEAM_SEARCH" => {
@@ -526,7 +523,7 @@ impl WasmWeavingEngine {
                     max_steps: config.max_lines,
                     beam_width: 6,
                     lookahead_depth: 2,
-                    max_chord_repeats: config.max_chord_repeats.max(1),
+                    max_chord_repeats: config.max_chord_repeats.clamp(1, 3),
                     length_exponent_gamma: 1.0,
                     start_pin: 0,
                 };
@@ -540,7 +537,7 @@ impl WasmWeavingEngine {
                     fista_iterations: 40,
                     l1_regularization_lambda: 0.01,
                     painter_layers_per_color: 2,
-                    max_chord_repeats: config.max_chord_repeats.max(1),
+                    max_chord_repeats: config.max_chord_repeats.clamp(1, 3),
                     start_pin: 0,
                 };
                 SolverSession::new_global_fista(
@@ -550,10 +547,10 @@ impl WasmWeavingEngine {
             _ => {
                 let g_cfg = GreedyConfig {
                     max_steps: config.max_lines,
-                    max_chord_repeats: config.max_chord_repeats.max(1),
+                    max_chord_repeats: config.max_chord_repeats.clamp(1, 3),
                     length_exponent_gamma: 1.0,
                     start_pin: 0,
-                    tabu_history_size: 4,
+                    tabu_history_size: 12,
                 };
                 SolverSession::new_greedy(
                     g_cfg, canvas, matrix, evaluator, scheduler, spools, alpha_eff,

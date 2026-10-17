@@ -111,7 +111,8 @@ pub struct AutoFramingResult {
     pub confidence: f32,
 }
 
-/// Aplica transformação afim 2D e mascara pixels externos utilizando a geometria do tear.
+/// Aplica transformação afim 2D intuitiva (arrastar para a direita move a foto para a direita;
+/// zoom = 1.0 enquadra a maior dimensão da foto sem cortar a cabeça).
 pub fn apply_affine_transform(
     src: &ImageBuffer<f32>,
     out_width: u32,
@@ -137,17 +138,18 @@ pub fn apply_affine_transform(
     let r_in = in_w.min(in_h) * 0.5;
     let r_out = out_w.min(out_h) * 0.5;
 
-    let zoom = config.zoom.max(1e-4);
+    let zoom = config.zoom.max(0.2);
     let scale = r_in / (r_out * zoom);
 
     let theta_rad = config.rotation_deg * (PI / 180.0);
     let cos_t = theta_rad.cos();
     let sin_t = theta_rad.sin();
 
-    let pan_shift_x = config.pan_x * r_in;
-    let pan_shift_y = config.pan_y * r_in;
+    // Deslocamento sincronizado 1:1 com o Canvas 2D do navegador
+    let pan_shift_x = -config.pan_x * r_in;
+    let pan_shift_y = -config.pan_y * r_in;
 
-    let mut sample_buf = vec![0.0f32; channels];
+    let mut sample_buf = vec![background_val; channels];
 
     for y_out in 0..out_height {
         let dy = y_out as f32 - c_out_y;
@@ -161,20 +163,22 @@ pub fn apply_affine_transform(
 
             let dx = x_out as f32 - c_out_x;
 
-            // Rotação inversa (no sentido anti-horário pelo ângulo theta)
             let dx_rot = dx * cos_t + dy * sin_t;
             let dy_rot = -dx * sin_t + dy * cos_t;
 
-            // Mapeamento para coordenadas da imagem de entrada
             let x_in = c_in_x + pan_shift_x + dx_rot * scale;
             let y_in = c_in_y + pan_shift_y + dy_rot * scale;
 
-            match method {
-                InterpolationMethod::Bilinear => {
-                    src.sample_bilinear(x_in, y_in, &mut sample_buf);
-                }
-                InterpolationMethod::Bicubic => {
-                    src.sample_bicubic(x_in, y_in, &mut sample_buf);
+            if x_in < 0.0 || x_in > (in_w - 1.0) || y_in < 0.0 || y_in > (in_h - 1.0) {
+                sample_buf.fill(background_val);
+            } else {
+                match method {
+                    InterpolationMethod::Bilinear => {
+                        src.sample_bilinear(x_in, y_in, &mut sample_buf);
+                    }
+                    InterpolationMethod::Bicubic => {
+                        src.sample_bicubic(x_in, y_in, &mut sample_buf);
+                    }
                 }
             }
 

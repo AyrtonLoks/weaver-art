@@ -54,28 +54,28 @@ export function hexToLinearRgb(hex: string): LinearRgb {
   };
 }
 
-/** Default physical thread spool colors in Linear RGB + opacity. */
+/** Opacidades físicas sub-pixel calibradas com o solver (evita saturação neon/escura). */
 export const DEFAULT_PALETTES: Record<ColorPaletteMode, [number, number, number, number][]> = {
   MONOCHROME: [
-    [0.0, 0.0, 0.0, 0.35], // Black thread
+    [0.02, 0.02, 0.02, 0.14], // Preto com densidade óptica real
   ],
   CMYK_SUBTRACTIVE: [
-    [1.0, 1.0, 0.0, 0.25], // Yellow
-    [1.0, 0.0, 1.0, 0.25], // Magenta
-    [0.0, 1.0, 1.0, 0.25], // Cyan
-    [0.0, 0.0, 0.0, 0.35], // Black
+    [0.95, 0.82, 0.02, 0.09], // Amarelo
+    [0.82, 0.04, 0.45, 0.10], // Magenta
+    [0.02, 0.55, 0.85, 0.10], // Ciano
+    [0.02, 0.02, 0.02, 0.15], // Preto (K)
   ],
   RGB_OCCLUSIVE: [
-    [1.0, 0.0, 0.0, 0.3], // Red
-    [0.0, 1.0, 0.0, 0.3], // Green
-    [0.0, 0.0, 1.0, 0.3], // Blue
-    [0.0, 0.0, 0.0, 0.35], // Black
+    [0.85, 0.05, 0.05, 0.11],
+    [0.05, 0.75, 0.10, 0.11],
+    [0.05, 0.15, 0.85, 0.11],
+    [0.02, 0.02, 0.02, 0.15],
   ],
   USER_CUSTOM: [
-    [0.85, 0.1, 0.1, 0.3],
-    [0.1, 0.7, 0.2, 0.3],
-    [0.1, 0.3, 0.9, 0.3],
-    [0.0, 0.0, 0.0, 0.35],
+    [0.85, 0.1, 0.1, 0.11],
+    [0.1, 0.7, 0.2, 0.11],
+    [0.1, 0.3, 0.9, 0.11],
+    [0.02, 0.02, 0.02, 0.15],
   ],
 };
 
@@ -454,6 +454,7 @@ export class WebGLLoomRenderer {
 
     const mem = this.sharedMemory;
     const loom = this.loom;
+    const extentMm = loom.extentMm;
     const pegRadiusMm = loom.pegRadiusMm;
     const pegs = loom.pegs;
     const pegCount = pegs.length;
@@ -472,12 +473,13 @@ export class WebGLLoomRenderer {
       const sb = arrWinding === 'CCW' ? 1 : -1;
 
       const seg = tangentSegment(pegs[fromPin], sa, pegs[toPin], sb, pegRadiusMm);
-      const spool = this.spoolColors[spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.35];
+      const spool = this.spoolColors[spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.15];
 
+      // Converte Y de coordenadas de ecrã (0 no topo) para WebGL (extentMm no topo)
       floats[writeIdx++] = seg.x0;
-      floats[writeIdx++] = seg.y0;
+      floats[writeIdx++] = extentMm - seg.y0;
       floats[writeIdx++] = seg.x1;
-      floats[writeIdx++] = seg.y1;
+      floats[writeIdx++] = extentMm - seg.y1;
       floats[writeIdx++] = spool[0];
       floats[writeIdx++] = spool[1];
       floats[writeIdx++] = spool[2];
@@ -494,6 +496,7 @@ export class WebGLLoomRenderer {
     this.ensureInstanceBufferCapacity(count);
 
     const loom = this.loom;
+    const extentMm = loom.extentMm;
     const pegRadiusMm = loom.pegRadiusMm;
     const pegs = loom.pegs;
     const pegCount = pegs.length;
@@ -508,12 +511,12 @@ export class WebGLLoomRenderer {
       const sb = s.arrivalWinding === 'CCW' ? 1 : -1;
 
       const seg = tangentSegment(pegs[fromPin], sa, pegs[toPin], sb, pegRadiusMm);
-      const spool = this.spoolColors[s.spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.35];
+      const spool = this.spoolColors[s.spoolId] ?? this.spoolColors[0] ?? [0, 0, 0, 0.15];
 
       floats[writeIdx++] = seg.x0;
-      floats[writeIdx++] = seg.y0;
+      floats[writeIdx++] = extentMm - seg.y0;
       floats[writeIdx++] = seg.x1;
-      floats[writeIdx++] = seg.y1;
+      floats[writeIdx++] = extentMm - seg.y1;
       floats[writeIdx++] = spool[0];
       floats[writeIdx++] = spool[1];
       floats[writeIdx++] = spool[2];
@@ -539,7 +542,7 @@ export class WebGLLoomRenderer {
     const uAaRamp = gl.getUniformLocation(this.accumProgram, 'u_aaRamp');
 
     const pixelMm = this.loom.extentMm / this.offscreenRes;
-    const aaPaddingMm = pixelMm * 1.5;
+    const aaPaddingMm = pixelMm * 0.65;
 
     gl.uniform1f(uExtent, this.loom.extentMm);
     gl.uniform1f(uAaPadding, aaPaddingMm);
@@ -823,12 +826,12 @@ export class WebGLLoomRenderer {
 
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.909;
+      const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
       const newZoom = Math.max(0.8, Math.min(20.0, this.zoom * zoomFactor));
 
       const rect = el.getBoundingClientRect();
       const cursorX = (e.clientX - rect.left) / rect.width - 0.5;
-      const cursorY = (e.clientY - rect.top) / rect.height - 0.5;
+      const cursorY = 0.5 - (e.clientY - rect.top) / rect.height; // Eixo Y WebGL para cima
 
       this.panX += cursorX * (1 / this.zoom - 1 / newZoom);
       this.panY += cursorY * (1 / this.zoom - 1 / newZoom);
@@ -860,7 +863,8 @@ export class WebGLLoomRenderer {
       const dy = (e.clientY - startY) / (rect.height * this.zoom);
 
       this.panX = startPanX + dx;
-      this.panY = startPanY + dy;
+      // No WebGL o eixo Y cresce para cima, portanto subtrai-se dy (ou soma-se no Canvas2D)
+      this.panY = this.gl ? startPanY - dy : startPanY + dy;
       this.renderScreenPass();
     };
 

@@ -257,11 +257,25 @@ export class StudioViewManager {
     }
 
     const putData = (data: Uint8ClampedArray, width = w, height = h): void => {
-      if (this.el.targetCanvas.width !== width || this.el.targetCanvas.height !== height) {
-        this.el.targetCanvas.width = width;
-        this.el.targetCanvas.height = height;
+      // Se o buffer tiver tamanho diferente de width x height (ex: 256x256 vs 500x500),
+      // ajusta automaticamente para a dimensão real do buffer, evitando faixas corrompidas!
+      let actualW = width;
+      let actualH = height;
+      if (data.length !== actualW * actualH * 4) {
+        const side = Math.round(Math.sqrt(data.length / 4));
+        if (side * side * 4 === data.length && side > 0) {
+          actualW = side;
+          actualH = side;
+        } else {
+          return;
+        }
       }
-      const idata = ctx.createImageData(width, height);
+
+      if (this.el.targetCanvas.width !== actualW || this.el.targetCanvas.height !== actualH) {
+        this.el.targetCanvas.width = actualW;
+        this.el.targetCanvas.height = actualH;
+      }
+      const idata = ctx.createImageData(actualW, actualH);
       idata.data.set(data);
       ctx.putImageData(idata, 0, 0);
     };
@@ -271,7 +285,7 @@ export class StudioViewManager {
         if (this.wasmPreparedRgba) {
           putData(this.wasmPreparedRgba, w, h);
         } else if (this.cachedPreparedRgba) {
-          putData(this.cachedPreparedRgba, w, h);
+          putData(this.cachedPreparedRgba, this.maskWidth, this.maskHeight);
         }
         break;
       }
@@ -392,16 +406,18 @@ export class StudioViewManager {
       }
 
       // Drag to Pan
+      // Dentro de pointermove (Drag to Pan fluido):
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
-      const zoom = Math.max(0.5, Number(this.el.zoomInput.value) || 1.0);
+      const zoom = Math.max(0.4, Number(this.el.zoomInput.value) || 1.0);
 
-      const deltaPanX = (dx / rect.width) * (80 / zoom);
-      const deltaPanY = (dy / rect.height) * (80 / zoom);
+      const deltaPanX = (dx / rect.width) * (100 / zoom);
+      const deltaPanY = (dy / rect.height) * (100 / zoom);
 
-      const newPanX = Math.round(Math.max(-50, Math.min(50, startPanX + deltaPanX)));
-      const newPanY = Math.round(Math.max(-50, Math.min(50, startPanY + deltaPanY)));
+      const newPanX = Math.round(Math.max(-100, Math.min(100, startPanX + deltaPanX)));
+      const newPanY = Math.round(Math.max(-100, Math.min(100, startPanY + deltaPanY)));
 
+      this.el.panXInput.mountValue?.(newPanX);
       this.el.panXInput.value = String(newPanX);
       this.el.panYInput.value = String(newPanY);
       this.onFramingChange?.();
@@ -437,7 +453,7 @@ export class StudioViewManager {
         e.preventDefault();
         const currentZoom = Number(this.el.zoomInput.value) || 1.0;
         const zoomDelta = e.deltaY < 0 ? 0.05 : -0.05;
-        const newZoom = Math.max(0.8, Math.min(3.0, currentZoom + zoomDelta));
+        const newZoom = Math.max(0.4, Math.min(4.0, currentZoom + zoomDelta));
         this.el.zoomInput.value = newZoom.toFixed(2);
         this.onFramingChange?.();
       },

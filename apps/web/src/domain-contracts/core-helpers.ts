@@ -552,3 +552,30 @@ export function toSVG(res: WeaveResult): string {
   lines.push(`</svg>`);
   return lines.join('\n');
 }
+
+export function tangentSegment(
+  pegA: Peg,
+  sideA: 1 | -1,
+  pegB: Peg,
+  sideB: 1 | -1,
+  pegRadiusMm: number,
+): { x0: number; y0: number; x1: number; y1: number } {
+  const dx = pegB.x - pegA.x;
+  const dy = pegB.y - pegA.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= 1e-6 || pegRadiusMm <= 0) {
+    return { x0: pegA.x, y0: pegA.y, x1: pegB.x, y1: pegB.y };
+  }
+  const ux = dx / dist;
+  const uy = dy / dist;
+  // Vetor normal perpendicular à linha de centro
+  const nx = -uy;
+  const ny = ux;
+
+  return {
+    x0: pegA.x + nx * sideA * pegRadiusMm,
+    y0: pegA.y + ny * sideA * pegRadiusMm,
+    x1: pegB.x + nx * sideB * pegRadiusMm,
+    y1: pegB.y + ny * sideB * pegRadiusMm,
+  };
+}

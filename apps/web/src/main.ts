@@ -40,6 +40,7 @@ const MAX_SOURCE_SIDE = 2048;
 
 // ----------------------------------------------------------------- state
 let image: ImageData | null = null;
+let sourceImageCanvas: HTMLCanvasElement | null = null;
 let imageName = 'weave';
 let result: WeaveResult | null = null;
 let running = false;
@@ -143,6 +144,26 @@ const fields = {
 
 // Expurgo automático de elementos legados duplicados no DOM
 function purgeLegacyDuplicateDomElements(): void {
+  // 1. Remove todas as opções "(Legado)" do dropdown de Presets
+  const presetSelect = document.getElementById('preset') as HTMLSelectElement | null;
+  if (presetSelect) {
+    for (const opt of [...presetSelect.options]) {
+      if (opt.textContent?.includes('Legado') || opt.value.includes('portrait-') || opt.value.includes('vrellis-')) {
+        opt.remove();
+      }
+    }
+  }
+
+  // 2. Amplia os limites dos sliders de Zoom e Pan para permitir posicionar qualquer foto livremente
+  fields.cropZoom.min = '0.40';
+  fields.cropZoom.max = '4.00';
+  fields.cropZoom.step = '0.02';
+  fields.cropPanX.min = '-100';
+  fields.cropPanX.max = '100';
+  fields.cropPanY.min = '-100';
+  fields.cropPanY.max = '100';
+
+  // 3. Oculta controles legados duplicados da sidebar
   const legacyInputsToHide = [
     fields.shadowLift,
     fields.edgeEmphasis,
@@ -156,7 +177,6 @@ function purgeLegacyDuplicateDomElements(): void {
       (parentLabel as HTMLElement).style.display = 'none';
     }
   }
-  // Oculta o mini preview redundante da sidebar esquerda (pois temos a aba Gabarito & Furação CAM)
   const miniCard = miniLoomCanvas?.parentElement;
   if (miniCard) {
     miniCard.style.display = 'none';
@@ -219,15 +239,15 @@ const studioManager = new StudioViewManager(
     targetCaption: document.getElementById('targetCaption') as HTMLElement | undefined,
   },
   () => {
-    presetStore.setParam('framing', {
-      zoom: Number(fields.cropZoom.value) || 1.0,
-      panXPercent: Number(fields.cropPanX.value) || 0,
-      panYPercent: Number(fields.cropPanY.value) || 0,
-      rotationDeg: Number(cropRotationInput.value) || 0,
-      autoFaceTargetRatio: 0,
-    });
+    //presetStore.setParam('framing', {
+      //zoom: Number(fields.cropZoom.value) || 1.0,
+      //panXPercent: Number(fields.cropPanX.value) || 0,
+      //panYPercent: Number(fields.cropPanY.value) || 0,
+      //rotationDeg: Number(cropRotationInput.value) || 0,
+      //autoFaceTargetRatio: 0,
+    //});
     updateOutputs();
-    updateTargetPreview();
+    updateTargetPreview(false);
   },
 );
 
@@ -465,10 +485,10 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   edgeBlendWeightInput.value = String(cfg.edgeBlendWeight);
   morphologyOpSelect.value = cfg.morphologyOp;
 
-  fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
-  fields.cropPanX.value = String(cfg.framing.panXPercent);
-  fields.cropPanY.value = String(cfg.framing.panYPercent);
-  cropRotationInput.value = String(cfg.framing.rotationDeg);
+  //fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
+  //fields.cropPanX.value = String(cfg.framing.panXPercent);
+  //fields.cropPanY.value = String(cfg.framing.panYPercent);
+  //cropRotationInput.value = String(cfg.framing.rotationDeg);
 
   btnResetPresetDefaults.hidden = !isDirty;
 
@@ -696,42 +716,77 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
   };
 }
 
+let dspDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function renderInstantClientFramingPreview(): void {
+  if (!sourceImageCanvas) return;
+  const size = 256;
+  if (targetCanvas.width !== size || targetCanvas.height !== size) {
+    targetCanvas.width = size;
+    targetCanvas.height = size;
+  }
+  const ctx = targetCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const zoom = Math.max(0.2, Number(fields.cropZoom.value) || 1.0);
+  const panX = (Number(fields.cropPanX.value) || 0) / 100;
+  const panY = (Number(fields.cropPanY.value) || 0) / 100;
+  const rotRad = ((Number(cropRotationInput.value) || 0) * Math.PI) / 180;
+  const isMono = paletteModeSelect.value === 'MONOCHROME';
+  const contrast = Number(fields.contrast.value) || 1.0;
+  const brightness = 1.0 + (Number(fields.brightness.value) || 0);
+
+  const inW = sourceImageCanvas.width;
+  const inH = sourceImageCanvas.height;
+  const minDim = Math.min(inW, inH);
+  const rIn = minDim * 0.5;
+  const drawScale = (size / minDim) * zoom;
+
+  ctx.save();
+  ctx.fillStyle = '#141413';
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+  ctx.clip();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.filter = `${isMono ? 'grayscale(100%) ' : ''}contrast(${Math.round(contrast * 100)}%) brightness(${Math.round(brightness * 100)}%)`;
+
+  ctx.translate(size / 2, size / 2);
+  ctx.rotate(rotRad);
+  ctx.scale(drawScale, drawScale);
+  ctx.translate(-(inW / 2 - panX * rIn), -(inH / 2 - panY * rIn));
+  ctx.drawImage(sourceImageCanvas, 0, 0);
+  ctx.restore();
+}
+
 function updateTargetPreview(): void {
   if (!image) return;
-  try {
-    const runtimeCfg = buildRuntimeWasmConfig();
-    if (engineClient.isReady()) {
-      engineClient
-        .loadAndPrepareImage(
-          image.data.slice().buffer,
-          image.width,
-          image.height,
-          JSON.stringify(runtimeCfg),
-        )
-        .then((res) => {
-          studioManager.setDiagnosticBuffers(res);
-        })
-        .catch((err) => {
-          console.warn('Wasm DSP preview erro:', err);
-        });
-    } else {
-      const opts = readOptions();
-      const previewSize = 256;
-      const isMono = paletteModeSelect.value === 'MONOCHROME';
-      const tgt = prepareTarget(
-        { width: image.width, height: image.height, data: image.data },
-        previewSize,
-        { ...opts.preprocess, grayscale: isMono },
-        isMono ? 1 : 3,
-        undefined,
-        createLoom(getCurrentLoomConfig()),
-      );
-      const rgba = toRGBA(tgt.data, tgt.channels, tgt.mask);
-      studioManager.updateTargetData(rgba.buffer as ArrayBuffer, previewSize, previewSize);
-    }
-  } catch {
-    // Non-fatal
+  if (studioManager.getActiveStage() === 'prepared') {
+    renderInstantClientFramingPreview();
   }
+
+  if (dspDebounceTimer) clearTimeout(dspDebounceTimer);
+  dspDebounceTimer = setTimeout(() => {
+    if (!image || !engineClient.isReady()) return;
+    const runtimeCfg = buildRuntimeWasmConfig();
+    engineClient
+      .loadAndPrepareImage(
+        image.data.slice().buffer,
+        image.width,
+        image.height,
+        JSON.stringify(runtimeCfg),
+      )
+      .then((res) => {
+        studioManager.setDiagnosticBuffers(res);
+      })
+      .catch((err) => {
+        console.warn('Wasm DSP preview erro:', err);
+      });
+  }, 200);
 }
 
 /**
@@ -856,13 +911,14 @@ async function loadFile(file: File): Promise<void> {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D indisponível');
   ctx.drawImage(bitmap, 0, 0, w, h);
+  sourceImageCanvas = canvas;
   image = ctx.getImageData(0, 0, w, h);
   imageName = file.name.replace(/\.[^.]+$/, '') || 'weave';
   dropLabel.innerHTML = `<strong>${escapeHtml(file.name)}</strong><br /><small>${bitmap.width}×${bitmap.height}px · clique para trocar</small>`;
   drop.style.backgroundImage = `url(${URL.createObjectURL(file)})`;
   drop.classList.add('has-image');
   runBtn.disabled = running;
-  updateTargetPreview();
+  updateTargetPreview(true);
 }
 
 fileInput.addEventListener('change', () => {
@@ -1170,6 +1226,9 @@ runBtn.addEventListener('click', async () => {
       runtimeCfgJson,
     );
     studioManager.setDiagnosticBuffers(prepRes);
+    if (studioManager.getActiveStage() === 'prepared') {
+      renderInstantClientFramingPreview();
+    }
     await engineClient.initSolver(runtimeCfgJson);
     engineClient.startSolver(50);
     start60HzTelemetryLoop();

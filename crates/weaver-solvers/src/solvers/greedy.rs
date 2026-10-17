@@ -187,7 +187,10 @@ impl GreedySolver {
                 continue;
             }
 
-            let chord_len = pixel_indices.len() as f32;
+            // Usa a integral de cobertura sub-pixel real da corda em vez de pixel_indices.len(),
+            // eliminando o viés geométrico de 41% entre linhas verticais e diagonais em Xiaolin Wu!
+            let weight_sum: u32 = subpixel_weights.iter().map(|&w| w as u32).sum();
+            let chord_len = ((weight_sum as f32) * (1.0 / 255.0)).max(1.0);
             let len_factor = if gamma == 1.0 {
                 chord_len
             } else if gamma == 0.0 {
@@ -298,9 +301,12 @@ impl GreedySolver {
 
         // 4. Avança o agendador de carretéis
         scheduler.advance_step(spool.id, spools);
-        let edge_boost = scheduler.active_edge_boost();
-        if edge_boost > 0.0 {
-            canvas.apply_edge_importance_boost(edge_boost);
+        // Aplica o boost de bordas apenas UMA única vez na transição de época (evita 250.000 cópias por linha!)
+        if self.step_count % 250 == 0 {
+            let edge_boost = scheduler.active_edge_boost();
+            if edge_boost > 0.0 {
+                canvas.apply_edge_importance_boost(edge_boost);
+            }
         }
 
         // 5. Atualiza estado do solver

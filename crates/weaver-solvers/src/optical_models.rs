@@ -276,84 +276,90 @@ impl OpticalModelEvaluator {
         spool: &SpoolColor,
         alpha_eff: f32,
     ) -> f32 {
-        let spool_arr = [spool.color.r, spool.color.g, spool.color.b];
+        let s0 = spool.color.r;
+        let s1 = spool.color.g;
+        let s2 = spool.color.b;
         let mut total_gain = 0.0f32;
         let len = pixel_indices.len();
 
-        match self.mix_model {
-            OpticalMixModelType::PorterDuffOcclusion => {
-                let s0 = spool_arr[0];
-                let s1 = spool_arr[1];
-                let s2 = spool_arr[2];
-                let is_linear_rgb = self.error_metric == ColorErrorMetric::LinearRgb;
+        // Vetor de absorção de luz do fio (quanto o carretel escurece R, G e B sobre fundo branco)
+        let a0 = (1.0 - s0).clamp(0.0, 1.0);
+        let a1 = (1.0 - s1).clamp(0.0, 1.0);
+        let a2 = (1.0 - s2).clamp(0.0, 1.0);
 
-                for i in 0..len {
-                    let p = pixel_indices[i] as usize;
-                    let imp = state.importance_w[p];
-                    if imp <= 0.0 {
-                        continue;
-                    }
-                    let w_sub = (subpixel_weights_u8[i] as f32) * (1.0 / 255.0);
-                    let aw = (alpha_eff * w_sub).clamp(0.0, 1.0);
-                    if aw <= 1e-7 {
-                        continue;
-                    }
+        let s_max = s0.max(s1).max(s2);
+        let s_min = s0.min(s1).min(s2);
+        let is_chromatic_spool = (s_max - s_min) > 0.20;
 
-                    let c0 = state.current_c0[p];
-                    let c1 = state.current_c1[p];
-                    let c2 = state.current_c2[p];
-                    let t0 = state.target_c0[p];
-                    let t1 = state.target_c1[p];
-                    let t2 = state.target_c2[p];
+        let inv_255 = alpha_eff * (1.0 / 255.0);
 
-                    let e0 = c0 - t0;
-                    let e1 = c1 - t1;
-                    let e2 = c2 - t2;
-                    let d0 = c0 - s0;
-                    let d1 = c1 - s1;
-                    let d2 = c2 - s2;
-
-                    let (dot_ed, norm_d_sq) = if is_linear_rgb {
-                        (e0 * d0 + e1 * d1 + e2 * d2, d0 * d0 + d1 * d1 + d2 * d2)
-                    } else {
-                        let weights = MetricWeights::for_pixel(self.error_metric, c0, t0);
-                        (weights.dot([e0, e1, e2], [d0, d1, d2]), weights.norm_sq([d0, d1, d2]))
-                    };
-
-                    let raw_gain = 2.0 * aw * dot_ed - (aw * aw) * norm_d_sq;
-                    total_gain += imp * raw_gain;
+        if !is_chromatic_spool {
+            // MODO MONOCROMÁTICO / CARRETEL PRETO (K):
+            // Formulação Linear Direta de Petros Vrellis (sem decaimento quadrático por C(p)!).
+            // Garante que óculos, pupilas, sobrancelhas e sombras recebam prioridade máxima
+            // até atingirem a escuridão real da fotografia!
+            for i in 0..len {
+                let p = pixel_indices[i] as usize;
+                let imp = state.importance_w[p];
+                if imp <= 0.0 {
+                    continue;
                 }
+                let aw = (subpixel_weights_u8[i] as f32) * inv_255;
+
+                let c_luma = 0.2126 * state.current_c0[p]
+                    + 0.7152 * state.current_c1[p]
+                    + 0.0722 * state.current_c2[p];
+                let t_luma = 0.2126 * state.target_c0[p]
+                    + 0.7152 * state.target_c1[p]
+                    + 0.0722 * state.target_c2[p];
+
+                // Erro residual de luminância: positivo quando o pixel precisa escurecer mais
+                let err = c_luma - t_luma - 0.5 * aw;
+
+                // Se err < 0 (ex: passando pelo fundo branco ao redor da cabeça para chegar aos olhos),
+                // aplica penalidade leve (0.32) para não bloquear as cordas que cruzam o centro do rosto!
+                let weighted_err = if err >= 0.0 { err } else { err * 0.32 };
+                total_gain += imp * aw * weighted_err;
             }
-            _ => {
-                for i in 0..len {
-                    let p = pixel_indices[i] as usize;
-                    let w_sub = (subpixel_weights_u8[i] as f32) * (1.0 / 255.0);
-                    let imp = state.importance_w[p];
-                    if imp <= 0.0 {
-                        continue;
-                    }
-
-                    let current = [
-                        state.current_c0[p],
-                        state.current_c1[p],
-                        state.current_c2[p],
-                    ];
-                    let target = [
-                        state.target_c0[p],
-                        state.target_c1[p],
-                        state.target_c2[p],
-                    ];
-
-                    let gain = self.pixel_marginal_gain(
-                        current,
-                        target,
-                        spool_arr,
-                        alpha_eff,
-                        w_sub,
-                        imp,
-                    );
-                    total_gain += gain;
+        } else {
+            // CARRETÉIS CROMÁTICOS (Amarelo, Magenta, Ciano / RGB) com Separação GCR:
+            // O componente neutro escuro (K) é reservado para o fio Preto, impedindo que
+            // fios Amarelos ou Cianos criem manchas ou bordas sobre o moletom preto e óculos.
+            for i in 0..len {
+                let p = pixel_indices[i] as usize;
+                let imp = state.importance_w[p];
+                if imp <= 0.0 {
+                    continue;
                 }
+                let aw = (subpixel_weights_u8[i] as f32) * inv_255;
+
+                let raw_t0 = state.target_c0[p];
+                let raw_t1 = state.target_c1[p];
+                let raw_t2 = state.target_c2[p];
+
+                let t_max = raw_t0.max(raw_t1).max(raw_t2);
+                let t_min = raw_t0.min(raw_t1).min(raw_t2);
+                let chroma = t_max - t_min;
+
+                let (t0, t1, t2) = if chroma < 0.03 {
+                    // Área neutra (preto, cinza ou branco): fio colorido não deve atuar aqui
+                    (1.0, 1.0, 1.0)
+                } else {
+                    let k_neutral = 1.0 - t_max;
+                    (
+                        (raw_t0 + k_neutral * 0.90).clamp(0.0, 1.0),
+                        (raw_t1 + k_neutral * 0.90).clamp(0.0, 1.0),
+                        (raw_t2 + k_neutral * 0.90).clamp(0.0, 1.0),
+                    )
+                };
+
+                let e0 = state.current_c0[p] - t0 - 0.5 * aw * a0;
+                let e1 = state.current_c1[p] - t1 - 0.5 * aw * a1;
+                let e2 = state.current_c2[p] - t2 - 0.5 * aw * a2;
+
+                let dot = e0 * a0 + e1 * a1 + e2 * a2;
+                let weighted_dot = if dot >= 0.0 { dot } else { dot * 0.45 };
+                total_gain += imp * aw * weighted_dot;
             }
         }
 
