@@ -78,12 +78,23 @@ export class StudioViewManager {
   private onFramingChange?: () => void;
   private onBrushApplyHandler?: (weights: Float32Array) => Promise<ArrayBuffer | void> | void;
   private onSmartFrameHandler?: () => Promise<SmartFrameOutcome | null> | void;
-  private brushApplyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private onStageChange?: (stage: TargetInspectionStage) => void;
+  private onBrushCommitted?: () => void;
+  private brushThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastBrushDispatchTime = 0;
+  private brushSeq = 0;
+  private brushCursorEl: HTMLElement | null = null;
+  private captionResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(el: StudioFramingElements, onFramingChange?: () => void) {
     this.el = el;
     this.onFramingChange = onFramingChange;
     this.bindEvents();
+    this.updateBrushModeUI();
+  }
+
+  private get isBrushInteraction(): boolean {
+    return this.brushActive && this.activeStage === 'importance';
   }
 
   public getActiveStage(): TargetInspectionStage {
@@ -96,12 +107,13 @@ export class StudioViewManager {
       tab.classList.toggle('active', tab.dataset.stage === stage);
     });
 
-    if (stage === 'importance') {
-      this.setBrushMode(true);
+    if (stage !== 'importance' && this.brushActive) {
+      this.setBrushMode(false);
     }
 
     this.updateCaption();
     this.refreshCurrentStage();
+    this.onStageChange?.(stage);
   }
 
   public isBrushModeActive(): boolean {
@@ -110,11 +122,23 @@ export class StudioViewManager {
 
   public setBrushMode(active: boolean): void {
     this.brushActive = active;
+    if (active && this.activeStage !== 'importance') {
+      this.activeStage = 'importance';
+      this.el.stageTabs.forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.stage === 'importance');
+      });
+      this.refreshCurrentStage();
+      this.onStageChange?.('importance');
+    }
     if (this.el.btnToggleBrush) {
       this.el.btnToggleBrush.classList.toggle('primary', active);
       this.el.btnToggleBrush.textContent = active ? 'Pincel de Foco (Ativo)' : 'Pincel de Foco Manual';
     }
-    this.el.targetCanvas.style.cursor = active ? 'crosshair' : 'grab';
+    this.updateBrushModeUI();
+    this.el.targetCanvas.style.cursor = active ? 'none' : 'grab';
+    if (!active && this.brushCursorEl) {
+      this.brushCursorEl.hidden = true;
+    }
     this.updateCaption();
   }
 
@@ -134,15 +158,21 @@ export class StudioViewManager {
   }
 
   private updateBrushModeUI(): void {
-    if (this.el.btnBrushMode) {
-      if (this.brushMode === 'boost') {
-        this.el.btnBrushMode.textContent = '+ Reforçar Nitidez';
-        this.el.btnBrushMode.style.color = 'var(--accent, #4cd964)';
-      } else {
-        this.el.btnBrushMode.textContent = '- Reduzir Peso';
-        this.el.btnBrushMode.style.color = '#ff9500';
-      }
-    }
+    const b = this.el.btnBrushMode;
+    if (!b) return;
+    b.textContent = this.brushMode === 'boost' ? 'Modo: + Reforçar' : 'Modo: − Reduzir';
+    b.classList.toggle('mode-boost', this.brushMode === 'boost');
+    b.classList.toggle('mode-reduce', this.brushMode === 'reduce');
+    b.disabled = !this.brushActive;
+    b.title = 'Alterna entre reforçar (mais fios) e reduzir (menos fios) na região pintada';
+  }
+
+  public setStageChangeHandler(fn: (stage: TargetInspectionStage) => void): void {
+    this.onStageChange = fn;
+  }
+
+  public setBrushCommittedHandler(fn: () => void): void {
+    this.onBrushCommitted = fn;
   }
 
   public setBrushApplyHandler(handler: (weights: Float32Array) => Promise<ArrayBuffer | void> | void): void {
@@ -195,11 +225,45 @@ export class StudioViewManager {
     return this.manualImportanceMask;
   }
 
+  public hasBrushStrokes(): boolean {
+    const m = this.manualImportanceMask;
+    if (!m) return false;
+    for (let i = 0; i < m.length; i++) {
+      if (m[i] !== 0) return true;
+    }
+    return false;
+  }
+
+  public resetBrushMask(): void {
+    this.manualImportanceMask?.fill(0);
+    this.refreshCurrentStage();
+  }
+
+  /** Chamado quando o enquadramento muda (Decisão 2): a máscara deixa de corresponder à foto. */
+  public onFramingInvalidated(): void {
+    if (!this.hasBrushStrokes()) return;
+    this.resetBrushMask();
+    this.flashCaption('Pincel limpo (enquadramento alterado)');
+  }
+
+  public flashCaption(text: string, durationMs = 2500): void {
+    const captionEl =
+      this.el.targetCaption ?? (typeof document !== 'undefined' ? document.getElementById('targetCaption') : null);
+    if (!captionEl) return;
+    if (this.captionResetTimer) clearTimeout(this.captionResetTimer);
+    captionEl.textContent = text;
+    this.captionResetTimer = setTimeout(() => {
+      this.captionResetTimer = null;
+      this.updateCaption();
+    }, durationMs);
+  }
+
   public clearManualBrush(): void {
     if (this.manualImportanceMask) {
       this.manualImportanceMask.fill(0);
-      this.dispatchBrushApply();
+      this.dispatchBrushApply(true);
       this.refreshCurrentStage();
+      this.onBrushCommitted?.();
     }
   }
 
@@ -227,13 +291,25 @@ export class StudioViewManager {
       this.wasmRadonRgba =
         buffers.radonRgba instanceof Uint8ClampedArray ? buffers.radonRgba : new Uint8ClampedArray(buffers.radonRgba);
     }
-    if (buffers.dimensions && buffers.dimensions.length >= 2) {
+    if (buffers.dimensions && buffers.dimensions.length >= 4) {
       this.diagnosticDimensions = buffers.dimensions;
-      this.maskWidth = buffers.dimensions[0] || 256;
-      this.maskHeight = buffers.dimensions[1] || 256;
-    }
-
-    if (!this.manualImportanceMask || this.manualImportanceMask.length !== this.maskWidth * this.maskHeight) {
+      const iw = buffers.dimensions[2] || buffers.dimensions[0];
+      const ih = buffers.dimensions[3] || buffers.dimensions[1];
+      if (iw !== this.maskWidth || ih !== this.maskHeight || !this.manualImportanceMask) {
+        this.maskWidth = iw;
+        this.maskHeight = ih;
+        this.manualImportanceMask = new Float32Array(iw * ih);
+      }
+    } else if (buffers.dimensions && buffers.dimensions.length >= 2) {
+      this.diagnosticDimensions = buffers.dimensions;
+      const iw = buffers.dimensions[0] || 256;
+      const ih = buffers.dimensions[1] || 256;
+      if (iw !== this.maskWidth || ih !== this.maskHeight || !this.manualImportanceMask) {
+        this.maskWidth = iw;
+        this.maskHeight = ih;
+        this.manualImportanceMask = new Float32Array(iw * ih);
+      }
+    } else if (!this.manualImportanceMask || this.manualImportanceMask.length !== this.maskWidth * this.maskHeight) {
       this.manualImportanceMask = new Float32Array(this.maskWidth * this.maskHeight);
     }
 
@@ -402,6 +478,57 @@ export class StudioViewManager {
 
   // --- Events and Pointer Interaction ---
 
+  private normalizedPointer(e: PointerEvent | WheelEvent): { u: number; v: number } {
+    const r = this.el.targetCanvas.getBoundingClientRect();
+    return {
+      u: Math.min(1, Math.max(0, (e.clientX - r.left) / Math.max(1, r.width))),
+      v: Math.min(1, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height))),
+    };
+  }
+
+  private paintBrushAtNormalized(u: number, v: number): void {
+    this.paintBrushAt(u * this.maskWidth, v * this.maskHeight);
+  }
+
+  private ensureBrushCursor(): HTMLElement | null {
+    if (this.brushCursorEl) return this.brushCursorEl;
+    const canvas = this.el.targetCanvas;
+    const container = canvas?.parentElement;
+    if (!container) return null;
+    let cur =
+      typeof container.querySelector === 'function' ? container.querySelector<HTMLElement>('.brush-cursor') : null;
+    if (!cur && typeof document !== 'undefined') {
+      cur = document.createElement('div');
+      cur.className = 'brush-cursor';
+      cur.hidden = true;
+      container.appendChild(cur);
+    }
+    if (cur) this.brushCursorEl = cur;
+    return cur;
+  }
+
+  private updateBrushCursor(e: PointerEvent | WheelEvent): void {
+    const cur = this.ensureBrushCursor();
+    if (!cur) return;
+    if (!this.isBrushInteraction) {
+      cur.hidden = true;
+      return;
+    }
+    const rect = this.el.targetCanvas.getBoundingClientRect();
+    const relX = e.clientX - rect.left;
+    const relY = e.clientY - rect.top;
+    if (relX < 0 || relX > rect.width || relY < 0 || relY > rect.height) {
+      cur.hidden = true;
+      return;
+    }
+    cur.hidden = false;
+    const pxDiameter = 2 * this.brushRadius * (rect.width / Math.max(1, this.maskWidth));
+    cur.style.width = `${pxDiameter.toFixed(1)}px`;
+    cur.style.height = `${pxDiameter.toFixed(1)}px`;
+    cur.style.left = `${(relX + this.el.targetCanvas.offsetLeft).toFixed(1)}px`;
+    cur.style.top = `${(relY + this.el.targetCanvas.offsetTop).toFixed(1)}px`;
+  }
+
   private bindEvents(): void {
     const canvas = this.el.targetCanvas;
     if (typeof canvas.addEventListener !== 'function') return;
@@ -412,15 +539,20 @@ export class StudioViewManager {
     let startPanX = 0;
     let startPanY = 0;
 
-    canvas.addEventListener('pointerdown', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / Math.max(1, rect.width);
-      const scaleY = canvas.height / Math.max(1, rect.height);
-      const px = (e.clientX - rect.left) * scaleX;
-      const py = (e.clientY - rect.top) * scaleY;
+    canvas.addEventListener('pointerenter', (e) => {
+      if (this.isBrushInteraction) this.updateBrushCursor(e);
+    });
 
-      if (this.brushActive || this.activeStage === 'importance') {
-        this.paintBrushAt(px, py);
+    canvas.addEventListener('pointerleave', () => {
+      if (this.brushCursorEl) this.brushCursorEl.hidden = true;
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      this.updateBrushCursor(e);
+      const { u, v } = this.normalizedPointer(e);
+
+      if (this.isBrushInteraction) {
+        this.paintBrushAtNormalized(u, v);
         try {
           canvas.setPointerCapture(e.pointerId);
         } catch {
@@ -444,27 +576,35 @@ export class StudioViewManager {
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      this.updateBrushCursor(e);
       if (!isDragging) return;
 
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / Math.max(1, rect.width);
-      const scaleY = canvas.height / Math.max(1, rect.height);
-      const px = (e.clientX - rect.left) * scaleX;
-      const py = (e.clientY - rect.top) * scaleY;
-
-      if (this.brushActive || this.activeStage === 'importance') {
-        this.paintBrushAt(px, py);
+      if (this.isBrushInteraction) {
+        const { u, v } = this.normalizedPointer(e);
+        this.paintBrushAtNormalized(u, v);
         return;
       }
 
       // Drag to Pan
-      // Dentro de pointermove (Drag to Pan fluido):
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
+      const rect = canvas.getBoundingClientRect();
+      let dx = e.clientX - startX;
+      let dy = e.clientY - startY;
+
+      const rotDeg = Number(this.el.rotationInput?.value) || 0;
+      if (rotDeg !== 0) {
+        const rotRad = (-rotDeg * Math.PI) / 180;
+        const cos = Math.cos(rotRad);
+        const sin = Math.sin(rotRad);
+        const rdx = dx * cos - dy * sin;
+        const rdy = dx * sin + dy * cos;
+        dx = rdx;
+        dy = rdy;
+      }
+
       const zoom = Math.max(0.4, Number(this.el.zoomInput.value) || 1.0);
 
-      const deltaPanX = (dx / rect.width) * (100 / zoom);
-      const deltaPanY = (dy / rect.height) * (100 / zoom);
+      const deltaPanX = (dx / rect.width) * (200 / zoom);
+      const deltaPanY = (dy / rect.height) * (200 / zoom);
 
       const newPanX = Math.round(Math.max(-200, Math.min(200, startPanX + deltaPanX)));
       const newPanY = Math.round(Math.max(-200, Math.min(200, startPanY + deltaPanY)));
@@ -482,9 +622,10 @@ export class StudioViewManager {
         } catch {
           // ignore
         }
-        canvas.style.cursor = this.brushActive || this.activeStage === 'importance' ? 'crosshair' : 'grab';
-        if (this.brushActive || this.activeStage === 'importance') {
-          this.dispatchBrushApply();
+        canvas.style.cursor = this.isBrushInteraction ? 'none' : 'grab';
+        if (this.isBrushInteraction) {
+          this.dispatchBrushApply(true);
+          this.onBrushCommitted?.();
         }
       }
     };
@@ -495,13 +636,13 @@ export class StudioViewManager {
     canvas.addEventListener(
       'wheel',
       (e) => {
-        if (this.brushActive || this.activeStage === 'importance') {
+        e.preventDefault();
+        if (this.isBrushInteraction) {
           // Wheel adjusts brush radius in brush mode!
-          e.preventDefault();
           this.brushRadius = Math.max(5, Math.min(60, this.brushRadius + (e.deltaY < 0 ? 2 : -2)));
+          this.updateBrushCursor(e);
           return;
         }
-        e.preventDefault();
         const currentZoom = Number(this.el.zoomInput.value) || 1.0;
         const zoomDelta = e.deltaY < 0 ? 0.05 : -0.05;
         const newZoom = Math.max(0.5, Math.min(6.0, currentZoom + zoomDelta));
@@ -576,23 +717,40 @@ export class StudioViewManager {
     }
 
     this.refreshCurrentStage();
-
-    // Throttled brush dispatch to worker
-    if (this.brushApplyDebounceTimer) {
-      clearTimeout(this.brushApplyDebounceTimer);
-    }
-    this.brushApplyDebounceTimer = setTimeout(() => {
-      this.dispatchBrushApply();
-    }, 60);
+    this.dispatchBrushApply(false);
   }
 
-  private dispatchBrushApply(): void {
+  private dispatchBrushApply(flushImmediate = false): void {
     if (!this.onBrushApplyHandler || !this.manualImportanceMask) return;
-    const result = this.onBrushApplyHandler(this.manualImportanceMask);
-    if (result && typeof result.then === 'function') {
-      result
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const timeSinceLast = now - this.lastBrushDispatchTime;
+    const THROTTLE_MS = 150;
+
+    if (flushImmediate || timeSinceLast >= THROTTLE_MS) {
+      if (this.brushThrottleTimer) {
+        clearTimeout(this.brushThrottleTimer);
+        this.brushThrottleTimer = null;
+      }
+      this.lastBrushDispatchTime = now;
+      this.executeBrushDispatch();
+    } else if (!this.brushThrottleTimer) {
+      this.brushThrottleTimer = setTimeout(() => {
+        this.brushThrottleTimer = null;
+        this.lastBrushDispatchTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        this.executeBrushDispatch();
+      }, THROTTLE_MS - timeSinceLast);
+    }
+  }
+
+  private executeBrushDispatch(): void {
+    if (!this.onBrushApplyHandler || !this.manualImportanceMask) return;
+    const seq = ++this.brushSeq;
+    const maskCopy = this.manualImportanceMask.slice();
+    const result = this.onBrushApplyHandler(maskCopy);
+    if (result && typeof (result as Promise<ArrayBuffer | void>).then === 'function') {
+      (result as Promise<ArrayBuffer | void>)
         .then((newBuf) => {
-          if (newBuf instanceof ArrayBuffer) {
+          if (seq === this.brushSeq && newBuf instanceof ArrayBuffer) {
             this.updateImportanceBuffer(newBuf);
           }
         })

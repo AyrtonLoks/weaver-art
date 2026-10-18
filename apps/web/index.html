@@ -445,8 +445,9 @@
                 class="button"
                 style="font-size: 0.8rem"
                 title="Alternar entre reforçar nitidez e reduzir peso"
+                disabled
               >
-                + Reforçar Nitidez
+                Modo: + Reforçar
               </button>
               <button type="button" id="btnClearBrush" class="button" style="font-size: 0.8rem">Limpar</button>
             </div>
@@ -559,6 +560,7 @@
 
               <figure class="thumb">
                 <canvas id="target" width="700" height="700"></canvas>
+                <div class="brush-cursor" hidden></div>
                 <figcaption id="targetCaption">Alvo (após preparo)</figcaption>
               </figure>
             </div>

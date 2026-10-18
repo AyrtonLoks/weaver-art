@@ -13,6 +13,8 @@ import { SolverStatusFlag } from '../domain-contracts/types.js';
 export type CamExportType =
   'blueprint_svg' | 'blueprint_pdf' | 'drilling_csv' | 'cnc_gcode' | 'artwork_svg' | 'bom_json';
 
+export type WorkerOp = 'init' | 'prepare' | 'brush' | 'initSolver' | 'smartFrame' | 'cam' | 'solver';
+
 /** Messages received by the solver worker from the Main Thread. */
 export type ToSolverWorkerMessage =
   | {
@@ -123,6 +125,8 @@ export type FromSolverWorkerMessage =
       type: 'ERROR';
       message: string;
       fatal?: boolean;
+      op?: WorkerOp;
+      exportId?: string;
     };
 
 // Worker execution state
@@ -152,6 +156,7 @@ async function handleInit(msg: Extract<ToSolverWorkerMessage, { type: 'INIT' }>)
       type: 'ERROR',
       message: `Falha na inicialização do Wasm / SharedArrayBuffer: ${err instanceof Error ? err.message : String(err)}`,
       fatal: true,
+      op: 'init',
     });
   }
 }
@@ -160,7 +165,7 @@ async function handlePrepareImage(
   msg: Extract<ToSolverWorkerMessage, { type: 'LOAD_AND_PREPARE_IMAGE' }>,
 ): Promise<void> {
   if (!wasmEngine) {
-    post({ type: 'ERROR', message: 'Wasm engine not initialized' });
+    post({ type: 'ERROR', message: 'Wasm engine not initialized', op: 'prepare' });
     return;
   }
 
@@ -201,12 +206,16 @@ async function handlePrepareImage(
     post({
       type: 'ERROR',
       message: `Erro no processamento DSP: ${err instanceof Error ? err.message : String(err)}`,
+      op: 'prepare',
     });
   }
 }
 
 function handleApplyBrush(msg: Extract<ToSolverWorkerMessage, { type: 'APPLY_BRUSH' }>): void {
-  if (!wasmEngine) return;
+  if (!wasmEngine) {
+    post({ type: 'ERROR', message: 'Wasm engine not initialized', op: 'brush' });
+    return;
+  }
   try {
     wasmEngine.apply_user_importance_brush(msg.brushWeights);
     const imp = wasmEngine.get_importance_map_rgba();
@@ -217,13 +226,14 @@ function handleApplyBrush(msg: Extract<ToSolverWorkerMessage, { type: 'APPLY_BRU
     post({
       type: 'ERROR',
       message: `Erro ao aplicar pincel de foco: ${err instanceof Error ? err.message : String(err)}`,
+      op: 'brush',
     });
   }
 }
 
 function handleInitSolver(msg: Extract<ToSolverWorkerMessage, { type: 'INIT_SOLVER' }>): void {
   if (!wasmEngine) {
-    post({ type: 'ERROR', message: 'Wasm engine not initialized' });
+    post({ type: 'ERROR', message: 'Wasm engine not initialized', op: 'initSolver' });
     return;
   }
   try {
@@ -233,61 +243,78 @@ function handleInitSolver(msg: Extract<ToSolverWorkerMessage, { type: 'INIT_SOLV
     post({
       type: 'ERROR',
       message: `Erro ao inicializar solver: ${err instanceof Error ? err.message : String(err)}`,
+      op: 'initSolver',
     });
   }
 }
 
 async function runSolverBatchLoop(batchSize = 50): Promise<void> {
-  if (!wasmEngine || !memory) return;
+  if (!wasmEngine || !memory) {
+    post({
+      type: 'ERROR',
+      message: 'Wasm engine or shared memory not initialized before starting solver',
+      op: 'solver',
+    });
+    return;
+  }
 
   isRunning = true;
   isPaused = false;
   isAborted = false;
   memory.setStatus(SolverStatusFlag.RUNNING);
 
-  while (isRunning && !isPaused && !isAborted) {
-    // 1. Executa lote de passos no núcleo Wasm/Rust
-    const stillRunning = wasmEngine.step_solver_batch(batchSize);
+  try {
+    while (isRunning && !isPaused && !isAborted) {
+      // 1. Executa lote de passos no núcleo Wasm/Rust
+      const stillRunning = wasmEngine.step_solver_batch(batchSize);
 
-    const currentStep = memory.getCurrentStepIndex();
-    const rmse = memory.getCurrentRMSE();
-    const deltaE = memory.getCurrentDeltaE();
-    const ssim = memory.getCurrentSSIM();
-    const totalThreadMeters = memory.getTotalThreadMeters();
+      const currentStep = memory.getCurrentStepIndex();
+      const rmse = memory.getCurrentRMSE();
+      const deltaE = memory.getCurrentDeltaE();
+      const ssim = memory.getCurrentSSIM();
+      const totalThreadMeters = memory.getTotalThreadMeters();
 
-    // 2. Notifica progresso em tempo real para a Main Thread
-    post({
-      type: 'PROGRESS',
-      currentStep,
-      rmse,
-      deltaE,
-      ssim,
-      totalThreadMeters,
-    });
+      // 2. Notifica progresso em tempo real para a Main Thread
+      post({
+        type: 'PROGRESS',
+        currentStep,
+        rmse,
+        deltaE,
+        ssim,
+        totalThreadMeters,
+      });
 
-    if (!stillRunning) {
-      isRunning = false;
-      const status = memory.getStatus();
-      if (status === SolverStatusFlag.PAUSED) {
-        post({ type: 'PAUSED', currentStep });
-      } else if (status === SolverStatusFlag.ABORT) {
-        post({ type: 'ABORTED', currentStep });
-      } else {
-        post({
-          type: 'DONE',
-          currentStep,
-          rmse,
-          deltaE,
-          ssim,
-          totalThreadMeters,
-        });
+      if (!stillRunning) {
+        isRunning = false;
+        const status = memory.getStatus();
+        if (status === SolverStatusFlag.PAUSED) {
+          post({ type: 'PAUSED', currentStep });
+        } else if (status === SolverStatusFlag.ABORT) {
+          post({ type: 'ABORTED', currentStep });
+        } else {
+          post({
+            type: 'DONE',
+            currentStep,
+            rmse,
+            deltaE,
+            ssim,
+            totalThreadMeters,
+          });
+        }
+        break;
       }
-      break;
-    }
 
-    // 3. Cede a vez na fila de tarefas (event loop) para permitir receber
-    // mensagens de PAUSE, ABORT ou APPLY_BRUSH entre os lotes
-    await new Promise((resolve) => setTimeout(resolve, 0));
+      // 3. Cede a vez na fila de tarefas (event loop) para permitir receber
+      // mensagens de PAUSE, ABORT ou APPLY_BRUSH entre os lotes
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } catch (err) {
+    isRunning = false;
+    post({
+      type: 'ERROR',
+      message: `Erro na execução do solver: ${err instanceof Error ? err.message : String(err)}`,
+      op: 'solver',
+    });
   }
 }
 
@@ -319,7 +346,7 @@ function handleAbort(): void {
 
 function handleExportCam(msg: Extract<ToSolverWorkerMessage, { type: 'EXPORT_CAM' }>): void {
   if (!wasmEngine) {
-    post({ type: 'ERROR', message: 'Wasm engine not initialized' });
+    post({ type: 'ERROR', message: 'Wasm engine not initialized', op: 'cam', exportId: msg.exportId });
     return;
   }
 
@@ -363,13 +390,15 @@ function handleExportCam(msg: Extract<ToSolverWorkerMessage, { type: 'EXPORT_CAM
     post({
       type: 'ERROR',
       message: `Erro na exportação CAM (${msg.camType}): ${err instanceof Error ? err.message : String(err)}`,
+      op: 'cam',
+      exportId: msg.exportId,
     });
   }
 }
 
 function handleSmartFrame(msg: Extract<ToSolverWorkerMessage, { type: 'SMART_FRAME' }>): void {
   if (!wasmEngine) {
-    post({ type: 'ERROR', message: 'Wasm engine not initialized' });
+    post({ type: 'ERROR', message: 'Wasm engine not initialized', op: 'smartFrame' });
     return;
   }
   try {
@@ -387,6 +416,7 @@ function handleSmartFrame(msg: Extract<ToSolverWorkerMessage, { type: 'SMART_FRA
     post({
       type: 'ERROR',
       message: `Erro no auto-enquadramento facial: ${err instanceof Error ? err.message : String(err)}`,
+      op: 'smartFrame',
     });
   }
 }

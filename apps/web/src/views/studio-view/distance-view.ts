@@ -43,6 +43,7 @@ export class DistanceViewController {
   private readonly getZoom: () => number;
   private mode: SimViewMode = 'threads';
   private hasReference = false;
+  private stale = false;
 
   constructor(el: DistanceViewElements, getExtentMm: () => number, getZoom: () => number = () => 1) {
     this.el = el;
@@ -73,6 +74,28 @@ export class DistanceViewController {
     this.refresh();
   }
 
+  /** Remove a foto de referência (troca de foto / sem resultado). */
+  public clearReference(): void {
+    this.hasReference = false;
+    if (this.el.compareToggle) {
+      this.el.compareToggle.checked = false;
+      this.el.compareToggle.disabled = true;
+    }
+    this.refresh();
+  }
+
+  /** Marca a simulação como não correspondente aos parâmetros atuais. */
+  public setStale(stale: boolean): void {
+    this.stale = stale;
+    if (stale && this.el.compareToggle) {
+      this.el.compareToggle.checked = false;
+      this.el.compareToggle.disabled = true;
+    } else if (!stale && this.hasReference && this.el.compareToggle) {
+      this.el.compareToggle.disabled = false;
+    }
+    this.refresh();
+  }
+
   /** Desenha a foto enquadrada (alvo preparado pelo DSP) no canvas de comparação. */
   public setReference(rgba: Uint8ClampedArray | null, width: number, height: number): void {
     const canvas = this.el.compareCanvas;
@@ -91,6 +114,10 @@ export class DistanceViewController {
     idata.data.set(rgba.subarray(0, width * height * 4));
     ctx.putImageData(idata, 0, 0);
     this.hasReference = true;
+    this.stale = false;
+    if (this.el.compareToggle) {
+      this.el.compareToggle.disabled = false;
+    }
     this.refresh();
   }
 
@@ -106,7 +133,7 @@ export class DistanceViewController {
     if (this.el.distanceOut) {
       this.el.distanceOut.textContent = `${distance.toLocaleString('pt-BR', { minimumFractionDigits: 1 })} m`;
     }
-    const compare = !!this.el.compareToggle?.checked && this.hasReference;
+    const compare = !!this.el.compareToggle?.checked && this.hasReference && !this.stale;
     if (this.el.compareCanvas) this.el.compareCanvas.hidden = !compare;
     this.el.pair?.classList.toggle('compare', compare);
 
@@ -122,12 +149,22 @@ export class DistanceViewController {
     }
 
     if (this.el.caption) {
-      const base = this.mode === 'distance' ? `Vista a ${distance.toLocaleString('pt-BR')} m` : 'Fios em tamanho real';
-      this.el.caption.textContent = compare ? `${base} — simulação (esq.) × foto enquadrada (dir.)` : base;
+      if (this.stale) {
+        this.el.caption.textContent = 'Resultado desatualizado — gere novamente';
+        this.el.caption.classList.add('stale');
+      } else {
+        this.el.caption.classList.remove('stale');
+        const base =
+          this.mode === 'distance' ? `Vista a ${distance.toLocaleString('pt-BR')} m` : 'Fios em tamanho real';
+        this.el.caption.textContent = compare ? `${base} — simulação (esq.) × foto enquadrada (dir.)` : base;
+      }
     }
   }
 
   private bindEvents(): void {
+    if (this.el.compareToggle && !this.hasReference) {
+      this.el.compareToggle.disabled = true;
+    }
     this.el.btnThreads?.addEventListener('click', () => this.setMode('threads'));
     this.el.btnDistance?.addEventListener('click', () => this.setMode('distance'));
     this.el.distanceInput?.addEventListener('input', () => {
