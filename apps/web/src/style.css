@@ -255,6 +255,30 @@ legend {
   gap: 0.5rem;
 }
 
+.view-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.sim-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.sim-zoom-badge {
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 38px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 /* Stage Inspection Pills */
 .stage-tabs {
   display: flex;

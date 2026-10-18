@@ -3,7 +3,6 @@ import {
   buildChordMask,
   convexHull,
   createLoom,
-  loomMask,
   loomPegCount,
   resolveOptions,
   validateOptions,
@@ -241,20 +240,5 @@ describe('Loom shapes & geometry (v0.4.0)', () => {
       area += hull[i].x * next.y - next.x * hull[i].y;
     }
     expect(area).toBeGreaterThan(0);
-
-    // Construct loom and verify loomMask is 1.0 inside the triangle
-    const loom = createLoom({
-      shape: 'custom',
-      pegs: ccwPoints,
-      pegDiameterMm: 1,
-    });
-    const size = 120;
-    const mask = loomMask(loom, size);
-
-    // Center of this triangle: in simulation frame, pixels near center must be inside (mask ≈ 1)
-    const scale = size / loom.extentMm;
-    const cx = Math.round(((loom.extentMm - loom.widthMm) / 2 + 35) * scale);
-    const cy = Math.round(((loom.extentMm - loom.heightMm) / 2 + 35) * scale);
-    expect(mask[cy * size + cx]).toBeGreaterThan(0.9);
   });
 });

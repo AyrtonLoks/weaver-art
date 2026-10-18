@@ -1,7 +1,7 @@
 //! Interface Unificada de Execução Passo-a-Passo (`solver_runner.rs`).
 //!
 //! Uma sessão percorre as fases:
-//! 1. **Construção** (`Construct`): o backend (guloso, beam search ou FISTA) gera o caminho;
+//! 1. **Construção** (`Construct`): o backend (guloso ou beam search) gera o caminho;
 //! 2. **Refinamento** (`Refine`, opcional, só no guloso): [`PathRefiner`] realoca/remove nós;
 //! 3. **Preenchimento** (`Fill`): se o refinamento liberou linhas, o guloso continua do fim do
 //!    caminho até atingir o limite ou não haver mais ganho;
@@ -15,8 +15,7 @@ use weaver_domain::{LinearRgbColor, PegSide, SparseChordMatrixCSR};
 
 use crate::optical_models::{OpticalModelEvaluator, SpoolColor};
 use crate::solvers::{
-    BeamSearchConfig, BeamSearchSolver, GlobalFistaConfig, GlobalFistaSolver, GreedyConfig,
-    GreedySolver, PathRefiner, RefineConfig,
+    BeamSearchConfig, BeamSearchSolver, GreedyConfig, GreedySolver, PathRefiner, RefineConfig,
 };
 use crate::spool_scheduler::SpoolScheduler;
 use crate::state_matrix::CanvasStateSoA;
@@ -76,7 +75,6 @@ pub struct SolverProgress {
 pub enum SolverBackend {
     Greedy(GreedySolver),
     BeamSearch(BeamSearchSolver),
-    GlobalFista(GlobalFistaSolver),
 }
 
 pub struct SolverSession {
@@ -194,29 +192,6 @@ impl SolverSession {
         )
     }
 
-    pub fn new_global_fista(
-        config: GlobalFistaConfig,
-        canvas: CanvasStateSoA,
-        matrix: Arc<SparseChordMatrixCSR>,
-        evaluator: OpticalModelEvaluator,
-        scheduler: SpoolScheduler,
-        spools: Vec<SpoolColor>,
-        coverage: f32,
-    ) -> Self {
-        let max_steps = config.max_steps;
-        let solver = GlobalFistaSolver::new(config, &canvas, &matrix, &spools);
-        Self::build(
-            SolverBackend::GlobalFista(solver),
-            canvas,
-            matrix,
-            evaluator,
-            scheduler,
-            spools,
-            coverage,
-            max_steps,
-        )
-    }
-
     /// Ativa o passe de refinamento após a construção (só para o guloso).
     pub fn with_refinement(mut self, config: RefineConfig) -> Self {
         if config.passes > 0 && matches!(self.backend, SolverBackend::Greedy(_)) {
@@ -253,17 +228,6 @@ impl SolverSession {
                 )
             }),
             SolverBackend::BeamSearch(s) => s.step(canvas, sched, m, e, sp, cov).map(|r| {
-                to_record(
-                    r.from_pin,
-                    r.to_pin,
-                    r.spool_id,
-                    r.departure_winding,
-                    r.arrival_winding,
-                    r.gain,
-                    r.score_normalized,
-                )
-            }),
-            SolverBackend::GlobalFista(s) => s.step(canvas, sched, m, e, sp, cov).map(|r| {
                 to_record(
                     r.from_pin,
                     r.to_pin,

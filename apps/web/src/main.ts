@@ -6,7 +6,6 @@ import {
   estimateWeave,
   formatDuration,
   loomPegCount,
-  parsePegsCSV,
   toCSV,
   toInstructions,
   toSVG,
@@ -48,10 +47,9 @@ let running = false;
 let isWasmRunning = false;
 let animFrameId: number | null = null;
 let solverStartTime = 0;
-let customPegsList: { x: number; y: number }[] | null = null;
 
 // Preset Store (ADR-005)
-const presetStore = new ReactivePresetStore('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
+const presetStore = new ReactivePresetStore('VRELLIS_CLASSIC_MONO');
 
 // --------------------------------------------------------------- elements
 const fileInput = $<HTMLInputElement>('file');
@@ -79,32 +77,17 @@ const morphologyOpSelect = $<HTMLSelectElement>('morphologyOp');
 const edgeDetectorSelect = $<HTMLSelectElement>('edgeDetector');
 
 const controlDiameterMm = $('control-diameterMm');
-const controlPolygonSides = $('control-polygonSides');
 const controlWidthMm = $('control-widthMm');
-const controlCustomPegs = $('control-customPegs');
-const polygonSidesInput = num('polygonSides');
-const polyPegsInput = num('polyPegs');
 const rectWidthInput = num('rectWidth');
-const rectHeightInput = num('rectHeight');
-const rectPegsXInput = num('rectPegsX');
-const rectPegsYInput = num('rectPegsY');
-const customPegsFile = $<HTMLInputElement>('customPegsFile');
-const customPegsSummary = $('customPegsSummary');
+const squarePegsInput = num('squarePegs');
 const miniLoomCanvas = $<HTMLCanvasElement>('miniLoom');
 const miniLoomSummary = $('miniLoomSummary');
 
-const controlUserCustomPalette = $('control-userCustomPalette');
 const controlSpoolStrategy = $('control-spoolStrategy');
-const controlBeamWidth = $('control-beamWidth');
-const controlFistaIterations = $('control-fistaIterations');
 const controlSwitchPenaltyLambda = $('control-switchPenaltyLambda');
 const controlMinRunLength = $('control-minRunLength');
 const controlEdgeBlendWeight = $('control-edgeBlendWeight');
 
-const beamWidthInput = num('beamWidth');
-const beamDepthInput = num('beamDepth');
-const fistaIterationsInput = num('fistaIterations');
-const l1RegularizationLambdaInput = num('l1RegularizationLambda');
 const switchPenaltyLambdaInput = num('switchPenaltyLambda');
 const minRunLengthInput = num('minRunLength');
 const edgeBlendWeightInput = num('edgeBlendWeight');
@@ -274,9 +257,27 @@ const distanceView = new DistanceViewController(
     compareToggle: document.getElementById('viewCompare') as HTMLInputElement | null,
     caption: document.getElementById('simCaption'),
   },
-  () => loomRenderer.getLoom().extentMm || Number(fields.diameter.value) || 622,
+  () =>
+    loomRenderer.getLoom().extentMm ||
+    (loomShape.value === 'SQUARE' ? Number(rectWidthInput.value) || 600 : Number(fields.diameter.value) || 622),
   () => loomRenderer.getZoom(),
 );
+
+const simZoomOutBtn = document.getElementById('simZoomOut') as HTMLButtonElement | null;
+const simZoomInBtn = document.getElementById('simZoomIn') as HTMLButtonElement | null;
+const simResetViewBtn = document.getElementById('simResetView') as HTMLButtonElement | null;
+const simZoomLevelBadge = document.getElementById('simZoomLevel');
+
+loomRenderer.onZoomChanged((zoom) => {
+  if (simZoomLevelBadge) {
+    simZoomLevelBadge.textContent = `${Math.round(zoom * 100)}%`;
+  }
+  distanceView.refresh();
+});
+
+simZoomOutBtn?.addEventListener('click', () => loomRenderer.zoomOut());
+simZoomInBtn?.addEventListener('click', () => loomRenderer.zoomIn());
+simResetViewBtn?.addEventListener('click', () => loomRenderer.fitView());
 
 /** Lê os sliders de enquadramento e grava no store (fonte única de verdade). */
 function commitFraming(): void {
@@ -408,98 +409,27 @@ engineClient
   });
 
 // ------------------------------------------------------------------- Geometry
-function generateEllipticalPegs(widthMm: number, heightMm: number, pegCount: number): { x: number; y: number }[] {
-  const rx = widthMm / 2;
-  const ry = heightMm / 2;
-  const pegs: { x: number; y: number }[] = [];
-  for (let i = 0; i < pegCount; i++) {
-    const angle = (2 * Math.PI * i) / pegCount;
-    pegs.push({
-      x: rx + rx * Math.cos(angle),
-      y: ry + ry * Math.sin(angle),
-    });
-  }
-  return pegs;
-}
-
-function generateRegularPolygonPegs(diameterMm: number, sides: number, totalPegs: number): { x: number; y: number }[] {
-  const r = diameterMm / 2;
-  const vertices: { x: number; y: number }[] = [];
-  for (let s = 0; s < sides; s++) {
-    const angle = (2 * Math.PI * s) / sides;
-    vertices.push({
-      x: r + r * Math.cos(angle),
-      y: r + r * Math.sin(angle),
-    });
-  }
-  const pegs: { x: number; y: number }[] = [];
-  const pegsPerSide = Math.max(2, Math.floor(totalPegs / sides));
-  for (let s = 0; s < sides; s++) {
-    const v1 = vertices[s];
-    const v2 = vertices[(s + 1) % sides];
-    for (let i = 0; i < pegsPerSide; i++) {
-      const t = i / pegsPerSide;
-      pegs.push({
-        x: v1.x + t * (v2.x - v1.x),
-        y: v1.y + t * (v2.y - v1.y),
-      });
-    }
-  }
-  return pegs;
-}
-
 export function getCurrentLoomConfig(): LoomConfig {
   const shape = loomShape.value;
   const pegDiameterMm = Number(fields.pegDiameter.value) || 2;
 
-  if (shape === 'RECTANGULAR') {
-    const w = Number(rectWidthInput.value) || 600;
-    const h = Number(rectHeightInput.value) || 400;
-    const px = Math.max(2, Math.round(Number(rectPegsXInput.value) || 61));
-    const py = Math.max(2, Math.round(Number(rectPegsYInput.value) || 41));
+  if (shape === 'SQUARE') {
+    const sideMm = Number(rectWidthInput.value) || 600;
+    const pinCount = Math.max(4, Math.round(Number(squarePegsInput.value) || 200));
+    const pegsPerSide = Math.floor(pinCount / 4) + 1;
     return {
       shape: 'rectangle',
-      widthMm: w,
-      heightMm: h,
-      pegsX: px,
-      pegsY: py,
-      pegDiameterMm,
-    };
-  }
-
-  if (shape === 'ELLIPTICAL') {
-    const w = Number(rectWidthInput.value) || 600;
-    const h = Number(rectHeightInput.value) || 450;
-    const count = Math.max(20, Math.round(Number(fields.pegs.value) || 200));
-    return {
-      shape: 'custom',
-      pegs: generateEllipticalPegs(w, h, count),
-      pegDiameterMm,
-    };
-  }
-
-  if (shape === 'REGULAR_POLYGON') {
-    const d = Number(fields.diameter.value) || 600;
-    const sides = Math.max(3, Math.min(16, Math.round(Number(polygonSidesInput.value) || 6)));
-    const total = Math.max(12, Math.round(Number(polyPegsInput.value) || 240));
-    return {
-      shape: 'custom',
-      pegs: generateRegularPolygonPegs(d, sides, total),
-      pegDiameterMm,
-    };
-  }
-
-  if (shape === 'custom' && customPegsList && customPegsList.length >= 3) {
-    return {
-      shape: 'custom',
-      pegs: customPegsList,
+      widthMm: sideMm,
+      heightMm: sideMm,
+      pegsX: pegsPerSide,
+      pegsY: pegsPerSide,
       pegDiameterMm,
     };
   }
 
   return {
     shape: 'circle',
-    diameterMm: Number(fields.diameter.value) || 600,
+    diameterMm: Number(fields.diameter.value) || 622,
     pegCount: Math.max(3, Math.round(Number(fields.pegs.value) || 200)),
     pegDiameterMm,
     startAngleDeg: 0,
@@ -539,23 +469,19 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   document.body.dataset.loomShape = cfg.shape;
 
   controlDiameterMm.hidden = cfg.shape !== 'CIRCULAR';
-  controlPolygonSides.hidden = cfg.shape !== 'REGULAR_POLYGON';
-  controlWidthMm.hidden = cfg.shape !== 'RECTANGULAR' && cfg.shape !== 'ELLIPTICAL';
-  controlCustomPegs.hidden = loomShape.value !== 'custom';
+  controlWidthMm.hidden = cfg.shape !== 'SQUARE';
 
   setInputValue(fields.pegs, cfg.pinCount);
+  setInputValue(squarePegsInput, cfg.pinCount);
   setInputValue(fields.diameter, cfg.diameterMm);
   setInputValue(fields.pegDiameter, cfg.pinDiameterMm);
   setInputValue(fields.threadWidth, cfg.threadThicknessMm);
   if (cfg.widthMm !== undefined) setInputValue(rectWidthInput, cfg.widthMm);
-  if (cfg.heightMm !== undefined) setInputValue(rectHeightInput, cfg.heightMm);
-  if (cfg.polygonSides !== undefined) setInputValue(polygonSidesInput, cfg.polygonSides);
   loomRenderer.setThreadThickness(cfg.threadThicknessMm);
 
   setInputValue(rasterizerSelect, cfg.rasterizer);
   setInputValue(paletteModeSelect, cfg.paletteMode);
   loomRenderer.setPalette(cfg.paletteMode);
-  controlUserCustomPalette.hidden = cfg.paletteMode !== 'USER_CUSTOM';
   setInputValue(opticalMixModelSelect, cfg.opticalMixModel);
   setInputValue(errorMetricSelect, cfg.errorMetric);
 
@@ -565,17 +491,11 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   setInputValue(fields.repeats, cfg.maxChordRepeats);
 
   controlSpoolStrategy.hidden = cfg.paletteMode === 'MONOCHROME';
-  controlBeamWidth.hidden = cfg.solver !== 'BEAM_SEARCH';
-  controlFistaIterations.hidden = cfg.solver !== 'GLOBAL_NNLS_FISTA';
   controlSwitchPenaltyLambda.hidden = cfg.paletteMode === 'MONOCHROME' || cfg.spoolStrategy !== 'HYSTERESIS_PENALTY';
   controlMinRunLength.hidden =
     cfg.paletteMode === 'MONOCHROME' ||
     (cfg.spoolStrategy !== 'MIN_RUN_LENGTH' && cfg.spoolStrategy !== 'HYSTERESIS_PENALTY');
 
-  setInputValue(beamWidthInput, cfg.beamWidth);
-  setInputValue(beamDepthInput, cfg.beamDepth);
-  setInputValue(fistaIterationsInput, cfg.fistaIterations);
-  setInputValue(l1RegularizationLambdaInput, cfg.l1RegularizationLambda);
   setInputValue(switchPenaltyLambdaInput, cfg.switchPenaltyLambda);
   setInputValue(minRunLengthInput, cfg.minRunLength);
 
@@ -621,8 +541,13 @@ preset.addEventListener('change', () => {
       presetStore.loadPreset(selected as WeaverPresetProfileId);
     } else if (selected === 'portrait-mono' || selected === 'vrellis-mono') {
       presetStore.loadPreset('VRELLIS_CLASSIC_MONO');
-    } else if (selected === 'portrait-cmyk' || selected === 'cmyk' || selected === 'vrellis-color') {
-      presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
+    } else if (
+      selected === 'portrait-cmyk' ||
+      selected === 'cmyk' ||
+      selected === 'vrellis-color' ||
+      selected === 'VRELLIS_COLOR'
+    ) {
+      presetStore.loadPreset('VRELLIS_COLOR');
     }
   });
   markResultStale();
@@ -639,10 +564,8 @@ loomShape.addEventListener('change', () => {
   const s = loomShape.value;
   document.body.dataset.loomShape = s;
   controlDiameterMm.hidden = s !== 'CIRCULAR';
-  controlPolygonSides.hidden = s !== 'REGULAR_POLYGON';
-  controlWidthMm.hidden = s !== 'RECTANGULAR' && s !== 'ELLIPTICAL';
-  controlCustomPegs.hidden = s !== 'custom';
-  if (s === 'CIRCULAR' || s === 'REGULAR_POLYGON' || s === 'RECTANGULAR' || s === 'ELLIPTICAL') {
+  controlWidthMm.hidden = s !== 'SQUARE';
+  if (s === 'CIRCULAR' || s === 'SQUARE') {
     presetStore.setParam('shape', s);
   }
   onGeometryChanged();
@@ -652,7 +575,6 @@ paletteModeSelect.addEventListener('change', () => {
   const mode = paletteModeSelect.value as WeaverConfig['paletteMode'];
   presetStore.setParam('paletteMode', mode);
   loomRenderer.setPalette(mode);
-  controlUserCustomPalette.hidden = mode !== 'USER_CUSTOM';
   controlSpoolStrategy.hidden = mode === 'MONOCHROME';
   markResultStale();
   updateTargetPreview();
@@ -661,8 +583,6 @@ paletteModeSelect.addEventListener('change', () => {
 solverSelect.addEventListener('change', () => {
   const s = solverSelect.value as WeaverConfig['solver'];
   presetStore.setParam('solver', s);
-  controlBeamWidth.hidden = s !== 'BEAM_SEARCH';
-  controlFistaIterations.hidden = s !== 'GLOBAL_NNLS_FISTA';
 });
 
 colorStrategy.addEventListener('change', () => {
@@ -699,20 +619,21 @@ errorMetricSelect.addEventListener('change', () => {
   presetStore.setParam('errorMetric', errorMetricSelect.value as WeaverConfig['errorMetric']);
 });
 
+const roundTo4 = (v: number) => Math.max(4, Math.round(v / 4) * 4);
 const GEOMETRY_BINDINGS: Array<[HTMLInputElement, keyof WeaverConfig, (v: number) => number]> = [
   [fields.pegs, 'pinCount', Math.round],
+  [squarePegsInput, 'pinCount', roundTo4],
   [fields.diameter, 'diameterMm', (v) => v],
   [fields.pegDiameter, 'pinDiameterMm', (v) => v],
   [fields.threadWidth, 'threadThicknessMm', (v) => v],
   [rectWidthInput, 'widthMm', (v) => v],
-  [rectHeightInput, 'heightMm', (v) => v],
-  [polygonSidesInput, 'polygonSides', Math.round],
 ];
 for (const [el, key, norm] of GEOMETRY_BINDINGS) {
   el.addEventListener('input', () => {
     const v = readValidNumber(el);
     if (v === null) return;
     presetStore.setParam(key, norm(v) as never);
+    if (key === 'widthMm') presetStore.setParam('heightMm', norm(v) as never);
     if (key === 'threadThicknessMm') loomRenderer.setThreadThickness(v);
     onGeometryChanged();
   });
@@ -720,31 +641,11 @@ for (const [el, key, norm] of GEOMETRY_BINDINGS) {
     const v = norm(clampToInput(el, presetStore.getConfig()[key] as number));
     el.value = String(v);
     presetStore.setParam(key, v as never);
-    onGeometryChanged();
-  });
-}
-for (const el of [rectPegsXInput, rectPegsYInput, polyPegsInput]) {
-  el.addEventListener('input', () => {
-    const v = readValidNumber(el);
-    if (v === null) return;
-    onGeometryChanged();
-  });
-  el.addEventListener('change', () => {
-    const fallback = Number(el.defaultValue) || (el === polyPegsInput ? 240 : 50);
-    const v = Math.round(clampToInput(el, fallback));
-    el.value = String(v);
+    if (key === 'widthMm') presetStore.setParam('heightMm', v as never);
     onGeometryChanged();
   });
 }
 
-beamWidthInput.addEventListener('input', () => presetStore.setParam('beamWidth', Number(beamWidthInput.value)));
-beamDepthInput.addEventListener('input', () => presetStore.setParam('beamDepth', Number(beamDepthInput.value)));
-fistaIterationsInput.addEventListener('input', () =>
-  presetStore.setParam('fistaIterations', Number(fistaIterationsInput.value)),
-);
-l1RegularizationLambdaInput.addEventListener('input', () =>
-  presetStore.setParam('l1RegularizationLambda', Number(l1RegularizationLambdaInput.value)),
-);
 switchPenaltyLambdaInput.addEventListener('input', () => {
   presetStore.setParam('switchPenaltyLambda', Number(switchPenaltyLambdaInput.value));
   $('switchPenaltyLambda-out').textContent = Number(switchPenaltyLambdaInput.value).toFixed(2);
@@ -773,22 +674,6 @@ skinLiftInput?.addEventListener('input', () => {
   presetStore.setParam('skinLift', Number(skinLiftInput.value));
   markResultStale();
   updateTargetPreview();
-});
-
-customPegsFile.addEventListener('change', async () => {
-  const f = customPegsFile.files?.[0];
-  if (!f) return;
-  try {
-    const text = await f.text();
-    const parsed = parsePegsCSV(text);
-    if (parsed.length < 3) throw new Error('O CSV deve conter ao menos 3 pinos.');
-    customPegsList = parsed;
-    customPegsSummary.textContent = `✔ ${parsed.length} pinos carregados (${f.name})`;
-    customPegsSummary.style.color = 'var(--accent-2)';
-    onGeometryChanged();
-  } catch (err) {
-    showError(err);
-  }
 });
 
 function checkRepeatsHint(): void {
@@ -852,17 +737,19 @@ function computeActiveCrop(): { x: number; y: number; size: number } | undefined
 function buildRuntimeWasmConfig(): Record<string, unknown> {
   const cfg = presetStore.getConfig();
   const loomCfg = getCurrentLoomConfig();
-  const rawShape = loomShape.value;
-  const shape = rawShape === 'custom' ? 'CIRCULAR' : rawShape;
+  const shape = loomShape.value === 'SQUARE' ? 'SQUARE' : 'CIRCULAR';
   const edgeDetector = (edgeDetectorSelect.value || cfg.edgeDetector) as WeaverConfig['edgeDetector'];
+  const sideMm =
+    shape === 'SQUARE'
+      ? finiteOr(rectWidthInput.value, cfg.widthMm ?? 600)
+      : finiteOr(fields.diameter.value, cfg.diameterMm);
   return {
     ...cfg,
     shape,
     pinCount: loomPegCount(loomCfg),
     diameterMm: finiteOr(fields.diameter.value, cfg.diameterMm),
-    widthMm: finiteOr(rectWidthInput.value, cfg.widthMm ?? 600),
-    heightMm: finiteOr(rectHeightInput.value, cfg.heightMm ?? 400),
-    polygonSides: Math.round(finiteOr(polygonSidesInput.value, cfg.polygonSides ?? 6)),
+    widthMm: sideMm,
+    heightMm: sideMm,
     pinDiameterMm: Number(fields.pegDiameter.value) || cfg.pinDiameterMm,
     threadThicknessMm: Number(fields.threadWidth.value) || cfg.threadThicknessMm,
     maxLines: Number(fields.lines.value) || cfg.maxLines,
@@ -989,37 +876,36 @@ function requestDspPreview(): void {
  */
 function getActiveThreadsSpec(totalPegs: number, widthMm: number): WeaveOptions['threads'] {
   const mode = paletteModeSelect.value as ColorPaletteMode;
-  if (mode === 'CMYK_SUBTRACTIVE') {
+  if (mode === 'CMYK_SUBTRACTIVE' || mode === 'VRELLIS_5_COLOR') {
     return [
-      { id: 'cmyk-y', name: 'Amarelo', color: '#f5dd05', widthMm, opacity: 0.22, startPeg: 0 },
-      { id: 'cmyk-m', name: 'Magenta', color: '#d90a75', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 4) },
-      { id: 'cmyk-c', name: 'Ciano', color: '#0594d9', widthMm, opacity: 0.24, startPeg: Math.floor(totalPegs / 2) },
+      { id: 'cmyk-y', name: 'Amarelo', color: '#f5dd05', widthMm, opacity: 1.0, startPeg: 0 },
+      {
+        id: 'cmyk-m',
+        name: 'Magenta',
+        color: '#d90a75',
+        widthMm,
+        opacity: 1.0,
+        startPeg: Math.floor(totalPegs / 4),
+      },
+      {
+        id: 'cmyk-c',
+        name: 'Ciano',
+        color: '#0594d9',
+        widthMm,
+        opacity: 1.0,
+        startPeg: Math.floor(totalPegs / 2),
+      },
       {
         id: 'cmyk-k',
         name: 'Preto',
         color: '#141414',
         widthMm,
-        opacity: 0.35,
+        opacity: 1.0,
         startPeg: Math.floor((3 * totalPegs) / 4),
       },
     ];
   }
-  if (mode === 'RGB_OCCLUSIVE') {
-    return [
-      { id: 'rgb-r', name: 'Vermelho', color: '#e01010', widthMm, opacity: 0.28, startPeg: 0 },
-      { id: 'rgb-g', name: 'Verde', color: '#10c020', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 4) },
-      { id: 'rgb-b', name: 'Azul', color: '#1030e0', widthMm, opacity: 0.28, startPeg: Math.floor(totalPegs / 2) },
-      {
-        id: 'rgb-k',
-        name: 'Preto',
-        color: '#141414',
-        widthMm,
-        opacity: 0.35,
-        startPeg: Math.floor((3 * totalPegs) / 4),
-      },
-    ];
-  }
-  return [{ id: 'mono-k', name: 'Preto', color: '#141414', widthMm, opacity: 0.35, startPeg: 0 }];
+  return [{ id: 'mono-k', name: 'Preto', color: '#141414', widthMm, opacity: 1.0, startPeg: 0 }];
 }
 
 function readOptions(): WeaveOptions {
@@ -1325,11 +1211,6 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   setRunning(false);
   updateTargetPreview();
   loomRenderer.renderFrame();
-  if (isCompleted) {
-    // Obra pronta: mostrar como ela será vista na parede, ao lado da foto.
-    distanceView.setCompare(true);
-    distanceView.setMode('distance');
-  }
 
   const mem = engineClient.memory;
   const currentStep = mem.getCurrentStepIndex();

@@ -31,18 +31,7 @@ const wasmPack = findExecutable('wasm-pack');
 
 console.log('[build-wasm] Verificando e compilando módulos Rust / WebAssembly...');
 
-// 1. Compila o kernel legado @weaver-art/wasm se existir
-const kernelScript = path.join(root, 'packages', 'wasm', 'scripts', 'build-wasm.mjs');
-if (fs.existsSync(kernelScript) && cargo) {
-  try {
-    console.log('[build-wasm] Compilando kernel @weaver-art/wasm...');
-    execSync(`node "${kernelScript}"`, { cwd: root, stdio: 'inherit', env: process.env });
-  } catch (err) {
-    console.warn('[build-wasm] Aviso ao compilar kernel wasm:', err.message);
-  }
-}
-
-// 2. Compila crates/weaver-wasm-adapter
+// Compila crates/weaver-wasm-adapter
 const cratePath = path.join(root, 'crates', 'weaver-wasm-adapter');
 const targetWasmFile = path.join(wasmPkgDir, 'weaver_wasm_adapter_bg.wasm');
 

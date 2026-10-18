@@ -67,16 +67,16 @@ Ver a tabela “O que há de diferente” no [README](../README.md) e a discuss�
   modelo de distância de observação e inspira o refinamento iterativo com conservação de continuidade física.
 - **Wang, Z., Bovik, A. C., Sheikh, H. R., & Simoncelli, E. P.** _Image quality assessment: from error visibility to structural similarity._ IEEE Transactions on Image Processing, 13(4):600–612, 2004.
   DOI [10.1109/TIP.2003.819861](https://doi.org/10.1109/TIP.2003.819861).
-  Fundamentação matemática do SSIM implementado em `metrics.ts`.
+  Fundamentação matemática do SSIM implementado em `crates/weaver-domain` e `crates/weaver-solvers`.
 - **Zuiderveld, K.** _Contrast Limited Adaptive Histogram Equalization._ In: P. Heckbert (Ed.), Graphics Gems IV, Academic Press, pp. 474–485, 1994.
   DOI [10.1016/B978-0-12-336156-1.50061-6](https://doi.org/10.1016/B978-0-12-336156-1.50061-6).
-  Fundamentação matemática do algoritmo CLAHE em grade e interpolação bilinear contínua em `clahe.ts`.
+  Fundamentação matemática do algoritmo CLAHE implementado em `crates/weaver-dsp`.
 - **CIE (1976) / ISO/CIE 11664-4** — Espaço de cor uniforme $L^_a^*b^*$ e cálculo da diferença euclidiana de cor $\Delta E\_{ab}^_$.
-- **IEC 61966-2-1** — Espaço de cor sRGB (funções de transferência usadas em `color.ts`).
+- **IEC 61966-2-1** — Espaço de cor sRGB (funções de transferência usadas em `crates/weaver-domain`).
 - **ITU-R BT.709** — Coeficientes de luminância para conversão fotométrica.
-- **Andrew, A. M.** _Another efficient algorithm for convex hulls in two dimensions._ Information Processing Letters, 9(5):216–219, 1979. DOI [10.1016/0020-0190(79)90072-3](<https://doi.org/10.1016/0020-0190(79)90072-3>). Base matemática da envoltória convexa de pinos em `geometry.ts`.
-- **Minoux, M.** _Accelerated greedy algorithms for maximizing submodular set functions._ Optimization Techniques, Lecture Notes in Control and Information Sciences, vol. 7, pp. 234–243, Springer, Berlin, Heidelberg, 1978. DOI [10.1007/BFb0006528](https://doi.org/10.1007/BFb0006528). Base matemática da poda gulosa preguiçosa (_lazy greedy candidate pruning_) implementada em `pruning.ts`.
-- **W3C WebAssembly Community Group** — _WebAssembly 128-bit SIMD Specification._ W3C Candidate Recommendation, 2022. Especificação das instruções vetoriais `f32x4` implementadas no kernel Rust/WASM em `packages/wasm/rust/src/lib.rs`.
-- **ECMA International** — _ECMAScript® 2024 Language Specification (ECMA-262, 15th edition)_: SharedArrayBuffer, Atomics.wait e Atomics.notify para sincronização de threads sem travamento implementada em `parallel.ts`.
-- **EIA RS-274-D / ISO 6983-1** — _Numerical control of machines — Program format and definition of address words._ Padrão industrial para comandos G-code de máquinas CNC implementado em `gcode.ts`.
-- **Adobe Systems Incorporated** — _PDF Reference, third edition: Adobe Portable Document Format Version 1.4._ Addison-Wesley, 2001. Especificação de objetos, operadores vetoriais e tabela `xref` implementada em `pdf.ts`.
+- **Andrew, A. M.** _Another efficient algorithm for convex hulls in two dimensions._ Information Processing Letters, 9(5):216–219, 1979. DOI [10.1016/0020-0190(79)90072-3](<https://doi.org/10.1016/0020-0190(79)90072-3>). Base matemática da envoltória convexa de pinos em `crates/weaver-domain` e `@weaver-art/core`.
+- **Minoux, M.** _Accelerated greedy algorithms for maximizing submodular set functions._ Optimization Techniques, Lecture Notes in Control and Information Sciences, vol. 7, pp. 234–243, Springer, Berlin, Heidelberg, 1978. DOI [10.1007/BFb0006528](https://doi.org/10.1007/BFb0006528). Base matemática da avaliação submodular de cordas.
+- **W3C WebAssembly Community Group** — _WebAssembly 128-bit SIMD Specification._ W3C Candidate Recommendation, 2022. Especificação das instruções vetoriais `f32x4` e portabilidade no adapter Rust/WASM em `crates/weaver-wasm-adapter`.
+- **ECMA International** — _ECMAScript® 2024 Language Specification (ECMA-262, 15th edition)_: SharedArrayBuffer, Atomics.wait e Atomics.notify para sincronização de threads sem travamento entre Web Workers e Wasm.
+- **EIA RS-274-D / ISO 6983-1** — _Numerical control of machines — Program format and definition of address words._ Padrão industrial para comandos G-code de máquinas CNC implementado em `crates/weaver-cam` e `@weaver-art/core`.
+- **Adobe Systems Incorporated** — _PDF Reference, third edition: Adobe Portable Document Format Version 1.4._ Addison-Wesley, 2001. Especificação de objetos, operadores vetoriais e tabela `xref` implementada em `crates/weaver-cam` e `packages/core/src/pdf.ts`.

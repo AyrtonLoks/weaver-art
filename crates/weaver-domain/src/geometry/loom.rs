@@ -6,9 +6,7 @@ use std::f64::consts::PI;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LoomShape {
     Circular,
-    Elliptical,
-    Rectangular,
-    RegularPolygon,
+    Square,
 }
 
 /// Especificação mecânica e física completa do tear.
@@ -16,11 +14,11 @@ pub enum LoomShape {
 pub struct LoomPhysicalSpec {
     /// Formato geométrico do tear.
     pub shape: LoomShape,
-    /// Diâmetro primitivo nominal em milímetros (`mm`) para contornos circulares ou poligonais regulares.
+    /// Diâmetro primitivo nominal em milímetros (`mm`) para contornos circulares.
     pub diameter_mm: f64,
-    /// Largura primitiva nominal em milímetros (`mm`) para contornos elípticos ou retangulares.
+    /// Largura primitiva nominal em milímetros (`mm`) para contorno quadrado.
     pub width_mm: f64,
-    /// Altura primitiva nominal em milímetros (`mm`) para contornos elípticos ou retangulares.
+    /// Altura primitiva nominal em milímetros (`mm`) para contorno quadrado.
     pub height_mm: f64,
     /// Número total de pinos perimétricos $N$.
     pub peg_count: usize,
@@ -56,29 +54,28 @@ impl LoomPhysicalSpec {
         }
     }
 
-    /// Cria uma especificação para tear elíptico com largura e altura especificadas.
-    pub fn ellipse(
-        width_mm: f64,
-        height_mm: f64,
+    /// Cria uma especificação para tear quadrado com lado especificado.
+    pub fn square(
+        side_mm: f64,
         peg_count: usize,
         pin_diameter_mm: f64,
         drill_diameter_mm: f64,
         margin_mm: f64,
     ) -> Self {
         Self {
-            shape: LoomShape::Elliptical,
-            diameter_mm: width_mm.max(height_mm),
-            width_mm,
-            height_mm,
+            shape: LoomShape::Square,
+            diameter_mm: (2.0 * side_mm * side_mm).sqrt(),
+            width_mm: side_mm,
+            height_mm: side_mm,
             peg_count,
             pin_diameter_mm,
             drill_diameter_mm,
             margin_mm,
-            polygon_sides: 0,
+            polygon_sides: 4,
         }
     }
 
-    /// Cria uma especificação para tear retangular com largura e altura especificadas.
+    /// Cria uma especificação para tear retangular/quadrado com largura e altura especificadas.
     pub fn rectangle(
         width_mm: f64,
         height_mm: f64,
@@ -88,7 +85,7 @@ impl LoomPhysicalSpec {
         margin_mm: f64,
     ) -> Self {
         Self {
-            shape: LoomShape::Rectangular,
+            shape: LoomShape::Square,
             diameter_mm: (width_mm * width_mm + height_mm * height_mm).sqrt(),
             width_mm,
             height_mm,
@@ -97,29 +94,6 @@ impl LoomPhysicalSpec {
             drill_diameter_mm,
             margin_mm,
             polygon_sides: 4,
-        }
-    }
-
-    /// Cria uma especificação para tear em formato de polígono regular inscrito de $K$ lados.
-    pub fn regular_polygon(
-        polygon_sides: usize,
-        diameter_mm: f64,
-        peg_count: usize,
-        pin_diameter_mm: f64,
-        drill_diameter_mm: f64,
-        margin_mm: f64,
-    ) -> Self {
-        let sides = polygon_sides.max(3);
-        Self {
-            shape: LoomShape::RegularPolygon,
-            diameter_mm,
-            width_mm: diameter_mm,
-            height_mm: diameter_mm,
-            peg_count,
-            pin_diameter_mm,
-            drill_diameter_mm,
-            margin_mm,
-            polygon_sides: sides,
         }
     }
 
@@ -194,130 +168,6 @@ impl LoomContour for CircularContour {
     }
 }
 
-/// Contorno elíptico parametrizado por comprimento de arco via quadratura numérica e refinamento de Newton-Raphson.
-#[derive(Debug, Clone)]
-pub struct EllipticalContour {
-    a: f64,
-    b: f64,
-    perimeter: f64,
-    samples: Vec<(f64, f64)>, // (t_i, cumulative_arc_length_i)
-}
-
-impl EllipticalContour {
-    pub fn new(width_mm: f64, height_mm: f64) -> Self {
-        let a = width_mm / 2.0;
-        let b = height_mm / 2.0;
-
-        // Pré-calcula a tabela de comprimento de arco com 2048 subdivisões usando a regra de Simpson
-        const N_SAMPLES: usize = 2048;
-        let dt = (2.0 * PI) / N_SAMPLES as f64;
-        let mut samples = Vec::with_capacity(N_SAMPLES + 1);
-        samples.push((0.0, 0.0));
-
-        let speed = |t: f64| (a * a * t.sin().powi(2) + b * b * t.cos().powi(2)).sqrt();
-
-        let mut cumulative = 0.0;
-        for i in 1..=N_SAMPLES {
-            let t_prev = (i - 1) as f64 * dt;
-            let t_curr = i as f64 * dt;
-            let t_mid = 0.5 * (t_prev + t_curr);
-            let ds = (dt / 6.0) * (speed(t_prev) + 4.0 * speed(t_mid) + speed(t_curr));
-            cumulative += ds;
-            samples.push((t_curr, cumulative));
-        }
-
-        let perimeter = cumulative;
-        Self {
-            a,
-            b,
-            perimeter,
-            samples,
-        }
-    }
-
-    /// Verifica se o ponto $(x, y)$ em milímetros está dentro da elipse.
-    #[inline]
-    pub fn is_inside(&self, x: f64, y: f64) -> bool {
-        if self.a <= 1e-9 || self.b <= 1e-9 {
-            return false;
-        }
-        (x / self.a).powi(2) + (y / self.b).powi(2) <= 1.0
-    }
-
-    /// Encontra o parâmetro $t \in [0, 2\pi)$ correspondente ao comprimento de arco $s \in [0, P)$.
-    fn parameter_for_arc_length(&self, s: f64) -> f64 {
-        let s_norm = s.rem_euclid(self.perimeter);
-        if s_norm <= 1e-12 {
-            return 0.0;
-        }
-        if (s_norm - self.perimeter).abs() <= 1e-12 {
-            return 2.0 * PI;
-        }
-
-        // Busca binária na tabela de amostras
-        let idx = match self.samples.binary_search_by(|&(_, arc)| {
-            arc.partial_cmp(&s_norm).unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            Ok(i) => return self.samples[i].0,
-            Err(i) => i.saturating_sub(1),
-        };
-
-        let next_idx = (idx + 1).min(self.samples.len() - 1);
-        let (t0, s0) = self.samples[idx];
-        let (t1, s1) = self.samples[next_idx];
-
-        // Interpolação linear como aproximação inicial
-        let frac = if (s1 - s0).abs() > 1e-12 {
-            (s_norm - s0) / (s1 - s0)
-        } else {
-            0.0
-        };
-        let mut t = t0 + frac * (t1 - t0);
-
-        let speed = |angle: f64| (self.a * self.a * angle.sin().powi(2) + self.b * self.b * angle.cos().powi(2)).sqrt();
-
-        // Refinamento de Newton-Raphson de convergência quadrática
-        for _ in 0..4 {
-            let dt_step = t - t0;
-            let t_mid = t0 + 0.5 * dt_step;
-            let s_est = s0 + (dt_step / 6.0) * (speed(t0) + 4.0 * speed(t_mid) + speed(t));
-            let error = s_est - s_norm;
-            if error.abs() < 1e-11 {
-                break;
-            }
-            let deriv = speed(t);
-            if deriv > 1e-12 {
-                t -= error / deriv;
-            }
-        }
-
-        t.clamp(0.0, 2.0 * PI)
-    }
-}
-
-impl LoomContour for EllipticalContour {
-    #[inline]
-    fn perimeter(&self) -> f64 {
-        self.perimeter
-    }
-
-    fn point_at_arc_length(&self, s: f64) -> (f64, f64) {
-        let t = self.parameter_for_arc_length(s);
-        (self.a * t.cos(), self.b * t.sin())
-    }
-
-    fn normal_at_arc_length(&self, s: f64) -> (f64, f64) {
-        let t = self.parameter_for_arc_length(s);
-        let nx_raw = self.b * t.cos();
-        let ny_raw = self.a * t.sin();
-        let len = (nx_raw * nx_raw + ny_raw * ny_raw).sqrt();
-        if len > 1e-12 {
-            (nx_raw / len, ny_raw / len)
-        } else {
-            (1.0, 0.0)
-        }
-    }
-}
 
 /// Contorno poligonal fechado orientado no sentido anti-horário (retângulos, polígonos regulares).
 #[derive(Debug, Clone)]
@@ -399,17 +249,7 @@ impl PolygonContour {
         Self::new(vertices)
     }
 
-    /// Cria um contorno de polígono regular inscrito de $K$ lados com diâmetro primitivo $D$.
-    pub fn regular_polygon(sides: usize, diameter_mm: f64) -> Self {
-        let k = sides.max(3);
-        let radius = diameter_mm / 2.0;
-        let mut vertices = Vec::with_capacity(k);
-        for i in 0..k {
-            let theta = (2.0 * PI * i as f64) / k as f64;
-            vertices.push((radius * theta.cos(), radius * theta.sin()));
-        }
-        Self::new(vertices)
-    }
+
 
     fn locate_edge(&self, s: f64) -> (usize, f64) {
         let s_norm = s.rem_euclid(self.perimeter);
@@ -478,7 +318,6 @@ impl LoomContour for PolygonContour {
 #[derive(Debug, Clone)]
 enum ContourKind {
     Circular(CircularContour),
-    Elliptical(EllipticalContour),
     Polygon(PolygonContour),
 }
 
@@ -486,7 +325,6 @@ impl LoomContour for ContourKind {
     fn perimeter(&self) -> f64 {
         match self {
             Self::Circular(c) => c.perimeter(),
-            Self::Elliptical(c) => c.perimeter(),
             Self::Polygon(c) => c.perimeter(),
         }
     }
@@ -494,7 +332,6 @@ impl LoomContour for ContourKind {
     fn point_at_arc_length(&self, s: f64) -> (f64, f64) {
         match self {
             Self::Circular(c) => c.point_at_arc_length(s),
-            Self::Elliptical(c) => c.point_at_arc_length(s),
             Self::Polygon(c) => c.point_at_arc_length(s),
         }
     }
@@ -502,7 +339,6 @@ impl LoomContour for ContourKind {
     fn normal_at_arc_length(&self, s: f64) -> (f64, f64) {
         match self {
             Self::Circular(c) => c.normal_at_arc_length(s),
-            Self::Elliptical(c) => c.normal_at_arc_length(s),
             Self::Polygon(c) => c.normal_at_arc_length(s),
         }
     }
@@ -513,7 +349,6 @@ impl ContourKind {
     fn is_inside(&self, x: f64, y: f64) -> bool {
         match self {
             Self::Circular(c) => c.is_inside(x, y),
-            Self::Elliptical(e) => e.is_inside(x, y),
             Self::Polygon(p) => p.is_inside(x, y),
         }
     }
@@ -542,16 +377,9 @@ impl LoomGeometry {
     pub fn new(spec: LoomPhysicalSpec) -> Self {
         let contour = match spec.shape {
             LoomShape::Circular => ContourKind::Circular(CircularContour::new(spec.diameter_mm)),
-            LoomShape::Elliptical => {
-                ContourKind::Elliptical(EllipticalContour::new(spec.width_mm, spec.height_mm))
-            }
-            LoomShape::Rectangular => {
+            LoomShape::Square => {
                 ContourKind::Polygon(PolygonContour::rectangle(spec.width_mm, spec.height_mm))
             }
-            LoomShape::RegularPolygon => ContourKind::Polygon(PolygonContour::regular_polygon(
-                spec.polygon_sides,
-                spec.diameter_mm,
-            )),
         };
 
         let perimeter = contour.perimeter();

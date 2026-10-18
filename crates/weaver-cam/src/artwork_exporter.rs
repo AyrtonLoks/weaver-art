@@ -78,37 +78,13 @@ pub fn export_artwork_svg(
             )
             .unwrap();
         }
-        LoomShape::Elliptical => {
-            writeln!(
-                out,
-                r#"  <ellipse cx="0.0000" cy="0.0000" rx="{:.4}" ry="{:.4}" fill="{}" />"#,
-                half_w, half_h, options.background_color
-            )
-            .unwrap();
-        }
-        LoomShape::Rectangular => {
+        LoomShape::Square => {
             writeln!(
                 out,
                 r#"  <rect x="{:.4}" y="{:.4}" width="{:.4}" height="{:.4}" fill="{}" />"#,
                 -half_w, -half_h, loom.spec.width_mm, loom.spec.height_mm, options.background_color
             )
             .unwrap();
-        }
-        LoomShape::RegularPolygon => {
-            let pins = loom.pins();
-            if !pins.is_empty() {
-                let mut points = String::new();
-                for p in pins {
-                    write!(points, "{:.4},{:.4} ", p.position.0, p.position.1).unwrap();
-                }
-                writeln!(
-                    out,
-                    r#"  <polygon points="{}" fill="{}" />"#,
-                    points.trim_end(),
-                    options.background_color
-                )
-                .unwrap();
-            }
         }
     }
 
@@ -261,9 +237,7 @@ pub fn export_instructions_txt(
     // Descrição do Tear
     let shape_desc = match loom.spec.shape {
         LoomShape::Circular => format!("Círculo de {:.1} mm de diâmetro", loom.spec.diameter_mm),
-        LoomShape::Elliptical => format!("Elipse de {:.1} × {:.1} mm", loom.spec.width_mm, loom.spec.height_mm),
-        LoomShape::Rectangular => format!("Retângulo de {:.1} × {:.1} mm", loom.spec.width_mm, loom.spec.height_mm),
-        LoomShape::RegularPolygon => format!("Polígono Regular ({} lados) de {:.1} mm", loom.spec.polygon_sides, loom.spec.diameter_mm),
+        LoomShape::Square => format!("Quadrado de {:.1} mm", loom.spec.width_mm),
     };
 
     writeln!(out, "TEAR: {}, {} pinos", shape_desc, loom.spec.peg_count).unwrap();
@@ -430,9 +404,7 @@ pub fn export_project_json(
     // Tear
     let shape_str = match loom.spec.shape {
         LoomShape::Circular => "circular",
-        LoomShape::Elliptical => "elliptical",
-        LoomShape::Rectangular => "rectangular",
-        LoomShape::RegularPolygon => "regular_polygon",
+        LoomShape::Square => "square",
     };
 
     writeln!(out, r#"  "loom": {{"#).unwrap();

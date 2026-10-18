@@ -32,30 +32,33 @@ npm run build
 
 ## 2. Roteiro para Alterações no Algoritmo Core e Kernel WASM
 
-Ao alterar `packages/core/src` ou `packages/wasm/rust`:
+Ao alterar `packages/core/src` ou crates Rust em `crates/`:
 
-1. Mantenha os testes existentes passando (`npm test` ou `vitest run`).
-2. Se editar o kernel Rust (`packages/wasm/rust/`):
-   ```bash
+1. Mantenha os testes existentes passando (`npx vitest run`).
+2. Se editar código Rust em `crates/`:
+   ```powershell
+   $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+   cargo test --workspace
    npm run build:wasm
    ```
 3. Compile todos os workspaces e valide tipos/testes:
-   ```bash
+   ```powershell
    npm run check
    npm run build
    ```
 
-## 3. Validação Visual Ponta a Ponta
+## 3. Validação Visual e Benchmarks com o CLI Nativo (`weaver-cli`)
 
 Para verificar se uma alteração melhorou ou piorou a qualidade visual:
 
-1. Use uma imagem de referência de teste (ex.: retrato ou imagem em escala de cinza em `scratch/`).
-2. Execute o CLI salvando em pasta de saída temporária com aceleração ativada:
-   ```bash
-   node packages/cli/dist/index.js caminho/imagem.jpg -o output/teste --resolution 400 --accel wasm
+1. Use uma imagem de referência de teste (ex.: `bench/fixtures/venus_botticelli_face.png` ou foto em `samples/private/`).
+2. Execute o benchmark nativo em release salvando na pasta de saída:
+   ```powershell
+   $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+   cargo run --release -p weaver-cli -- bench --image bench/fixtures/venus_botticelli_face.png --lines 6000 --out bench-out --label venus
    ```
-3. Inspecione o PNG gerado (`output/teste/*.weave.png`) e verifique RMSE e metros de fio informados.
-4. Compare os SVGs em escala real se a mudança envolver geometria, rotação ou lados de pinos.
+3. Inspecione o PNG gerado (`bench-out/*_canvas.png`), o SSIM facial e a correlação à distância reportados.
+4. Gere folhas de contato comparativas se necessário (`weaver-cli contact`).
 
 ## 4. Testes do App Web
 
@@ -131,16 +134,16 @@ Ao alterar ou estender a estrutura de dados de cordas e motores de rasterizaçã
    cargo test -p weaver-domain integration_csr_matrix_test_loom_n50
    ```
 
-## 9. Validação dos Motores de Otimização e Teste Sintético da Sprint 2 (Task 2.4)
+## 9. Validação dos Motores de Otimização e Teste Sintético (Task 2.4)
 
 Ao modificar os algoritmos de tecelagem em `crates/weaver-solvers`:
 
-1. Execute os testes unitários dedicados aos 3 solvers (`greedy`, `beam_search`, `global_fista`) e `solver_runner`:
+1. Execute os testes unitários dedicados aos motores (`greedy`, `beam_search`, `refine`) e `solver_runner`:
    ```powershell
    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
    cargo test -p weaver-solvers
    ```
-2. Execute o teste de integração sintético ponta a ponta (DSP + 3 Solvers):
+2. Execute o teste de integração sintético ponta a ponta (DSP + Solvers):
    ```powershell
    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
    cargo test -p weaver-wasm-adapter --test integration_sprint2_solvers -- --nocapture

@@ -3,6 +3,26 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.0] — 2026-10-18
+
+### Removido & Limpeza de Legado
+
+- **Expurgo de Pacotes Legados**: Remoção de `packages/cli` (CLI em TS obsoleta) e `packages/wasm` (kernel C-ABI antigo com base64), com unificação no binário nativo `crates/weaver-cli` e no adapter moderno `crates/weaver-wasm-adapter`.
+- **Expurgo de Stubs em `@weaver-art/core`**: Remoção de stubs inoperantes de compute em JS (`engine.ts`, `evaluator.ts`, `raster.ts`, `chord-cache.ts`, `refine.ts`, `pruning.ts`, `parallel.ts`, `palette.ts`, `clahe.ts`, `image.ts`, `metrics.ts`, `gcode.ts`).
+- **Remoção do Solver Global NNLS/FISTA**: Excluído `global_fista.rs`, eliminando formulação contínua que falhava em modelar a física da transmitância óptica e a continuidade do fio.
+- **Teares Secundários Expurgados**: Remoção de teares elípticos, polígonos arbitrários de $N$ lados e upload de CSV na UI, mantendo o foco do projeto em teares circulares e quadrados.
+
+### Alterado & Adicionado
+
+- **Presets Oficiais de Petros Vrellis**:
+  - `VRELLIS_CLASSIC_MONO`: Monocromático clássico (fio preto, aro 28", 200 pinos, 6.000 linhas).
+  - `VRELLIS_COLOR`: Colorido CMYK Subtrativo em 4 camadas sequenciais físicas (Amarelo $\to$ Magenta $\to$ Ciano $\to$ Preto com cotas ponderadas e rollover dinâmico para o preto final).
+- **Geometria Simplificada**: Suporte de primeira classe aos formatos `CIRCULAR` e `SQUARE` (quadrado com lados iguais e pinos distribuídos simetricamente nas 4 bordas).
+- **Usabilidade do Estúdio Web**:
+  - **Comparação com a foto**: Fim da abertura compulsória após o término da geração. A exibição do canvas comparativo respeita estritamente o checkbox do usuário.
+  - **Modo de Visualização**: Fim da troca forçada para "Vista à distância" ao terminar a tecelagem. O modo ativo selecionado pelo usuário ("Fios" ou "Vista à distância") é preservado intacto.
+  - **Viewer do Simulador**: Adicionados botões de Zoom In (`+`), Zoom Out (`−`), Centralizar (`Ajustar`) e indicador de porcentagem de zoom na barra de ferramentas; correção matemática de pan/zoom com compensação de proporção (`u_aspect`) no WebGL.
+
 ## [0.5.0] — 2026-10-13
 
 ### Adicionado

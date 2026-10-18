@@ -59,13 +59,11 @@ Este documento é a **Fonte Única da Verdade (Single Source of Truth)** para o 
 
 ### Subsistema 2: Geometria Discreta, Rasterização e Física do Tear (`weaver-domain`)
 
-- **RF-2.1 — Formatos de Tear Polimórficos e Importação Customizada:**
+- **RF-2.1 — Formatos de Tear Polimórficos:**
   - Suporte completo e parametrizado em milímetros para:
-    1. `Circular (Petros Vrellis)`: Diâmetro $D\text{ (mm)}$ e número de pinos $N$.
-    2. `Elíptico`: Largura $W\text{ (mm)}$, Altura $H\text{ (mm)}$ e número de pinos $N$ distribuídos por quadratura de comprimento de arco (Simpson + refinamento de Newton-Raphson).
-    3. `Retangular / Quadrado`: Largura $W\text{ (mm)}$, Altura $H\text{ (mm)}$ e contagem de pinos $N_x \times N_y$.
-    4. `Polígono Regular`: Número de lados $K \in [3, 16]$, diâmetro inscrito $D\text{ (mm)}$ e total de pinos $N$.
-    5. `Customizado via CSV`: Upload de arquivo `.csv` com coordenadas arbitrárias de pinos $(x_i, y_i)$.
+    1. `Circular (Petros Vrellis)`: Diâmetro $D\text{ (mm)}$ e número de pinos $N$ (padrão aro 28" 622 mm, 200 pinos).
+    2. `Quadrado`: Lado $L\text{ (mm)}$ e contagem total de pinos $N$ (múltipla de 4, distribuída uniformemente nas 4 bordas com $p_x = p_y = N/4 + 1$).
+  - Formatos secundários e legados (elíptico, polígonos arbitrários e CSV manual) foram expurgados para manter foco e estabilidade.
 - **RF-2.2 — Cálculo Exato das 4 Tangentes em Pinos Cilíndricos Finitos ($\varnothing\_{\text{pino}} > 0$):**
   - Modelagem física do raio do prego $r_p = \frac{\varnothing_{\text{pino}}}{2}$. Calcula as tangentes externas paralelas ($\text{CW}\to\text{CW}$ e $\text{CCW}\to\text{CCW}$) e internas cruzadas ($\text{CW}\to\text{CCW}$ e $\text{CCW}\to\text{CW}$, com desvio angular $\Delta\phi = \arcsin(2r_p / D_{ij})$), registrando os lados de saída e chegada de cada passo.
 - **RF-2.3 — Motores de Rasterização Selecionáveis e Cache Esparso CSR (`SparseChordMatrixCSR`):**
@@ -79,10 +77,8 @@ Este documento é a **Fonte Única da Verdade (Single Source of Truth)** para o 
 ### Subsistema 3: Modelagem de Espaço de Cores, Calibração e Matriz de Estado (`weaver-domain` & `weaver-solvers`)
 
 - **RF-3.1 — Modos de Paleta Suportados:**
-  1. `Monocromático (Preto sobre Branco)`
-  2. `CMYK (Subtrativo Petros Vrellis)`
-  3. `RGB (Oclusivo)`
-  4. `Paleta Customizada pelo Usuário (N-Colors)`: Permite ao usuário definir cores customizadas de carretéis e cor de fundo.
+  1. `Monocromático (Preto / Luz Linear)`
+  2. `CMYK Subtrativo (Amarelo, Magenta, Ciano, Preto)`
 - **RF-3.2 — Calibrador de Cor de Meada Real por Fotografia (`Calibrar cor de meada real`):**
   - Permite ao usuário fazer upload de uma fotografia de um carretel/meada real, extraindo a cor média calibrada na região central e fornecendo o código Hex para uso imediato na paleta.
 - **RF-3.3 — Projeção no Fecho Convexo (_Gamut Mapping_ em CIELAB):**
@@ -104,26 +100,23 @@ Este documento é a **Fonte Única da Verdade (Single Source of Truth)** para o 
   - Busca gulosa passo a passo com normalização pela integral sub-pixel de comprimento da corda ($\frac{1}{(\sum w_p)^\gamma}$), limite de repetições por par de pinos (`maxChordRepeats`), fila Tabu de pinos recentes e desempate determinístico.
 - **RF-4.2 — Busca em Feixe (`BeamSearch`):**
   - Busca em árvore mantendo $B$ estados candidatos em paralelo (`beamWidth`) e avaliando $d$ passos à frente (`beamDepth`) sobre um pool estático pré-alocado de estados `CanvasStateSoA`.
-- **RF-4.3 — Otimização Global Contínua (`GlobalNnlsFista`) + Roteamento em Grafo:**
-  - Solver global de Mínimos Quadrados Não-Negativos com penalidade esparsa $L_1$ via **FISTA Livre de Matriz (_Matrix-Free_)** operando diretamente sobre a `SparseChordMatrixCSR` (`fistaIterations` e `l1RegularizationLambda` ajustáveis), seguido de quantização inteira e costura de circuito contínuo (_Eulerian Path Stitching_) dividido em sub-camadas de pintor.
+- **RF-4.3 — Passe de Refinamento Contínuo (`refine.rs`):**
+  - Passe pós-otimização que revisita nós intermediários do circuito $(a \to p \to b)$, avaliando remoção ou realocação de pinos com garantia estrita de continuidade do fio único.
+  - O solver contínuo experimental `GlobalNnlsFista` foi definitivamente removido por incompatibilidade física e matemática com a transmitância não-linear $T = \prod (1 - \alpha c_i)$ e a preservação do fio ininterrupto.
 
 ---
 
 ### Subsistema 5: Estratégias de Minimização de Trocas de Carretel (`spool_scheduler.rs`)
 
-- **RF-5.1 — Seletor com as 5 Estratégias de Agendamento Cromático:**
-  1. `Épocas Coarse-to-Fine`: Divide o orçamento em Base Estrutural Preta $\to$ Camadas Cromáticas (Y, M, C) $\to$ Acabamento Final de Nitidez no Topo (Preto $K$ e Branco $W$ com elevação do peso de bordas em $W(x,y)$).
-  2. `Histerese Dinâmica (Penalidade Lambda)`: Aplica barreira $-\lambda_{\text{troca}}$ ajustável pelo _slider_ `Penalidade de Troca (λ)` para agrupar fios organicamente.
-  3. `Run-Length Mínimo`: Trava a troca de carretel até atingir o número mínimo configurado de fios consecutivos ($L_{\min}$).
-  4. `Canais Separados (Lote Único por Cor)`: Executa cada cor em um único lote contínuo ($M-1$ trocas totais na obra), aplicando fator de compensação de oclusão nas camadas inferiores.
-  5. `Guloso Livre (Sem penalidade)`: Permite troca de cor a cada único passo para simulação teórica.
+- **RF-5.1 — Estratégia de Agendamento Cromático Sequencial (`layered`):**
+  - Execução estritamente em camadas sequenciais ordenadas (Amarelo $\to$ Magenta $\to$ Ciano $\to$ Preto), com cotas ponderadas por cor e rollover dinâmico para o preto final caso uma camada atinja saturação antecipada de ganho, eliminando trocas caóticas de carretel.
 
 ---
 
 ### Subsistema 6: Renderização Física WebGL2, Telemetria e Sistema Mecânico de Furação CAM (`weaver-cam`, `renderer-webgl` & `blueprint-view`)
 
 - **RF-6.1 — Renderizador Físico WebGL2 em Ponto Flutuante (`RGBA16F`):**
-  - Acumulação incremental _Zero-Copy_ a 60 FPS lendo novos passos do `SharedArrayBuffer`, _framebuffer_ `RGBA16F` em espaço RGB Linear, perfil cilíndrico sub-pixel de fio, _Screen Pass_ com conversão IEC sRGB, aro externo, pinos metálicos, Zoom/Pan com rato (com eixo $Y$ devidamente alinhado) e fallback para Canvas 2D.
+  - Acumulação incremental _Zero-Copy_ a 60 FPS lendo novos passos do `SharedArrayBuffer`, _framebuffer_ `RGBA16F` em espaço RGB Linear, perfil cilíndrico sub-pixel de fio, _Screen Pass_ com conversão IEC sRGB, aro externo, pinos metálicos, Zoom/Pan com rato (com eixo $Y$ devidamente alinhado e aspect ratio compensado) e fallback para Canvas 2D.
 - **RF-6.2 — Telemetria Científica em Tempo Real e Tabela BOM de Carretéis:**
   - Cards atualizados a 60 Hz: `LINHAS`, `FIO (m)`, `TROCAS / NÓS`, `RMSE`, `ΔE (CIELAB)`, `SSIM` (calculado incrementalmente em blocos $8\times 8$ em tempo $O(\vert{}L\vert{})$), `TEMPO (s)` e `TEMPO MANUAL EST.`.
   - Tabela `ESTIMATIVA DE CARRETÉIS (1.000 M POR CARRETEL + 10% MARGEM)` detalhando por cor: Linhas, Fio bruto (m), Com margem de 10% (m), Quantidade de Carretéis e `% de Uso`, além do resumo de `Tempo tecendo` vs. `Tempo em nós e trocas`.
@@ -150,7 +143,8 @@ Este documento é a **Fonte Única da Verdade (Single Source of Truth)** para o 
 ### Subsistema 7: Motor de Presets Reativos e Assistente `Modo Tecelagem` (`preset-engine` & `player-view`)
 
 - **RF-7.1 — Presets Reativos e Ajuste Automático Contextual de Reguladores:**
-  - Ao selecionar um Preset (`Vrellis Clássico · Monocromático`, `Retrato Vrellis · Alta Fidelidade (Épocas Coarse-to-Fine)`, `CMYK · Histerese Dinâmica`, `Otimização Global · NNLS / Radon (FISTA)` ou presets clássicos), o sistema carrega automaticamente os valores ótimos de todos os _sliders_ daquele modo e oculta no DOM os controles que não pertencem ao algoritmo selecionado.
+  - Ao selecionar um Preset de Petros Vrellis (`VRELLIS_CLASSIC_MONO` ou `VRELLIS_COLOR`), o sistema carrega automaticamente os valores ótimos de todos os reguladores daquele modo e oculta no DOM os controles que não pertencem ao formato ou paleta selecionada.
+  - Se o usuário alterar manualmente algum regulador, o botão `"Restaurar padrão do modo"` é exibido para permitir voltar aos _defaults_ sem afetar o enquadramento (`Zoom / Pan / Rotação`) da foto.
   - Se o usuário alterar manualmente algum regulador, o botão `"Restaurar padrão do modo"` é exibido para permitir voltar aos _defaults_ sem afetar o enquadramento (`Zoom / Pan / Rotação`) da foto.
 - **RF-7.2 — Assistente Passo a Passo (`Modo Tecelagem`):**
   - Exibe no aro a corda atual destacada com indicação visual e textual do pino de origem (`do pino X`), número gigante do pino destino (`Y`), cor e progresso do lote atual, sentido físico de contorno (`contornar no sentido horário` vs. `anti-horário`) e tempo restante dinâmico.

@@ -17,7 +17,7 @@ use weaver_dsp::{
     DspPipeline, DspPipelineConfig, FramingConfig, FramingTarget, ImportanceMap, Rgba8Image,
 };
 use weaver_solvers::{
-    compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GlobalFistaConfig, GreedyConfig,
+    compute_effective_alpha, BeamSearchConfig, CanvasStateSoA, GreedyConfig,
     OpticalMixModelType, OpticalModelEvaluator, RefineConfig, SolverPhase, SolverSession,
     SolverStatus, SpoolColor, SpoolScheduler, SpoolSwitchStrategy,
 };
@@ -616,7 +616,9 @@ impl WasmWeavingEngine {
             },
             "SEPARATED_CHANNELS" => {
                 let n = spools.len();
-                let quotas = if n == 4 {
+                let quotas = if n == 5 {
+                    vec![0.20, 0.20, 0.20, 0.10, 0.30] // Vrellis 5 cores: Y (20%), M (20%), B (20%), G (10%), K (30%)
+                } else if n == 4 {
                     vec![0.18, 0.22, 0.22, 0.38] // Y, M, C, K (Preto com 38% no topo!)
                 } else {
                     vec![1.0 / (n as f32); n]
@@ -632,7 +634,7 @@ impl WasmWeavingEngine {
         let scheduler = SpoolScheduler::new(strat, config.max_lines, 0);
 
         // Cobertura física do fio por pixel: espessura (mm) x resolução (px) / extensão do tear (mm).
-        // A opacidade de cada carretel (lpha_material) é aplicada pelo avaliador óptico.
+        // A opacidade de cada carretel (alpha_material) é aplicada pelo avaliador óptico.
         let loom_extent_mm = loom
             .spec
             .diameter_mm
@@ -658,19 +660,6 @@ impl WasmWeavingEngine {
                 };
                 SolverSession::new_beam_search(
                     b_cfg, canvas, matrix, evaluator, scheduler, spools, coverage,
-                )
-            }
-            "GLOBAL_NNLS_FISTA" => {
-                let f_cfg = GlobalFistaConfig {
-                    max_steps: config.max_lines,
-                    fista_iterations: 40,
-                    l1_regularization_lambda: 0.01,
-                    painter_layers_per_color: 2,
-                    max_chord_repeats: config.max_chord_repeats.clamp(1, 3),
-                    start_pin: 0,
-                };
-                SolverSession::new_global_fista(
-                    f_cfg, canvas, matrix, evaluator, scheduler, spools, coverage,
                 )
             }
             _ => {
@@ -1075,28 +1064,14 @@ fn chord_meters(loom: &LoomGeometry, from: usize, to: usize) -> f32 {
 
 fn build_loom_from_config(cfg: &WasmWeaverConfig) -> LoomGeometry {
     let shape = cfg.shape.to_uppercase();
-    let spec = if shape == "ELLIPTICAL" {
-        LoomPhysicalSpec::ellipse(
-            cfg.width_mm,
-            cfg.height_mm,
-            cfg.pin_count,
-            cfg.pin_diameter_mm,
-            cfg.drill_bit_mm,
-            cfg.edge_margin_mm,
-        )
-    } else if shape == "RECTANGULAR" {
-        LoomPhysicalSpec::rectangle(
-            cfg.width_mm,
-            cfg.height_mm,
-            cfg.pin_count,
-            cfg.pin_diameter_mm,
-            cfg.drill_bit_mm,
-            cfg.edge_margin_mm,
-        )
-    } else if shape == "REGULAR_POLYGON" {
-        LoomPhysicalSpec::regular_polygon(
-            cfg.polygon_sides,
-            cfg.diameter_mm,
+    let spec = if shape == "SQUARE" || shape == "RECTANGULAR" {
+        let side = if cfg.width_mm > 0.0 {
+            cfg.width_mm
+        } else {
+            cfg.diameter_mm
+        };
+        LoomPhysicalSpec::square(
+            side,
             cfg.pin_count,
             cfg.pin_diameter_mm,
             cfg.drill_bit_mm,
@@ -1116,7 +1091,7 @@ fn build_loom_from_config(cfg: &WasmWeaverConfig) -> LoomGeometry {
 
 fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
     match cfg.palette_mode.to_uppercase().as_str() {
-        "CMYK_SUBTRACTIVE" => {
+        "CMYK_SUBTRACTIVE" | "CMYK" | "VRELLIS_COLOR" | "VRELLIS_5_COLOR" => {
             // Pigmentos CMYK reais calibrados em Linear RGB (evitando neon sintético)
             let spools = vec![
                 SpoolColor::new(0, LinearRgbColor::new(0.95, 0.85, 0.02), 1.0), // Amarelo
@@ -1128,21 +1103,6 @@ fn build_spools(cfg: &WasmWeaverConfig) -> (Vec<SpoolColor>, Vec<SpoolInfo>) {
                 SpoolInfo::new(0, "Amarelo", "#f5dd05"),
                 SpoolInfo::new(1, "Magenta", "#d90a75"),
                 SpoolInfo::new(2, "Ciano", "#0594d9"),
-                SpoolInfo::new(3, "Preto", "#141414"),
-            ];
-            (spools, infos)
-        }
-        "RGB_OCCLUSIVE" => {
-            let spools = vec![
-                SpoolColor::new(0, LinearRgbColor::new(0.85, 0.05, 0.05), 1.0),
-                SpoolColor::new(1, LinearRgbColor::new(0.05, 0.75, 0.10), 1.0),
-                SpoolColor::new(2, LinearRgbColor::new(0.05, 0.15, 0.85), 1.0),
-                SpoolColor::new(3, LinearRgbColor::new(0.02, 0.02, 0.02), 1.0),
-            ];
-            let infos = vec![
-                SpoolInfo::new(0, "Vermelho", "#e01010"),
-                SpoolInfo::new(1, "Verde", "#10c020"),
-                SpoolInfo::new(2, "Azul", "#1030e0"),
                 SpoolInfo::new(3, "Preto", "#141414"),
             ];
             (spools, infos)

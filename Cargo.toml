@@ -8,9 +8,7 @@ members = [
   "crates/weaver-wasm-adapter",
   "crates/weaver-cli",
 ]
-exclude = [
-  "packages/wasm/rust",
-]
+
 
 [workspace.package]
 version = "0.1.0"

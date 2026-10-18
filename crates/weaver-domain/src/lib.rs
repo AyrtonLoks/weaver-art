@@ -18,7 +18,7 @@ pub use color::{
 
 pub use geometry::{
     compute_all_tangents, compute_tangent, CircularContour, DrillHole, DrillingDiagnostic,
-    DrillingStatus, EllipticalContour, LoomContour, LoomGeometry, LoomPhysicalSpec, LoomPin,
+    DrillingStatus, LoomContour, LoomGeometry, LoomPhysicalSpec, LoomPin,
     LoomShape, PegTangents, PolygonContour, TangentLine, WindingDirection,
     DEFAULT_MIN_WALL_THRESHOLD_MM,
 };
