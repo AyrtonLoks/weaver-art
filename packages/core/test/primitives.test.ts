@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalSegment,
   chordKey,
-  ChordRasterizer,
   createLoom,
   hexToLinear,
   linearToSrgb,
@@ -173,13 +172,5 @@ describe('geometry', () => {
         }
       }
     }
-  });
-});
-
-describe('raster (stubbed JS rasterizer)', () => {
-  it('exposes typed stub returning 0 samples', () => {
-    const r = new ChordRasterizer(100, 3);
-    expect(r.size).toBe(100);
-    expect(r.rasterize(10, 10, 90, 90, 1)).toBe(0);
   });
 });

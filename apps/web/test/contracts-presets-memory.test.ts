@@ -38,7 +38,6 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
         diameterMm: 600,
         widthMm: 600,
         heightMm: 600,
-        polygonSides: 0,
         pinDiameterMm: 2.0,
         threadThicknessMm: 0.15,
         drillBitMm: 2.0,
@@ -49,20 +48,20 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
       expect(spec.pinCount).toBe(200);
       expect(spec.diameterMm).toBe(600);
 
-      const paletteMode: ColorPaletteMode = 'CMYK_SUBTRACTIVE';
+      const paletteMode: ColorPaletteMode = 'VRELLIS_5_COLOR';
       const opticalModel: OpticalMixModelType = 'PORTER_DUFF_OCCLUSION';
       const errorMetric: ColorErrorMetricType = 'CIELAB_DELTA_E2000';
       const solver: SolverAlgorithmType = 'ITERATIVE_GREEDY';
-      const spoolStrategy: SpoolSwitchStrategyType = 'COARSE_TO_FINE_EPOCHS';
+      const spoolStrategy: SpoolSwitchStrategyType = 'SEPARATED_CHANNELS';
       const rasterizer: RasterizerType = 'XIAOLIN_WU_ANTIALIASED';
       const morphology: MorphologyOpType = 'NONE';
       const edgeDetector: EdgeDetectorType = 'SOBEL';
 
-      expect(paletteMode).toBe('CMYK_SUBTRACTIVE');
+      expect(paletteMode).toBe('VRELLIS_5_COLOR');
       expect(opticalModel).toBe('PORTER_DUFF_OCCLUSION');
       expect(errorMetric).toBe('CIELAB_DELTA_E2000');
       expect(solver).toBe('ITERATIVE_GREEDY');
-      expect(spoolStrategy).toBe('COARSE_TO_FINE_EPOCHS');
+      expect(spoolStrategy).toBe('SEPARATED_CHANNELS');
       expect(rasterizer).toBe('XIAOLIN_WU_ANTIALIASED');
       expect(morphology).toBe('NONE');
       expect(edgeDetector).toBe('SOBEL');
@@ -228,7 +227,7 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
   });
 
   describe('3. Motor de Presets Reativos e Visibilidade Contextual (preset-engine / ADR-005)', () => {
-    it('define os 4 Perfis de Preset Principais com parâmetros exigidos', () => {
+    it('define os 2 Perfis de Preset Principais de Petros Vrellis com parâmetros exigidos', () => {
       const mono = WEAVER_PRESET_PROFILES.VRELLIS_CLASSIC_MONO.config;
       // Rodada "reconhecimento facial": 6000 linhas aproximam o brilho de fotos escuras;
       // fio de 0,18 mm superou 0,15 mm em todas as fotos; tear = aro de bicicleta 28" (ISO 622).
@@ -245,34 +244,22 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
       expect(mono.featureEmphasisWeight).toBe(0);
       expect(mono.skinLift).toBe(0);
       expect(mono.rasterizer).toBe('XIAOLIN_WU_ANTIALIASED');
+      expect(mono.paletteMode).toBe('MONOCHROME');
+      expect(mono.spoolStrategy).toBe('FREE_GREEDY');
 
-      const portrait = WEAVER_PRESET_PROFILES.PORTRAIT_HIGH_SHARPNESS_EPOCHS.config;
-      expect(portrait.maxLines).toBe(6500);
-      expect(portrait.spoolStrategy).toBe('COARSE_TO_FINE_EPOCHS');
-      expect(portrait.opticalMixModel).toBe('PORTER_DUFF_OCCLUSION');
-      expect(portrait.errorMetric).toBe('CIELAB_DELTA_E2000');
-      expect(portrait.faceImportanceWeight).toBe(2.0);
-      expect(portrait.edgeDetector).toBe('SOBEL');
-      expect(portrait.edgeBlendWeight).toBe(0);
-      expect(portrait.epochSchedule).toEqual({
-        baseCmyRatio: 0.65,
-        refineRatio: 0.2,
-        detailBlackWhiteTopRatio: 0.15,
-      });
-
-      const hysteresis = WEAVER_PRESET_PROFILES.CMYK_DYNAMIC_HYSTERESIS.config;
-      expect(hysteresis.maxLines).toBe(6000);
-      expect(hysteresis.spoolStrategy).toBe('HYSTERESIS_PENALTY');
-      expect(hysteresis.switchPenaltyLambda).toBe(0.3);
-      expect(hysteresis.minRunLength).toBe(80);
-      expect(hysteresis.errorMetric).toBe('CIELAB_DELTA_E2000');
-
-      const fista = WEAVER_PRESET_PROFILES.GLOBAL_RADON_FISTA.config;
-      expect(fista.solver).toBe('GLOBAL_NNLS_FISTA');
-      expect(fista.fistaIterations).toBe(150);
-      expect(fista.l1RegularizationLambda).toBe(0.05);
-      expect(fista.spoolStrategy).toBe('SEPARATED_CHANNELS');
-      expect(fista.painterLayersPerColor).toBe(3);
+      const color = WEAVER_PRESET_PROFILES.VRELLIS_COLOR.config;
+      expect(color.maxLines).toBe(6000);
+      expect(color.threadThicknessMm).toBe(0.18);
+      expect(color.diameterMm).toBe(622);
+      expect(color.pinCount).toBe(200);
+      expect(color.paletteMode).toBe('CMYK_SUBTRACTIVE');
+      expect(color.spoolStrategy).toBe('SEPARATED_CHANNELS');
+      expect(color.opticalMixModel).toBe('PORTER_DUFF_OCCLUSION');
+      expect(color.errorMetric).toBe('CIELAB_DELTA_E2000');
+      expect(color.faceImportanceWeight).toBe(2.0);
+      expect(color.edgeDetector).toBe('SOBEL');
+      expect(color.edgeBlendWeight).toBe(0);
+      expect(Object.keys(WEAVER_PRESET_PROFILES).sort()).toEqual(['VRELLIS_CLASSIC_MONO', 'VRELLIS_COLOR'].sort());
     });
 
     it('gerencia estado reativo isDirty por parâmetro e reset', () => {
@@ -307,9 +294,10 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
       expect(store.getConfig().maxLines).toBe(6000);
 
       // Carrega outro preset
-      store.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
-      expect(store.getPresetId()).toBe('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
-      expect(store.getConfig().maxLines).toBe(6500);
+      store.loadPreset('VRELLIS_COLOR');
+      expect(store.getPresetId()).toBe('VRELLIS_COLOR');
+      expect(store.getConfig().maxLines).toBe(6000);
+      expect(store.getConfig().paletteMode).toBe('CMYK_SUBTRACTIVE');
       expect(store.isDirty()).toBe(false);
 
       unsub();
@@ -323,66 +311,57 @@ describe('Task 0.3 — Contratos de Domínio, Memória Compartilhada e Presets',
       };
       expect(isControlVisible('spoolStrategy', monoCfg)).toBe(false);
       expect(isControlVisible('switchPenaltyLambda', monoCfg)).toBe(false);
-      expect(isControlVisible('epochSchedule', monoCfg)).toBe(false);
+      expect(isControlVisible('minRunLength', monoCfg)).toBe(false);
 
-      // 2. Exibir slider de penalidade de troca apenas em HYSTERESIS_PENALTY
+      // 2. Exibir controles de carretel em VRELLIS_5_COLOR com estratégias específicas
+      const colorCfg: WeaverConfig = {
+        ...WEAVER_PRESET_PROFILES.VRELLIS_COLOR.config,
+        paletteMode: 'VRELLIS_5_COLOR',
+        spoolStrategy: 'SEPARATED_CHANNELS',
+      };
+      expect(isControlVisible('spoolStrategy', colorCfg)).toBe(true);
+      expect(isControlVisible('switchPenaltyLambda', colorCfg)).toBe(false);
+      expect(isControlVisible('minRunLength', colorCfg)).toBe(false);
+
       const hysCfg: WeaverConfig = {
-        ...WEAVER_PRESET_PROFILES.CMYK_DYNAMIC_HYSTERESIS.config,
-        paletteMode: 'CMYK_SUBTRACTIVE',
+        ...colorCfg,
         spoolStrategy: 'HYSTERESIS_PENALTY',
       };
-      expect(isControlVisible('spoolStrategy', hysCfg)).toBe(true);
       expect(isControlVisible('switchPenaltyLambda', hysCfg)).toBe(true);
       expect(isControlVisible('minRunLength', hysCfg)).toBe(true);
 
-      const coarseCfg: WeaverConfig = {
-        ...WEAVER_PRESET_PROFILES.PORTRAIT_HIGH_SHARPNESS_EPOCHS.config,
-        paletteMode: 'CMYK_SUBTRACTIVE',
-        spoolStrategy: 'COARSE_TO_FINE_EPOCHS',
-      };
-      expect(isControlVisible('switchPenaltyLambda', coarseCfg)).toBe(false);
-      expect(isControlVisible('epochSchedule', coarseCfg)).toBe(true);
+      // 3. Controles de borda
+      const edgeNoneCfg: WeaverConfig = { ...monoCfg, edgeDetector: 'NONE' };
+      const edgeSobelCfg: WeaverConfig = { ...monoCfg, edgeDetector: 'SOBEL' };
+      expect(isControlVisible('edgeBlendWeight', edgeNoneCfg)).toBe(false);
+      expect(isControlVisible('edgeBlendWeight', edgeSobelCfg)).toBe(true);
 
-      // 3. Exibir largura de feixe e profundidade apenas em BEAM_SEARCH
-      const beamCfg: WeaverConfig = {
-        ...monoCfg,
-        solver: 'BEAM_SEARCH',
-      };
-      expect(isControlVisible('beamWidth', beamCfg)).toBe(true);
-      expect(isControlVisible('beamDepth', beamCfg)).toBe(true);
-      expect(isControlVisible('beamWidth', monoCfg)).toBe(false);
-      expect(isControlVisible('beamDepth', monoCfg)).toBe(false);
-
-      // 4. Exibir iterações FISTA e regularização L1 apenas em GLOBAL_NNLS_FISTA
-      const fistaCfg: WeaverConfig = {
-        ...WEAVER_PRESET_PROFILES.GLOBAL_RADON_FISTA.config,
-        solver: 'GLOBAL_NNLS_FISTA',
-      };
-      expect(isControlVisible('fistaIterations', fistaCfg)).toBe(true);
-      expect(isControlVisible('l1RegularizationLambda', fistaCfg)).toBe(true);
-      expect(isControlVisible('fistaIterations', monoCfg)).toBe(false);
-      expect(isControlVisible('l1RegularizationLambda', monoCfg)).toBe(false);
-
-      // 5. Controles geométricos por forma do tear
+      // 4. Controles geométricos por forma do tear (CIRCULAR vs SQUARE)
       const circCfg: WeaverConfig = { ...monoCfg, shape: 'CIRCULAR' };
-      const rectCfg: WeaverConfig = { ...monoCfg, shape: 'RECTANGULAR' };
-      const polyCfg: WeaverConfig = { ...monoCfg, shape: 'REGULAR_POLYGON' };
+      const squareCfg: WeaverConfig = { ...monoCfg, shape: 'SQUARE' };
 
       expect(isControlVisible('diameterMm', circCfg)).toBe(true);
       expect(isControlVisible('widthMm', circCfg)).toBe(false);
 
-      expect(isControlVisible('widthMm', rectCfg)).toBe(true);
-      expect(isControlVisible('heightMm', rectCfg)).toBe(true);
-      expect(isControlVisible('diameterMm', rectCfg)).toBe(false);
+      expect(isControlVisible('widthMm', squareCfg)).toBe(true);
+      expect(isControlVisible('diameterMm', squareCfg)).toBe(false);
 
-      expect(isControlVisible('polygonSides', polyCfg)).toBe(true);
-      expect(isControlVisible('diameterMm', polyCfg)).toBe(false);
-
-      // 6. Lista completa de visibilidade
+      // 5. Lista completa de visibilidade
       const visibleSet = getVisibleControls(circCfg);
       expect(visibleSet.has('diameterMm')).toBe(true);
       expect(visibleSet.has('widthMm')).toBe(false);
-      expect(visibleSet.has('fistaIterations')).toBe(false);
+      expect(visibleSet.has('spoolStrategy')).toBe(false);
+
+      const visibleSquare = getVisibleControls(squareCfg);
+      expect(visibleSquare.has('widthMm')).toBe(true);
+      expect(visibleSquare.has('diameterMm')).toBe(false);
+
+      expect((visibleSet as unknown as Set<string>).has('fistaIterations')).toBe(false);
+      expect((visibleSet as unknown as Set<string>).has('polygonSides')).toBe(false);
+      expect((visibleSet as unknown as Set<string>).has('beamWidth')).toBe(false);
+      expect((visibleSquare as unknown as Set<string>).has('fistaIterations')).toBe(false);
+      expect((visibleSquare as unknown as Set<string>).has('polygonSides')).toBe(false);
+      expect((visibleSquare as unknown as Set<string>).has('beamWidth')).toBe(false);
     });
   });
 });

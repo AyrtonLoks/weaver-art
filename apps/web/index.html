@@ -123,16 +123,8 @@
             <label
               >Preset
               <select id="preset">
-                <option value="PORTRAIT_HIGH_SHARPNESS_EPOCHS">
-                  Retrato Vrellis · Alta Fidelidade (Épocas Coarse-to-Fine)
-                </option>
                 <option value="VRELLIS_CLASSIC_MONO">Vrellis Clássico · Monocromático (Preto)</option>
-                <option value="CMYK_DYNAMIC_HYSTERESIS">CMYK · Histerese Dinâmica de Trocas</option>
-                <option value="GLOBAL_RADON_FISTA">Otimização Global · NNLS / Radon (FISTA)</option>
-                <option value="portrait-mono">Retrato Mono (Legado)</option>
-                <option value="portrait-cmyk">Retrato CMYK (Legado)</option>
-                <option value="vrellis-color">Vrellis 5 Cores (Legado)</option>
-                <option value="cmyk">CMYK Clássico (Legado)</option>
+                <option value="VRELLIS_COLOR">Vrellis Colorido (CMYK)</option>
               </select>
             </label>
           </fieldset>
@@ -144,10 +136,7 @@
               >Formato do tear
               <select id="loomShape">
                 <option value="CIRCULAR">Circular (Petros Vrellis)</option>
-                <option value="ELLIPTICAL">Elíptico</option>
-                <option value="RECTANGULAR">Retangular</option>
-                <option value="REGULAR_POLYGON">Poligonal Regular</option>
-                <option value="custom">Personalizado (CSV)</option>
+                <option value="SQUARE">Quadrado</option>
               </select>
             </label>
 
@@ -161,41 +150,16 @@
               </div>
             </div>
 
-            <!-- Dimensões Polígono Regular -->
-            <div id="control-polygonSides" hidden>
-              <div class="grid2">
-                <label
-                  >Lados do Polígono <input type="number" id="polygonSides" min="3" max="16" step="1" value="6"
-                /></label>
-                <label
-                  >Pinos totais <input type="number" id="polyPegs" min="12" max="1000" step="1" value="240"
-                /></label>
-              </div>
-            </div>
-
-            <!-- Dimensões Retangulares e Elípticas -->
+            <!-- Dimensões Quadradas -->
             <div id="control-widthMm" hidden>
               <div class="grid2">
                 <label
-                  >Largura (mm) <input type="number" id="rectWidth" min="50" max="3000" step="0.1" value="600"
+                  >Pinos totais <input type="number" id="squarePegs" min="20" max="1000" step="4" value="200"
                 /></label>
                 <label
-                  >Altura (mm) <input type="number" id="rectHeight" min="50" max="3000" step="0.1" value="400"
+                  >Lado do Tear (mm) <input type="number" id="rectWidth" min="50" max="3000" step="0.1" value="600"
                 /></label>
-                <label>Pinos X <input type="number" id="rectPegsX" min="2" max="250" step="1" value="61" /></label>
-                <label>Pinos Y <input type="number" id="rectPegsY" min="2" max="250" step="1" value="41" /></label>
               </div>
-            </div>
-
-            <!-- Pinos Custom CSV -->
-            <div id="control-customPegs" hidden>
-              <label class="button" style="text-align: center; margin-top: 0.25rem">
-                Carregar CSV de pinos (.csv)
-                <input type="file" id="customPegsFile" accept=".csv,text/csv,text/plain" hidden />
-              </label>
-              <p id="customPegsSummary" class="hint" style="margin-top: 0.25rem; font-size: 0.8rem">
-                Nenhum CSV carregado. Esperado: colunas x_mm, y_mm.
-              </p>
             </div>
 
             <div class="grid2">
@@ -248,29 +212,8 @@
               <select id="paletteMode">
                 <option value="MONOCHROME">Monocromático (Preto / Luz Linear)</option>
                 <option value="CMYK_SUBTRACTIVE">CMYK (Subtrativo Petros Vrellis)</option>
-                <option value="RGB_OCCLUSIVE">RGB (Oclusivo)</option>
-                <option value="USER_CUSTOM">Paleta do Usuário (Customizada)</option>
               </select>
             </label>
-
-            <!-- Paleta Customizada do Usuário -->
-            <div
-              id="control-userCustomPalette"
-              hidden
-              style="background: #141414; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--line)"
-            >
-              <label style="margin-bottom: 0.4rem"
-                >Cor de Fundo:
-                <input type="color" id="customBgColor" value="#ffffff" style="height: 28px; padding: 2px" />
-              </label>
-              <div style="font-size: 0.78rem; color: var(--muted); margin-bottom: 0.3rem">Carretéis de Linha:</div>
-              <div style="display: flex; gap: 0.4rem; align-items: center">
-                <input type="color" id="customColor1" value="#ff0000" style="height: 28px; width: 40px; padding: 2px" />
-                <input type="color" id="customColor2" value="#00aa00" style="height: 28px; width: 40px; padding: 2px" />
-                <input type="color" id="customColor3" value="#0044ff" style="height: 28px; width: 40px; padding: 2px" />
-                <input type="color" id="customColor4" value="#111111" style="height: 28px; width: 40px; padding: 2px" />
-              </div>
-            </div>
 
             <div class="grid2">
               <label
@@ -323,43 +266,18 @@
                 >Algoritmo Solver
                 <select id="solver">
                   <option value="ITERATIVE_GREEDY">Guloso Iterativo (Vrellis)</option>
-                  <option value="BEAM_SEARCH">Beam Search</option>
-                  <option value="GLOBAL_NNLS_FISTA">Global NNLS / FISTA</option>
                 </select>
               </label>
               <label id="control-spoolStrategy"
                 >Estratégia de Carretel
                 <select id="colorStrategy">
-                  <option value="COARSE_TO_FINE_EPOCHS">Épocas Coarse-to-Fine</option>
-                  <option value="HYSTERESIS_PENALTY">Histerese Dinâmica (λ)</option>
-                  <option value="MIN_RUN_LENGTH">Run-Length Mínimo</option>
                   <option value="SEPARATED_CHANNELS">Canais Separados</option>
                   <option value="FREE_GREEDY">Guloso Livre</option>
+                  <option value="HYSTERESIS_PENALTY">Histerese Dinâmica (λ)</option>
+                  <option value="MIN_RUN_LENGTH">Run-Length Mínimo</option>
+                  <option value="COARSE_TO_FINE_EPOCHS">Épocas Coarse-to-Fine</option>
                 </select>
               </label>
-            </div>
-
-            <!-- Parâmetros Beam Search -->
-            <div id="control-beamWidth" hidden>
-              <div class="grid2">
-                <label
-                  >Largura Feixe (Beam) <input type="number" id="beamWidth" min="2" max="32" step="1" value="8"
-                /></label>
-                <label>Profundidade <input type="number" id="beamDepth" min="2" max="8" step="1" value="3" /></label>
-              </div>
-            </div>
-
-            <!-- Parâmetros FISTA -->
-            <div id="control-fistaIterations" hidden>
-              <div class="grid2">
-                <label
-                  >Iterações FISTA <input type="number" id="fistaIterations" min="20" max="500" step="10" value="100"
-                /></label>
-                <label
-                  >Regularização L1 (λ)
-                  <input type="number" id="l1RegularizationLambda" min="0.001" max="0.5" step="0.01" value="0.05"
-                /></label>
-              </div>
             </div>
 
             <!-- Parâmetros Histerese / Run-Length -->
@@ -527,6 +445,19 @@
                 <label class="check" title="Mostra a foto enquadrada ao lado, com o mesmo desfoque"
                   ><input type="checkbox" id="viewCompare" /> Comparar com a foto</label
                 >
+                <div class="sim-zoom-controls">
+                  <button type="button" id="simZoomOut" class="stage-pill" title="Diminuir Zoom">−</button>
+                  <span id="simZoomLevel" class="sim-zoom-badge">100%</span>
+                  <button type="button" id="simZoomIn" class="stage-pill" title="Aumentar Zoom">+</button>
+                  <button
+                    type="button"
+                    id="simResetView"
+                    class="stage-pill"
+                    title="Centralizar e Redefinir Visualização"
+                  >
+                    Ajustar
+                  </button>
+                </div>
               </div>
               <div class="sim-pair" id="simPair">
                 <canvas id="sim" width="700" height="700"></canvas>

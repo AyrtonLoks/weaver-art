@@ -6,7 +6,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@weaver-art/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
-      '@weaver-art/wasm': fileURLToPath(new URL('../../packages/wasm/src/index.ts', import.meta.url)),
     },
   },
   assetsInclude: ['**/*.wasm'],

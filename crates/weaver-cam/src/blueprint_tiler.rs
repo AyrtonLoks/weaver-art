@@ -156,10 +156,8 @@ impl BlueprintTiler {
         let step_y = (print_h - config.overlap_margin_mm).max(5.0);
 
         let pitch_r = match loom.spec.shape {
-            LoomShape::Circular | LoomShape::RegularPolygon => loom.spec.diameter_mm / 2.0,
-            LoomShape::Elliptical | LoomShape::Rectangular => {
-                loom.spec.width_mm.max(loom.spec.height_mm) / 2.0
-            }
+            LoomShape::Circular => loom.spec.diameter_mm / 2.0,
+            LoomShape::Square => loom.spec.width_mm / 2.0,
         };
 
         let rim_w = config
@@ -178,10 +176,10 @@ impl BlueprintTiler {
 
         // Bounding box mundial do aro
         let (bb_min_x, bb_max_x, bb_min_y, bb_max_y) = match loom.spec.shape {
-            LoomShape::Circular | LoomShape::RegularPolygon => {
+            LoomShape::Circular => {
                 (-outer_r, outer_r, -outer_r, outer_r)
             }
-            LoomShape::Elliptical | LoomShape::Rectangular => {
+            LoomShape::Square => {
                 let hx = loom.spec.width_mm / 2.0 + half_rim;
                 let hy = loom.spec.height_mm / 2.0 + half_rim;
                 (-hx, hx, -hy, hy)
@@ -595,9 +593,7 @@ impl BlueprintTiler {
 
         let shape_name = match self.loom.spec.shape {
             LoomShape::Circular => "Circular",
-            LoomShape::Elliptical => "Eliptico",
-            LoomShape::Rectangular => "Retangular",
-            LoomShape::RegularPolygon => "Poligono Regular",
+            LoomShape::Square => "Quadrado",
         };
 
         cover.text(m, m + 50.0, 10.0, "Dados do Projeto:", TextAlign::Left, true);

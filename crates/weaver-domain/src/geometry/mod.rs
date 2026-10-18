@@ -6,7 +6,7 @@ pub mod tangents;
 
 pub use drilling::{DrillHole, DrillingDiagnostic, DrillingStatus, DEFAULT_MIN_WALL_THRESHOLD_MM};
 pub use loom::{
-    CircularContour, EllipticalContour, LoomContour, LoomGeometry, LoomPhysicalSpec, LoomPin,
+    CircularContour, LoomContour, LoomGeometry, LoomPhysicalSpec, LoomPin,
     LoomShape, PolygonContour,
 };
 pub use tangents::{
@@ -68,84 +68,28 @@ mod tests {
     }
 
     #[test]
-    fn elliptical_loom_geometry() {
-        let width = 600.0;
-        let height = 400.0;
-        let spec = LoomPhysicalSpec::ellipse(width, height, 120, 2.0, 2.0, 10.0);
+    fn square_loom_geometry() {
+        let side = 500.0;
+        let spec = LoomPhysicalSpec::square(side, 80, 2.0, 2.0, 10.0);
         let loom = LoomGeometry::new(spec);
 
-        let a = width / 2.0;
-        let b = height / 2.0;
-        // Aproximação de Ramanujan para checagem do perímetro da elipse:
-        // h = ((a - b)/(a + b))^2
-        // P ~ pi * (a + b) * (1 + 3h / (10 + sqrt(4 - 3h)))
-        let h = ((a - b) / (a + b)).powi(2);
-        let p_ramanujan = PI * (a + b) * (1.0 + (3.0 * h) / (10.0 + (4.0 - 3.0 * h).sqrt()));
-        assert!(
-            (loom.perimeter() - p_ramanujan).abs() < 0.1,
-            "Perímetro da elipse {} difere da aproximação de Ramanujan {}",
-            loom.perimeter(),
-            p_ramanujan
-        );
-
-        // Verifica que todos os pinos satisfazem a equação da elipse (x/a)^2 + (y/b)^2 == 1
-        for i in 0..120 {
-            let (x, y) = loom.pin_position(i);
-            let ellipse_eq = (x / a).powi(2) + (y / b).powi(2);
-            assert!(
-                (ellipse_eq - 1.0).abs() < 1e-6,
-                "Pino {} não satisfaz equação da elipse: {}",
-                i,
-                ellipse_eq
-            );
-
-            let normal = loom.normal_vector(i);
-            let normal_len = (normal.0 * normal.0 + normal.1 * normal.1).sqrt();
-            assert!((normal_len - 1.0).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn rectangular_loom_geometry() {
-        let width = 500.0;
-        let height = 300.0;
-        let spec = LoomPhysicalSpec::rectangle(width, height, 80, 2.0, 2.0, 10.0);
-        let loom = LoomGeometry::new(spec);
-
-        let expected_perimeter = 2.0 * (width + height);
+        let expected_perimeter = 4.0 * side;
         assert!((loom.perimeter() - expected_perimeter).abs() < 1e-9);
 
-        // Verifica pinos sobre o retângulo
-        let hx = width / 2.0;
-        let hy = height / 2.0;
+        // Verifica pinos sobre o quadrado
+        let h = side / 2.0;
         for i in 0..80 {
             let (x, y) = loom.pin_position(i);
-            let on_v_edge = (x.abs() - hx).abs() < 1e-6 && y.abs() <= hy + 1e-6;
-            let on_h_edge = (y.abs() - hy).abs() < 1e-6 && x.abs() <= hx + 1e-6;
+            let on_v_edge = (x.abs() - h).abs() < 1e-6 && y.abs() <= h + 1e-6;
+            let on_h_edge = (y.abs() - h).abs() < 1e-6 && x.abs() <= h + 1e-6;
             assert!(
                 on_v_edge || on_h_edge,
-                "Pino {} em ({}, {}) fora da borda retangular",
+                "Pino {} em ({}, {}) fora da borda quadrada",
                 i,
                 x,
                 y
             );
         }
-    }
-
-    #[test]
-    fn regular_polygon_hexagon_geometry() {
-        let sides = 6;
-        let diameter = 200.0; // Raio R = 100 mm. Num hexágono regular, cada lado tem comprimento R = 100 mm.
-        let spec = LoomPhysicalSpec::regular_polygon(sides, diameter, 60, 2.0, 2.0, 10.0);
-        let loom = LoomGeometry::new(spec);
-
-        // Perímetro do hexágono regular = 6 * R = 600.0 mm
-        let expected_perimeter = 6.0 * 100.0;
-        assert!(
-            (loom.perimeter() - expected_perimeter).abs() < 1e-6,
-            "Perímetro do hexágono {} difere de 600.0",
-            loom.perimeter()
-        );
     }
 
     #[test]

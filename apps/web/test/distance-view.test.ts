@@ -71,10 +71,11 @@ describe('Vista à distância (desfoque por acuidade visual)', () => {
     // No início sem referência, o toggle de comparar inicia desabilitado
     expect(compareToggle.disabled).toBe(true);
 
-    // setReference com buffer válido habilita o toggle
+    // setReference com buffer válido habilita o toggle sem forçar comparação
     const rgba = new Uint8ClampedArray(10 * 10 * 4);
     ctrl.setReference(rgba, 10, 10);
     expect(compareToggle.disabled).toBe(false);
+    expect(compareToggle.checked).toBe(false);
 
     // Ao ativar compareToggle
     compareToggle.checked = true;

@@ -28,10 +28,10 @@ export type {
 } from '@weaver-art/core';
 
 /** Supported loom geometric shapes. */
-export type LoomShape = 'circle' | 'rectangle' | 'custom';
+export type LoomShape = 'circle' | 'rectangle';
 
 /** Supported optimization solver algorithms. */
-export type SolverAlgorithm = 'greedy' | 'beam-search' | 'nnls-fista';
+export type SolverAlgorithm = 'greedy' | 'beam-search';
 
 /** Supported spool / palette strategies (all using sequential physical layers). */
-export type SpoolStrategy = 'mono' | 'cmyk' | 'vrellis-5' | 'custom-palette' | 'portrait-cmyk';
+export type SpoolStrategy = 'mono' | 'vrellis-5';

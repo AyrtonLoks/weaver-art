@@ -64,13 +64,10 @@ Unidades em **mm**, com origem no canto superior esquerdo do quadro de simulaç�
 1. **Circular (`CircleLoomConfig`)**:
    - Pinos dispostos sobre a circunferência de diâmetro $D$ ($R = D/2$): $\theta_i = \theta_0 + 2\pi i / N$.
    - O pino 0 fica no topo por padrão ($\theta_0 = -90^\circ$) e a numeração segue o sentido horário.
-2. **Retangular ou Quadrado (`RectangleLoomConfig`)**:
-   - Dimensões físicas $W \times H$ em mm, com contagem de pinos $p_x \ge 2$ nas bordas horizontais e $p_y \ge 2$ nas bordas verticais.
-   - Pinos nos 4 cantos físicos, com contagem total exata $N = 2(p_x + p_y) - 4$ e espaçamento uniforme ao longo de cada aresta.
-   - Numeração horária contínua a partir do canto superior esquerdo.
-3. **Personalizado / Pinos Arbitrários (`CustomLoomConfig`)**:
-   - Coordenadas arbitrárias $(x_i, y_i)$ em mm (ex: importadas via arquivo CSV).
-   - O perímetro e o polígono interno são computados automaticamente através do algoritmo da **Cadeia Monótona de Andrew** para envoltória convexa (_convex hull_) em $O(N \log N)$, assegurando orientação horária estrita.
+2. **Quadrado (`SquareLoomConfig`)**:
+   - Dimensão física de lado $L = W = H$ em mm, com contagem total de pinos $N$ múltipla de 4.
+   - Pinos distribuídos simetricamente nas 4 bordas com $p_x = p_y = N/4 + 1$, garantindo $N = 2(p_x + p_y) - 4$ e espaçamento uniforme ao longo de cada aresta.
+   - Numeração horária contínua a partir do canto superior esquerdo. Formatos elípticos, polígonos arbitrários e CSV manual foram expurgados para manter o foco na fidelidade e rigidez mecânica.
 
 ### 2.2 Normais externas e matriz de cordas admissíveis (`chordMask`)
 
@@ -150,97 +147,52 @@ Para fio preto (`K = 0`) sobre fundo branco isso é `R ← R·(1 − α c)`, ou 
     $$S_{\text{saliency}} = (0.7 \cdot E_1 + 0.3 \cdot E_2)^\gamma$$
     Como $\gamma < 1$, o peso relativo de arestas sutis (hastes finas de óculos, pupilas e sobrancelhas) é amplificado em até $3\times$ a $5\times$ em relação a bordas grosseiras de alto contraste, orientando o algoritmo guloso a detalhar a face. Opcionalmente combinado com mapa de importância externo.
 
-## 6. Otimização e estratégias de cor — [`engine.ts`](../packages/core/src/engine.ts)
+## 6. Otimização e estratégias de cor — Núcleo Rust (`crates/weaver-solvers`)
 
 Estado: para cada fio, o pino atual e o lado em que ele está enrolado.
 
-A cada passo, para uma corda admissível a partir do pino atual (distância circular `≥ minPegGap`, par `{a, b}` usado menos de `maxChordRepeats` vezes, e os dois lados possíveis de chegada), calcula-se o **ganho**:
+A cada passo, para uma corda admissível a partir do pino atual (distância perimétrica circular $\ge \text{minPegGap}$, par $\{a, b\}$ usado menos de $\text{maxChordRepeats}$ vezes, e os lados possíveis de chegada), calcula-se o **ganho**:
 
-```
-ganho_base = Σₚ wₚ · [ (tₚ − Rₚ)² − (tₚ − R'ₚ)² ]  =  Σₚ wₚ · δₚ · (2(tₚ − Rₚ) − δₚ),   δₚ = α cₚ (K − Rₚ)
-```
+$$\text{ganho} = \sum_{p \in \text{corda}} W(p) \cdot w_p \cdot \delta_p \cdot [2(t_p - R_p) - \delta_p]$$
 
-### 6.1 Proteção Assimétrica de Realces (`highlightProtection`)
+onde $W(p) \ge 1.0$ é o mapa de importância suave, $w_p \in [0, 1]$ é o peso de cobertura sub-pixel (Xiaolin Wu), $t_p$ é o alvo óptico, $R_p$ é a simulação acumulada atual e $\delta_p$ é a variação de cobertura física do fio.
 
-Na física real da tecelagem, a deposição de fio é uma **operação estritamente irreversível**: uma vez que uma corda preta corta uma bochecha clara ou testa iluminada, ela jamais poderá ser apagada por passadas subsequentes. Na formulação simétrica tradicional de erro quadrático $L_2$, o ganho de escurecer um pixel com alvo preto ($target \approx 0.05$) é substancialmente maior do que a penalidade de escurecer levemente um pixel claro ($target \approx 0.85$). Isso fazia com que o algoritmo guloso disparasse cordas cortando o rosto para atingir sombras periféricas (_streak bleed-through_).
+### 6.1 Função Objetivo Limpa (Preservação de Fidelidade Facial)
 
-Para modelar a irreversibilidade física, o Weaver Art implementa uma penalização assimétrica progressiva para qualquer pixel onde o ganho seja negativo ($\Delta E_p < 0$, sobre-escurecendo além do alvo) e o tom alvo pertença à faixa de tons médios ou realces ($t_p > 0.35$):
+Experimentos medidos com fotos reais no benchmark nativo (`weaver-cli bench`) demonstraram que a acumulação de heurísticas empíricas (como amortecimento central de moiré, proteção assimétrica de realces e repulsão angular forçada) distorcia severamente a convergência do erro quadrático, resultando em retratos irreconhecíveis ou lavados.
 
-$$\text{termo}_p = \delta_p \cdot (2(t_p - R_p) - \delta_p)$$
-$$\text{se } \text{termo}_p < 0 \text{ e } t_p > 0.35: \quad \text{termo}_p \leftarrow \text{termo}_p \cdot \left[ 1 + \text{highlightProtection} \cdot \left(\frac{t_p - 0.35}{0.65}\right)^2 \right]$$
+O Weaver Art adota uma **função objetivo limpa**:
 
-Com $\text{highlightProtection} \in [2.0, 4.0]$ (padrão 2.5 nos presets de retrato), a penalidade sobre tons claros atinge até $5\times$, blindando maçãs do rosto, nariz, testa e queixo contra cordas intrusivas.
+- **Ganho Exato**: O ganho de uma corda é a redução estrita do erro quadrático ponderado em espaço perceptual.
+- **Foco por Reconhecimento**: Regiões anatômicas prioritárias (olhos, nariz, boca) são guiadas unicamente pelo **Mapa de Importância Facial** suave ($W(p) = 1 + \beta_f M_{\text{face}} \ge 1.0$, padrão $\beta_f = 2.0$), sem introduzir penalidades artificiais por ângulo ou posição central.
 
-### 6.2 Repulsão Angular Consecutiva (`angularDiversity`)
+### 6.2 Presets Oficiais de Petros Vrellis
 
-Elementos visuais horizontais contínuos (como a armação superior de óculos, sobrancelhas e linha dos olhos) atuam como fortes atratores lineares na formulação gulosa. Sem dispersão angular, o motor dispara dezenas de cordas quase perfeitamente paralelas consecutivas entre pinos opostos (ex: pino 50 e pino 150), formando uma faixa densa ou "venda escura" sobre os olhos, destruindo o vão entre os aros e as pupilas.
+1. **`VRELLIS_CLASSIC_MONO` (Monocromático Clássico)**:
+   - Fio: 1 carretel (Preto, $\alpha = 1.0$, largura real 0,18 mm).
+   - Tear: aro circular 28″ (ISO 622, 622 mm), 200 pinos, 6.000 cordas (`maxChordRepeats: 2`).
+   - Grade de simulação: 500 px.
+   - Padrão ótimo medido para reconhecimento em retratos: guloso exato em luz linear com fio opaco.
 
-A repulsão angular monitora o vetor diretor da corda anterior $\vec{d}_{\text{prev}}$ e aplica um deságio proporcional sobre qualquer corda candidata cuja orientação de reta não orientada difira por menos de $15^\circ$ ($|\Delta \theta| < 15^\circ$ modulo $\pi$):
+2. **`VRELLIS_COLOR` (Colorido CMYK Subtrativo)**:
+   - Fios: 4 camadas sequenciais físicas — Amarelo ($Y$), Magenta ($M$), Ciano ($C$) e Preto ($K$).
+   - Cotas ponderadas padrão: $[0.18\text{ Y}, 0.22\text{ M}, 0.22\text{ C}, 0.38\text{ K}]$.
+   - Ordem física obrigatória: cores luminosas primeiro ($Y \to M \to C$) e **Preto por último** ($K$).
+   - **Rollover dinâmico**: se uma camada de cor clara atingir o teto de ganho positivo antes de sua cota máxima, o saldo de linhas é transferido automaticamente para a camada preta final, garantindo cumprimento da meta de cordas sem ruído visual.
 
-$$\Delta \theta = \min(|\theta_{\text{cand}} - \theta_{\text{prev}}|, \pi - |\theta_{\text{cand}} - \theta_{\text{prev}}|)$$
-$$\text{se } \Delta \theta < \frac{\pi}{12} \text{ e } \text{ganho} > 0: \quad \text{ganho} \leftarrow \text{ganho} \cdot \left[ 1 - \text{angularDiversity} \cdot \left(1 - \frac{\Delta \theta}{\pi / 12}\right) \right]$$
+### 6.3 Estratégia de Tecelagem Sequencial em Camadas (`layered`)
 
-Com $\text{angularDiversity} \in [0.3, 0.5]$ (padrão 0.35 em retratos), o algoritmo alterna continuamente as direções de tecelagem, cruzando os olhos em múltiplos ângulos e revelando as pupilas, a ponte nasal e os aros dos óculos com fidelidade artística.
+A tecelagem multicolorida em Weaver Art opera exclusivamente na estratégia de **Camadas Sequenciais (`layered`)**:
 
-### 6.3 Amortecimento de Singularidade Central (`centerDampRadiusMm`)
+- Os fios são tecidos em passes contínuos e completos por carretel, eliminando as centenas ou milhares de trocas de carretel que inviabilizariam a fabricação física manual.
+- O fio preto final ancora o contraste e define traços anatômicos (pupilas, narinas, sobrancelhas) sem ser sobreposto ou desbotado por passadas posteriores de fios claros.
 
-A transformada de Radon analítica sobre uma grade circular com distribuição uniforme de cordas exibe uma singularidade intrínseca de densidade do tipo $1/r$ no centro geométrico do círculo $(c_x, c_y) = (D/2, D/2)$, resultante da intersecção obrigatória de todos os diâmetros no mesmo ponto. Em retratos centralizados, essa singularidade produz um padrão de moiré caústico em formato de diamante/estrela bem na ponta do nariz.
-
-Para equalizar a densidade volumétrica, o avaliador calcula a distância euclidiana da reta infinita da corda ao centro geométrico:
-
-$$d_{\text{center}} = \frac{|(y_2 - y_1)(c_x - x_1) - (x_2 - x_1)(c_y - y_1)|}{\sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}}$$
-$$\text{se } d_{\text{center}} < r_{\text{damp}} \text{ e } \text{ganho} > 0: \quad \text{ganho} \leftarrow \text{ganho} \cdot \left[ 0.75 + 0.25 \cdot \frac{d_{\text{center}}}{r_{\text{damp}}} \right]$$
-
-Com $r_{\text{damp}} \in [20, 30]\text{ mm}$ (padrão 25 mm em retratos), cordas que cruzam o centro sofrem um deságio suave de até 25%, eliminando o artefato de diamante sem comprometer a sombra tridimensional do septo e das narinas.
-
-### 6.4 Presets Calibrados para Retratos de Alta Fidelidade
-
-1. **`portrait-mono` (Monocromático Alta Fidelidade)**:
-   - Resolução: 500 px (permite amostragem nítida de armações de 1.5 mm e pupilas de 3 mm);
-   - 4.000 cordas com `maxChordRepeats: 2`;
-   - Pré-processamento com CLAHE ativado, `edgeEmphasis: 0.8`, `shadowLift: 0.12`, `torsoFeathering: 0.25`;
-   - Avaliador Vrellis com `highlightProtection: 2.5`, `angularDiversity: 0.35` e `centerDampRadiusMm: 25 mm`.
-
-2. **`portrait-cmyk` (CMYK Pele Humana Calibrada)**:
-   - Resolução: 500 px, 6.000 cordas em camadas sequenciais (`layered`);
-   - **Cotas calibradas para pele humana**: $[0.30\text{ Amarelo}, 0.05\text{ Ciano}, 0.25\text{ Magenta}, 0.40\text{ Preto}]$.
-   - _Fundamentação cromática_: A pele caucasiana e miscigenada na síntese subtrativa é composta quase exclusivamente por Amarelo e Magenta, com Preto para sombras e contornos. O uso da cota genérica de 20% Ciano forçava 1.200 linhas de azul/verde sobre o rosto, tornando a pele esverdeada ou lamacenta. Reduzir o Ciano para 5% e direcionar o saldo para Amarelo (30%) e Preto (40%) preserva o calor e o realismo facial.
-
-### 6.5 Penalidade opcional por comprimento de fio (`lengthPenalty`)
-
-Para aproximar a tecelagem dos 1–2 km reportados por Petros Vrellis para 3.000–4.000 cordas e controlar a tensão mecânica, cordas muito longas podem sofrer um deságio proporcional ao diâmetro do tear:
-
-```
-L_norm = L_corda / D_tear ∈ (0, 1]
-ganho_efetivo = ganho_base · (1 − λ · L_norm)
-```
-
-Com $\lambda = 0$ (padrão de fábrica), o ganho puro é preservado. Com $\lambda \in [0.1, 0.25]$, cordas mais curtas com ganho comparável são priorizadas, gerando economia expressiva de metros de fio com fidelidade visual equivalente.
-
-### 6.6 Estratégias de tecelagem multicolorida (`ColorStrategy`)
-
-1. **Camadas sequenciais (`layered` — padrão para cores)**:
-   - Os fios são tecidos em passes independentes e contínuos, seguindo a ordem subtrativa física:
-     - **Preset Retrato CMYK**: Amarelo (30%) $\rightarrow$ Ciano (5%) $\rightarrow$ Magenta (25%) $\rightarrow$ **Preto por último (40%)**.
-     - **Preset Vrellis (5 fios)**: Amarelo (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ Azul (20%) $\rightarrow$ Verde (10%) $\rightarrow$ **Preto por último (30%)**.
-     - **Preset CMYK Clássico (4 fios)**: Amarelo (20%) $\rightarrow$ Ciano (20%) $\rightarrow$ Magenta (20%) $\rightarrow$ **Preto por último (40%)**.
-   - As cores formam a base cromática luminosa primeiro; o preto entra no final para assentar as sombras profundas e contornos finos.
-   - Fisicamente, o tecelão trabalha com um único carretel por vez até concluir a camada, eliminando o emaranhado de fios.
-   - Se uma camada inicial esgotar ganhos antes de atingir sua cota, o motor realiza **rollover** automático do saldo de linhas para o preto final, garantindo o atingimento da meta global de linhas.
-
-2. **Intercalado balanceado (`interleaved-balanced`)**:
-   - Revezamento dinâmico em turnos, com cotas máximas proporcionais por fio. Garante que nenhuma cor seja monopolizada ou sofra exclusão cromática durante a tecelagem simultânea.
-
-3. **Livre (`free`)**:
-   - Competição gulosa irrestrita tradicional entre todos os fios simultaneamente.
-
-O processo é concluído quando:
+O processo de tecelagem é concluído quando:
 
 - `maxLines` cordas foram tecidas no total; ou
-- nenhuma corda viável reduz mais o erro (quando `stopWhenNoImprovement` estiver ativo); ou
-- não há mais cordas admissíveis sob os limites de repetições configurados.
+- não há mais cordas admissíveis com ganho positivo sob os limites de repetições configurados.
 
-## 7. Métricas perceptuais — [`metrics.ts`](../packages/core/src/metrics.ts)
+## 7. Métricas perceptuais — `crates/weaver-domain` e `crates/weaver-solvers`
 
 Além do RMSE linear tradicional (em luz linear desprovida de ponderação não linear humana), o motor calcula duas métricas perceptuais reportadas em `WeaveResult.metrics`:
 
@@ -253,10 +205,10 @@ Além do RMSE linear tradicional (em luz linear desprovida de ponderação não 
      $$\text{SSIM}(x, y) = \frac{(2\mu_x\mu_y + C_1)(2\sigma_{xy} + C_2)}{(\mu_x^2 + \mu_y^2 + C_1)(\sigma_x^2 + \sigma_y^2 + C_2)}$$
    - Varia de 0 a 1, capturando preservação de contraste, nitidez estrutural e luminosidade percebida.
 
-## 8. Refinamento global com continuidade física do fio — [`refine.ts`](../packages/core/src/refine.ts)
+## 8. Refinamento contínuo do fio — `crates/weaver-solvers`
 
 A otimização gulosa escolhe cada corda no momento $t$ sem prever as milhares de cordas subsequentes.
-Para refinar o traçado sem violar a condição física de **fio contínuo e sem emendas**, o algoritmo executa passes de perturbação local em pares de cordas consecutivas:
+Para refinar o traçado sem violar a condição física de **fio contínuo e sem emendas**, o algoritmo disponibiliza passes opcionais de perturbação local em pares de cordas consecutivas:
 
 - Para cada pino intermediário $p_i$ na sequência $p_{i-1} \to p_i \to p_{i+1}$:
   - Avalia candidatos vizinhos $p_i'$ que satisfaçam as regras de espaçamento `minPegGap` e contagem `maxChordRepeats`.
@@ -265,69 +217,19 @@ Para refinar o traçado sem violar a condição física de **fio contínuo e sem
   - Substituições que reduzem estritamente o erro global são aplicadas incrementalmente no canvas e na lista de passos.
 - A continuidade do fio é matematicamente invariante durante todo o processo.
 
-## 9. Calibração de carretéis e parâmetros físicos — [`calibration.ts`](../packages/core/src/calibration.ts)
+## 9. Calibração de carretéis e parâmetros físicos
 
 - **Calibração de Cor de Carretel**: fotografa uma meada ou trecho de fio, descarta reflexos especulares e sombras profundas por corte de percentis (15% a 85%) e calcula a média aparada em luz linear, convertendo para hex sRGB e luminância.
 - **Calibração Física de Transmitância**: estima numericamente a espessura aparente `widthMm` e opacidade $\alpha$ analisando um patch tecido com número conhecido de passadas sobre fundo conhecido, através da lei física de transmitância $T = (1 - \alpha \cdot \text{cobertura})^N$.
 
-## 10. Saídas — [`export.ts`](../packages/core/src/export.ts)
+## 10. Saídas e Formatos de Exportação
 
 - **Instruções** (`.txt`): numeradas a partir do pino 1, com sentido de contorno e cabeçalhos organizados por camada (`=== CAMADA X: Cor (amarrar no pino Y) ===`), acompanhadas do bloco detalhado de **ESTIMATIVA DE FABRICAÇÃO** (tempo estimado ativo e overhead, amarrações e carretéis por cor).
 - **CSV**: passo, fio, pinos, lados, comprimentos e ganho.
 - **SVG**: escala real (1 unidade = 1 mm), agrupado por `<g id="layer-...">` com a cor e espessura real do fio, arcos `A` nos pinos e contorno físico do tear.
 - **JSON**: `WeaveResult` completo (com `metrics`, `threads`, `steps` e metadados de `progress`) — reabrível no modo tecelagem do app web.
 
-## 11. Seleção automática de paleta personalizada — [`palette.ts`](../packages/core/src/palette.ts)
-
-Para reproduzir fotografias sem restrição aos presets fixos (Vrellis ou CMYK), o Weaver Art extrai uma paleta adaptativa de $k$ cores ($k \in [2, 10]$) diretamente da imagem do usuário:
-
-1. **Amostragem Geométrica do Tear**: Amostra pixels exclusivamente dentro da máscara do tear (circular ou poligonal convexa), ignorando fundos externos e cantos brancos/transparentes.
-2. **Espaço Perceptual CIELAB**:
-   - Cada pixel RGB linear é convertido para espaço CIE XYZ e em seguida para CIELAB ($L^_, a^_, b^*$).
-   - A métrica de distância utilizada na clusterização é a distância euclidiana CIE76:
-     $$\Delta E_{ab}^* = \sqrt{(\Delta L^*)^2 + (\Delta a^*)^2 + (\Delta b^*)^2}$$
-     que reflete a sensibilidade perceptual do olho humano de forma muito superior ao espaço RGB euclidiano.
-3. **Clusterização K-Means++**:
-   - Inicialização estocástica ponderada pela distância quadrática ($D(x)^2$) para cobrir polos cromáticos distintos (ex: tons de pele, realces e sombras).
-   - Iterações de Lloyd até convergência ($\Delta E < 0.05$) com reatribuição de clusters vazios.
-4. **Ordenação Física por Luminância ($L^\*$)**:
-   - Os centróides são estritamente ordenados de forma decrescente por luminância ($L^_$ alto $\to$ $L^_$ baixo).
-   - O fio mais luminoso inicia a tecelagem e a âncora mais escura (preto, grafite ou marinho profundo) fica por último, respeitando a regra física de que fios escuros não devem ser soterrados por fios claros.
-5. **Alocação de Cotas Ponderadas e Rollover**:
-   - Para $k \ge 4$ cores, a âncora escura recebe cota terminal de $35\%$ a $40\%$ (padrão $38\%$). As $k-1$ cores claras dividem equitativamente os $62\%$ restantes.
-   - Em conjunto com a estratégia `layered`, qualquer saldo não consumido pelas camadas claras é transferido dinamicamente (_rollover_) para a âncora escura, garantindo que a meta de linhas seja cumprida.
-6. **Distribuição Angular dos Pinos Iniciais**:
-   - Os pinos de amaciamento inicial de cada carretel são distribuídos uniformemente na borda do tear: $\text{startPeg}_i = \lfloor i \cdot N / k \rfloor$.
-
-## 12. Modelo óptico de mistura por meio-tom — [`engine.ts`](../packages/core/src/engine.ts)
-
-A mistura de cores em string art à distância de visualização não ocorre pixel a pixel, mas sim pela fusão espacial contínua dos pontos luminosos na retina humana (_optical halftoning_ ou mistura aditiva de cor espacial):
-
-### Formulação Matemática
-
-Em vez de minimizar o erro residual local ponto a ponto $\|C - T\|^2$, minimizamos o erro perceptual após a mistura espacial da visão humana:
-
-$$\mathcal{E}_{\text{halftone}} = \| H * (C - T) \|^2$$
-
-onde $H$ é a função de espalhamento pontual (PSF da retina) e $G = H^T * H = H * H$ é o filtro gaussiano equivalente. Pela propriedade do produto interno:
-
-$$\mathcal{E}_{\text{halftone}} = \langle C - T, G * (C - T) \rangle$$
-
-Ao adicionar uma corda com perturbação $\Delta C$, a redução do erro perceptual (ganho óptico) é:
-
-$$\text{ganho} = \sum_{p \in \text{corda}} w_p \cdot \left[ 2 \cdot \delta_p \cdot R_{\text{halftone}}[p] - \delta_p^2 \right]$$
-
-onde $R_{\text{halftone}} = G * (T - C)$ é o **mapa de resíduo perceptualmente filtrado**.
-
-### Vantagens e Comportamento Cooperativo
-
-- **Cooperação entre Fios Adjacentes**: Fios de cores complementares (por exemplo, Amarelo e Ciano sobre uma área verde) passam a cooperar oticamente mesmo quando correm em paralelo ou com pequenos afastamentos, sem a penalidade artificial do modelo pixel a pixel que exigiria interseções microscópicas perfeitas.
-- **Desempenho em Tempo Real**:
-  - $R_{\text{halftone}}$ é avaliado diretamente em $O(1)$ por amostra rasterizada durante o cálculo do ganho.
-  - Ao aplicar uma corda selecionada, $R_{\text{halftone}}$ é atualizado localmente sobre a caixa delimitadora dilatada da corda com filtro gaussiano separável 1D horizontal + 1D vertical em $O(\text{largura} + \text{altura})$, com ressincronização completa periódica a cada 50 passos.
-- Quando `halftoneMixing: false` (padrão), o motor se reduz estritamente ao resíduo local clássico $R = T - C$ com custo adicional zero.
-
-## 13. Gabarito de furação 1:1 e gerador PDF vetorial puro — [`template.ts`](../packages/core/src/template.ts), [`pdf.ts`](../packages/core/src/pdf.ts)
+## 11. Gabarito de furação 1:1 e gerador PDF vetorial puro — `crates/weaver-cam` e `packages/core/src/pdf.ts`
 
 Para a construção física do tear por marcenaria ou serralheria:
 
@@ -338,10 +240,10 @@ Para a construção física do tear por marcenaria ou serralheria:
 2. **Ladrilhamento Multi-páginas em PDF Puro (`pdf.ts`)**:
    - Implementação independente de escritor PDF 1.4 sem dependências de terceiros, com cálculo exato de offsets de tabela `xref` e tipografia `WinAnsiEncoding`.
    - Gera uma **página de capa (visão geral)** com diagrama da grade de folhas montada e especificações físicas.
-   - Decompõe teares maiores que a folha física (ex: aro de 711 mm em papel A4 de 210 × 297 mm) em uma grade de $L \times C$ blocos com margem de sobreposição de 10 mm.
+   - Decompõe teares maiores que a folha física (ex: aro de 711 mm em papel A4 de 210 × 297 mm) em uma grade de $L \times C$ blocos com margem de sobreposição de 10 mm e culling de vão central.
    - Cada folha impressa traz: marcas de corte e registro em cruz nos quatro cantos, identificador de coluna/linha (ex: `Folha L2·C3`), e **régua de conferência local de 50 mm** com o aviso explícito de impressão em escala 100% (sem ajuste de página).
 
-## 14. Estimativa física de tecelagem e consumo de carretéis — [`estimate.ts`](../packages/core/src/estimate.ts)
+## 12. Estimativa física de tecelagem e consumo de carretéis — `packages/core/src/estimate.ts`
 
 Para planejamento prático de tecelagem manual:
 
@@ -352,7 +254,7 @@ Para planejamento prático de tecelagem manual:
   O número de carretéis/bobinas por cor é calculado por $\lceil \text{fio\_necessário}_t / L_{\text{carretel}} \rceil$ (ex: carretéis de 1.000 m com 10% de margem e 300 mm de ponta para nós).
 - **Tempo Restante Dinâmico**: Permite calcular em tempo real o tempo restante a partir de qualquer passo $k$ no reprodutor web.
 
-## 15. Cinemática e percursos de G-code para robôs/plotters XY — [`gcode.ts`](../packages/core/src/gcode.ts)
+## 13. Cinemática e percursos de G-code para robôs/plotters XY — `crates/weaver-cam`
 
 Para tecelagem automatizada via máquinas CNC de 2 eixos ou braços cartesianos com dispensador de fio:
 
@@ -367,7 +269,7 @@ Para tecelagem automatizada via máquinas CNC de 2 eixos ou braços cartesianos 
    - Cabeçalho padronizado RS-274 com unidades em mm (`G21`), coordenadas absolutas (`G90`) e plano XY (`G17`).
    - Trocas de meada emitem comando de pausa obrigatória `M0` com mensagem legível nos comentários indicando cor, pino de amarração e camada, seguido de avanço rápido em vazio (`G0`) até o próximo pino de ancoragem.
 
-## 16. Sincronização e retomada de progresso sem servidor — [`progress.ts`](../packages/core/src/progress.ts)
+## 14. Sincronização e retomada de progresso sem servidor — `packages/core/src/progress.ts`
 
 Para permitir que o tecelão alterne livremente entre computador de mesa e celular/tablet na bancada sem exigir contas na nuvem ou banco de dados:
 
@@ -380,59 +282,26 @@ Para permitir que o tecelão alterne livremente entre computador de mesa e celul
    - O progresso pode ser compartilhado diretamente via URL através da âncora `#progress=WA1-...`.
    - Ao importar ou reabrir arquivos `.weave.json` com campo `progress: { index, updatedAt }`, a função `mergeProgress` compara com o histórico local do navegador e eleva automaticamente o progresso para o timestamp mais recente.
 
-## 17. Otimizações de Desempenho e Aceleração (v0.5.0)
+## 15. Otimizações de Desempenho e Arquitetura de Execução
 
-A partir da versão v0.5.0, o Weaver Art introduz uma infraestrutura desacoplada de avaliação de alto desempenho (`CandidateEvaluator`), acelerando a tecelagem em até 5–10× sem comprometer a exatidão física ou visual da obra:
+O Weaver Art adota arquitetura de alta performance com divisão estrita de responsabilidades:
 
-### 17.1 Cache de Rasterização Canônica Exata (`ChordCache`)
+### 15.1 Matriz Esparsa CSR de Cordas (`SparseChordMatrixCSR`)
 
-A avaliação gulosa requer rasterizar segmentos com espessura contínua e antisserrilhamento milhares de vezes. O `ChordCache` elimina o recálculo redundante:
+- Todas as cordas rasterizadas do tear residem em uma estrutura compacta CSR com indexação canônica triangular $O(1)$:
+  $$k = a \cdot N - \frac{a(a+1)}{2} + (b - a - 1) \quad (a < b)$$
+- Consumo de heap estritamente contido abaixo do teto RNF-03 ($\le 130$ MB para $N=250$ em grade $600 \times 600$).
 
-- **Chave Canônica de 64 bits**: Dada uma corda entre os pinos $a$ e $b$ com lados tangentes $s_a, s_b \in \{-1, +1\}$, define-se a chave invariante:
-  $$K(a, s_a, b, s_b) = \begin{cases} (a \ll 34) \mid ((s_a+1) \ll 32) \mid (b \ll 2) \mid (s_b+1) & \text{se } a \le b \\ (b \ll 34) \mid ((s_b+1) \ll 32) \mid (a \ll 2) \mid (s_a+1) & \text{se } a > b \end{cases}$$
-- **Amostras Contíguas em Memória**: As coordenadas de cobertura $(x, y, c)$ de cada pixel interceptado pela faixa contínua são armazenadas em buffers planos contíguos (`Float32Array`), eliminando overhead de instanciação de objetos no heap e coleta de lixo (GC).
-- **Gerenciamento LRU Bounded**: O cache mantém um limite estrito de memória configurável (`maxBytes`, ex.: 128 MB no CLI e 64 MB no navegador), descartando automaticamente as cordas menos recentemente utilizadas via lista duplamente encadeada em $O(1)$.
+### 15.2 Comunicação Zero-Copy via SharedArrayBuffer e Atomics
 
-### 17.2 Poda Gulosa Preguiçosa (_Lazy Greedy Candidate Pruning_ — Minoux, 1978)
+- **ControlBlock (128 bytes)**: 32 bytes de controle atômico `Int32Array` e 96 bytes de métricas `Float32Array`.
+- **WeavingPathBuffer (byte 128 em diante)**: 8 bytes por passo (`fromPin`, `toPin`, `spoolId`, `windings`, `scoreNormalized`).
 
-Em teares com $N=200$ a $360$ pinos, avaliar todos os pinos candidatos a cada passo exige dezenas de milhões de cálculos de ganho:
+### 15.3 Desempenho em CPU vs GPU
 
-- **Fundamentação Matemática**: A função de ganho de redução de erro MSE sob o modelo de transmitância física subtrativa exibe a propriedade de **submodularidade**:
-  $$g_t(e) \le g_{t-k}(e) \quad (\forall k \ge 0)$$
-  ou seja, o ganho que uma corda $e$ traria à imagem no passo atual $t$ é menor ou igual ao ganho calculado para ela em qualquer passo anterior $t-k$, pois novas passadas de fio já escureceram frações dos pixels que ela intercepta.
-- **Algoritmo de Minoux Acelerado (`StaleGainTable`)**:
-  1. Mantém os ganhos calculados em passos anteriores associados a cada par de pinos e lado.
-  2. A cada passo, avalia os candidatos em ordem decrescente do seu ganho desatualizado (que atua como um limite superior estrito ou _upper bound_).
-  3. Reavalia o candidato do topo. Se seu novo ganho atualizado ainda for superior ao limite superior do segundo colocado, ele é **garantidamente o melhor candidato global**, permitindo encerrar a busca imediatamente.
-- **Garantias de Fidelidade**:
-  - Em simulações monocromáticas, a poda de Minoux garante **exatidão matemática estrita** (0% de desvio em relação à busca exaustiva).
-  - Em simulações coloridas (CMYK/halftone), onde pequenos efeitos de cor geram quase-submodularidade, o motor emprega ressincronização periódica com garantia de $\Delta\text{RMSE} \le 2\%$ e $\Delta\text{SSIM} \le 2\%$.
-
-### 17.3 Kernel SIMD WebAssembly (`@weaver-art/wasm`)
-
-Para aplicações de alta resolução ($S \ge 600$ px), o pacote `@weaver-art/wasm` disponibiliza um kernel em Rust `no_std` compilado para `wasm32-unknown-unknown` com extensões SIMD de 128 bits:
-
-- **Instruções Vetoriais Nativas**: Utiliza intrínsecos `core::arch::wasm32::*` para processar 4 pixels simultaneamente (`f32x4`) na amostragem antisserrilhada e na redução de erro ponderada.
-- **Fusão de Loops em Baixo Nível**: A rasterização e a pontuação do ganho ocorrem diretamente na memória linear do módulo WebAssembly, evitando round-trips e cópias entre o runtime JavaScript e o WASM.
-- **Alocação Dinâmica de Heap**: Os buffers de canvas e target residem dinamicamente acima do tamanho estático do módulo (`align8(memory_size * 65536)`), garantindo segurança total contra colisões de ponteiros em tempo de execução.
-- **Paridade Numérica Exata**: O kernel WASM foi rigorosamente calibrado e testado para gerar resultados idênticos bit a bit (`parity.test.ts`) em relação à implementação em TypeScript puro.
-
-### 17.4 Avaliação Paralela Multi-Worker (`ParallelEvaluator`)
-
-Para explorar processadores multi-core na CLI e no navegador:
-
-- **Coordenação via `SharedArrayBuffer`**: Os dados da imagem alvo, canvas de simulação e tabela de controle residem em uma única região de memória física compartilhada entre $P$ threads/workers.
-- **Sincronização de Barreira com `Atomics`**: Utiliza primitivas de hardware sem espera ativa (_lock-free_ com `Atomics.wait` e `Atomics.notify`), eliminando overhead de mensagens IPC e travamentos espúrios de CPU.
-- **Desempate Determinístico**: A partição de candidatos entre as threads preserva o critério estrito de desempate:
-  $$\text{ganho}_A > \text{ganho}_B \quad \lor \quad (\text{ganho}_A = \text{ganho}_B \land \text{pino}_A < \text{pino}_B)$$
-  assegurando que o resultado gerado seja estritamente reprodutível independentemente do número de núcleos de CPU utilizados.
-
-### 17.5 Análise Técnica: Por que CPU SIMD Multi-thread em vez de WebGPU?
-
-A tecelagem de string art possui uma natureza inerentemente sequencial: a escolha da corda no passo $t+1$ depende criticamente da alteração pontual sofrida pelo canvas no passo $t$ e da posição final do pino.
-
-- O dispatch de pipelines de computação em GPU envolve latências de barreira e sincronização de buffer entre 0,5 ms e 2 ms por chamada. Em 4.000 passos sequenciais, apenas o overhead de sincronização da GPU consumiria de 2 a 8 segundos.
-- Por outro lado, a combinação de CPU SIMD (`f32x4`), cache LRU em memória L1/L2 e poda preguiçosa de Minoux atinge latências inferiores a 0,1 ms por passo, garantindo desempenho interativo superior com menor consumo energético e compatibilidade universal em qualquer navegador sem necessidade de suporte a WebGPU.
+- A tecelagem de string art possui uma natureza sequencial: a escolha da corda no passo $t+1$ depende criticamente da alteração pontual sofrida pelo canvas no passo $t$ e da posição final do pino.
+- O dispatch de pipelines de computação em GPU envolve latências de barreira e sincronização de buffer entre 0,5 ms e 2 ms por chamada. Em 4.000 passos sequenciais, o overhead de sincronização da GPU consumiria de 2 a 8 segundos.
+- Por outro lado, a combinação de CPU Rust SIMD (`f32x4`), matriz CSR com localidade L1/L2 e ponte Wasm de memória compartilhada atinge latências inferiores a 0,1 ms por passo, garantindo desempenho interativo superior com menor consumo energético e compatibilidade universal em qualquer navegador.
 
 ## Especificação Matemática e Algorítmica
 

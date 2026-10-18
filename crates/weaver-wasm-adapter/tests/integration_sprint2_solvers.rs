@@ -3,10 +3,9 @@
 //! Valida o pipeline completo de ponta a ponta na Camada 3 (`weaver-wasm-adapter`):
 //! 1. Gera uma imagem sintética com círculo e linhas cruzadas (simulando um rosto com óculos);
 //! 2. Pré-processa via `weaver-dsp` (enquadramento afim, máscara de tear, CLAHE, Sobel/Canny e mapa W(x,y));
-//! 3. Executa os 3 motores de otimização de `weaver-solvers`:
+//! 3. Executa os motores de otimização de `weaver-solvers`:
 //!    - Iterative Greedy
 //!    - Beam Search
-//!    - Global NNLS/FISTA + Roteamento Euleriano
 //! 4. Comprova formalmente a queda monotônica do erro $\Delta E$ e a redução substancial do RMSE
 //!    ao longo dos passos de tecelagem.
 
@@ -22,7 +21,7 @@ use weaver_dsp::{
 use weaver_solvers::{
     optical_models::{OpticalMixModelType, OpticalModelEvaluator, SpoolColor},
     solver_runner::SolverSession,
-    solvers::{BeamSearchConfig, GlobalFistaConfig, GreedyConfig},
+    solvers::{BeamSearchConfig, GreedyConfig},
     spool_scheduler::{SpoolScheduler, SpoolSwitchStrategy},
     state_matrix::CanvasStateSoA,
 };
@@ -283,59 +282,5 @@ fn test_sprint2_full_integration_dsp_and_three_solvers() {
         assert!(final_progress.telemetry.rmse < initial_progress.telemetry.rmse);
         assert_eq!(session.history_steps.len(), 25);
     }
-
-    // ==========================================
-    // TESTE DO SOLVER 3: GLOBAL NNLS / FISTA
-    // ==========================================
-    {
-        let canvas = CanvasStateSoA::from_target_and_background(
-            res,
-            res,
-            &target_linear,
-            LinearRgbColor::WHITE,
-            Some(&importance_weights),
-        );
-        let scheduler = SpoolScheduler::new(SpoolSwitchStrategy::FreeGreedy, 30, 0);
-        let config = GlobalFistaConfig {
-            max_steps: 30,
-            max_chord_repeats: 2,
-            fista_iterations: 40,
-            l1_regularization_lambda: 0.03,
-            painter_layers_per_color: 2,
-            start_pin: 0,
-        };
-
-        let mut session = SolverSession::new_global_fista(
-            config,
-            canvas,
-            matrix.clone(),
-            evaluator,
-            scheduler,
-            spools.clone(),
-            alpha_eff,
-        );
-
-        let initial_progress = session.current_progress(Vec::new());
-        let initial_delta_e = initial_progress.telemetry.delta_e;
-
-        // Executa em lotes
-        let prog = session.step_batch(30);
-        println!(
-            "GLOBAL FISTA: Initial ΔE = {:.4}, RMSE = {:.4}, SSIM = {:.4} | Final: ΔE = {:.4}, RMSE = {:.4}, SSIM = {:.4}",
-            initial_delta_e, initial_progress.telemetry.rmse, initial_progress.telemetry.ssim,
-            prog.telemetry.delta_e, prog.telemetry.rmse, prog.telemetry.ssim
-        );
-
-        assert!(
-            prog.telemetry.delta_e < initial_delta_e,
-            "FISTA: DeltaE final ({}) deve ser menor que inicial ({})",
-            prog.telemetry.delta_e,
-            initial_delta_e
-        );
-        assert!(
-            prog.telemetry.rmse < initial_progress.telemetry.rmse,
-            "FISTA: RMSE final deve ser menor que inicial"
-        );
-        assert!(!session.history_steps.is_empty(), "FISTA deve tecer passos");
-    }
 }
+

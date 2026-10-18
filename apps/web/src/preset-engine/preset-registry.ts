@@ -12,15 +12,9 @@ export type WeaverControlId =
   | 'spoolStrategy'
   | 'switchPenaltyLambda'
   | 'minRunLength'
-  | 'epochSchedule'
-  | 'painterLayersPerColor'
   | 'opticalMixModel'
   | 'errorMetric'
   | 'solver'
-  | 'beamWidth'
-  | 'beamDepth'
-  | 'fistaIterations'
-  | 'l1RegularizationLambda'
   | 'maxLines'
   | 'maxChordRepeats'
   | 'threadThicknessMm'
@@ -35,8 +29,6 @@ export type WeaverControlId =
   | 'shape'
   | 'diameterMm'
   | 'widthMm'
-  | 'heightMm'
-  | 'polygonSides'
   | 'pinCount'
   | 'pinDiameterMm'
   | 'drillBitMm'
@@ -54,12 +46,12 @@ export interface PresetProfile {
   readonly config: Readonly<WeaverConfig>;
 }
 
-/** The 4 primary preset profiles defined in architecture ADR-005. */
+/** The 2 official Petros Vrellis preset profiles. */
 export const WEAVER_PRESET_PROFILES: Readonly<Record<WeaverPresetProfileId, PresetProfile>> = {
   VRELLIS_CLASSIC_MONO: {
     id: 'VRELLIS_CLASSIC_MONO',
-    name: 'Vrellis Clássico (Monocromático)',
-    description: 'Monocromático com solver guloso clássico e antialiasing Xiaolin Wu.',
+    name: 'Vrellis Clássico · Monocromático (Preto)',
+    description: 'Monocromático com fio preto, luz linear e solver guloso com função perceptual exata.',
     config: {
       presetProfileId: 'VRELLIS_CLASSIC_MONO',
       shape: 'CIRCULAR',
@@ -67,7 +59,6 @@ export const WEAVER_PRESET_PROFILES: Readonly<Record<WeaverPresetProfileId, Pres
       diameterMm: 622,
       widthMm: 622,
       heightMm: 622,
-      polygonSides: 0,
       pinDiameterMm: 2.0,
       threadThicknessMm: 0.18,
       drillBitMm: 2.0,
@@ -81,16 +72,6 @@ export const WEAVER_PRESET_PROFILES: Readonly<Record<WeaverPresetProfileId, Pres
       spoolStrategy: 'FREE_GREEDY',
       switchPenaltyLambda: 0.0,
       minRunLength: 1,
-      epochSchedule: {
-        baseCmyRatio: 0.65,
-        refineRatio: 0.2,
-        detailBlackWhiteTopRatio: 0.15,
-      },
-      painterLayersPerColor: 1,
-      beamWidth: 8,
-      beamDepth: 3,
-      fistaIterations: 100,
-      l1RegularizationLambda: 0.05,
       rasterizer: 'XIAOLIN_WU_ANTIALIASED',
       claheClipLimit: 0,
       faceImportanceWeight: 2.0,
@@ -109,71 +90,17 @@ export const WEAVER_PRESET_PROFILES: Readonly<Record<WeaverPresetProfileId, Pres
     },
   },
 
-  PORTRAIT_HIGH_SHARPNESS_EPOCHS: {
-    id: 'PORTRAIT_HIGH_SHARPNESS_EPOCHS',
-    name: 'Retrato Nitidez Máxima (Épocas Coarse-to-Fine)',
-    description: 'Retrato multiescala de alta nitidez com épocas coarse-to-fine e CIELAB ΔE2000.',
+  VRELLIS_COLOR: {
+    id: 'VRELLIS_COLOR',
+    name: 'Vrellis Colorido (CMYK)',
+    description: 'Colorido em 4 camadas sequenciais CMYK (Amarelo → Magenta → Ciano → Preto).',
     config: {
-      presetProfileId: 'PORTRAIT_HIGH_SHARPNESS_EPOCHS',
+      presetProfileId: 'VRELLIS_COLOR',
       shape: 'CIRCULAR',
-      pinCount: 288,
+      pinCount: 200,
       diameterMm: 622,
       widthMm: 622,
       heightMm: 622,
-      polygonSides: 0,
-      pinDiameterMm: 2.0,
-      threadThicknessMm: 0.18,
-      drillBitMm: 2.0,
-      edgeMarginMm: 15.0,
-      paletteMode: 'CMYK_SUBTRACTIVE',
-      opticalMixModel: 'PORTER_DUFF_OCCLUSION',
-      errorMetric: 'CIELAB_DELTA_E2000',
-      solver: 'ITERATIVE_GREEDY',
-      maxLines: 6500,
-      maxChordRepeats: 3,
-      spoolStrategy: 'COARSE_TO_FINE_EPOCHS',
-      switchPenaltyLambda: 0.25,
-      minRunLength: 50,
-      epochSchedule: {
-        baseCmyRatio: 0.65,
-        refineRatio: 0.2,
-        detailBlackWhiteTopRatio: 0.15,
-      },
-      painterLayersPerColor: 1,
-      beamWidth: 8,
-      beamDepth: 3,
-      fistaIterations: 100,
-      l1RegularizationLambda: 0.05,
-      rasterizer: 'XIAOLIN_WU_ANTIALIASED',
-      claheClipLimit: 0,
-      faceImportanceWeight: 2.0,
-      featureEmphasisWeight: 0,
-      skinLift: 0,
-      edgeDetector: 'SOBEL',
-      edgeBlendWeight: 0,
-      morphologyOp: 'NONE',
-      framing: {
-        zoom: 1.0,
-        panXPercent: 0,
-        panYPercent: 0,
-        rotationDeg: 0,
-        autoFaceTargetRatio: 0.95,
-      },
-    },
-  },
-
-  CMYK_DYNAMIC_HYSTERESIS: {
-    id: 'CMYK_DYNAMIC_HYSTERESIS',
-    name: 'CMYK / Paleta Customizada com Histerese Dinâmica',
-    description: 'CMYK equilibrado com penalidade de troca de carretel por histerese e CIELAB ΔE2000.',
-    config: {
-      presetProfileId: 'CMYK_DYNAMIC_HYSTERESIS',
-      shape: 'CIRCULAR',
-      pinCount: 288,
-      diameterMm: 622,
-      widthMm: 622,
-      heightMm: 622,
-      polygonSides: 0,
       pinDiameterMm: 2.0,
       threadThicknessMm: 0.18,
       drillBitMm: 2.0,
@@ -183,79 +110,16 @@ export const WEAVER_PRESET_PROFILES: Readonly<Record<WeaverPresetProfileId, Pres
       errorMetric: 'CIELAB_DELTA_E2000',
       solver: 'ITERATIVE_GREEDY',
       maxLines: 6000,
-      maxChordRepeats: 3,
-      spoolStrategy: 'HYSTERESIS_PENALTY',
-      switchPenaltyLambda: 0.3,
-      minRunLength: 80,
-      epochSchedule: {
-        baseCmyRatio: 0.65,
-        refineRatio: 0.2,
-        detailBlackWhiteTopRatio: 0.15,
-      },
-      painterLayersPerColor: 1,
-      beamWidth: 8,
-      beamDepth: 3,
-      fistaIterations: 100,
-      l1RegularizationLambda: 0.05,
+      maxChordRepeats: 2,
+      spoolStrategy: 'SEPARATED_CHANNELS',
+      switchPenaltyLambda: 0.0,
+      minRunLength: 1,
       rasterizer: 'XIAOLIN_WU_ANTIALIASED',
       claheClipLimit: 0,
       faceImportanceWeight: 2.0,
       featureEmphasisWeight: 0,
       skinLift: 0,
       edgeDetector: 'SOBEL',
-      edgeBlendWeight: 0,
-      morphologyOp: 'NONE',
-      framing: {
-        zoom: 1.0,
-        panXPercent: 0,
-        panYPercent: 0,
-        rotationDeg: 0,
-        autoFaceTargetRatio: 0.95,
-      },
-    },
-  },
-
-  GLOBAL_RADON_FISTA: {
-    id: 'GLOBAL_RADON_FISTA',
-    name: 'Otimização Global NNLS / Radon (FISTA)',
-    description: 'Solver global de mínimos quadrados não-negativos via FISTA e transformada de Radon.',
-    config: {
-      presetProfileId: 'GLOBAL_RADON_FISTA',
-      shape: 'CIRCULAR',
-      pinCount: 200,
-      diameterMm: 622,
-      widthMm: 622,
-      heightMm: 622,
-      polygonSides: 0,
-      pinDiameterMm: 2.0,
-      threadThicknessMm: 0.18,
-      drillBitMm: 2.0,
-      edgeMarginMm: 15.0,
-      paletteMode: 'MONOCHROME',
-      opticalMixModel: 'LINEAR_SUBTRACTIVE',
-      errorMetric: 'LINEAR_RGB',
-      solver: 'GLOBAL_NNLS_FISTA',
-      maxLines: 5000,
-      maxChordRepeats: 2,
-      spoolStrategy: 'SEPARATED_CHANNELS',
-      switchPenaltyLambda: 0.0,
-      minRunLength: 1,
-      epochSchedule: {
-        baseCmyRatio: 0.65,
-        refineRatio: 0.2,
-        detailBlackWhiteTopRatio: 0.15,
-      },
-      painterLayersPerColor: 3,
-      beamWidth: 8,
-      beamDepth: 3,
-      fistaIterations: 150,
-      l1RegularizationLambda: 0.05,
-      rasterizer: 'XIAOLIN_WU_ANTIALIASED',
-      claheClipLimit: 0,
-      faceImportanceWeight: 2.0,
-      featureEmphasisWeight: 0,
-      skinLift: 0,
-      edgeDetector: 'NONE',
       edgeBlendWeight: 0,
       morphologyOp: 'NONE',
       framing: {
@@ -285,24 +149,6 @@ export function isControlVisible(controlId: WeaverControlId, config: WeaverConfi
         (config.spoolStrategy === 'MIN_RUN_LENGTH' || config.spoolStrategy === 'HYSTERESIS_PENALTY')
       );
 
-    case 'epochSchedule':
-      return config.paletteMode !== 'MONOCHROME' && config.spoolStrategy === 'COARSE_TO_FINE_EPOCHS';
-
-    case 'painterLayersPerColor':
-      return (
-        config.solver === 'GLOBAL_NNLS_FISTA' ||
-        (config.paletteMode !== 'MONOCHROME' && config.spoolStrategy === 'SEPARATED_CHANNELS')
-      );
-
-    // Solver-specific controls
-    case 'beamWidth':
-    case 'beamDepth':
-      return config.solver === 'BEAM_SEARCH';
-
-    case 'fistaIterations':
-    case 'l1RegularizationLambda':
-      return config.solver === 'GLOBAL_NNLS_FISTA';
-
     // Edge detector blend
     case 'edgeBlendWeight':
       return config.edgeDetector !== 'NONE';
@@ -312,11 +158,7 @@ export function isControlVisible(controlId: WeaverControlId, config: WeaverConfi
       return config.shape === 'CIRCULAR';
 
     case 'widthMm':
-    case 'heightMm':
-      return config.shape === 'RECTANGULAR' || config.shape === 'ELLIPTICAL';
-
-    case 'polygonSides':
-      return config.shape === 'REGULAR_POLYGON';
+      return config.shape === 'SQUARE';
 
     // Standard controls always visible
     default:
@@ -332,15 +174,9 @@ export function getVisibleControls(config: WeaverConfig): Set<WeaverControlId> {
     'spoolStrategy',
     'switchPenaltyLambda',
     'minRunLength',
-    'epochSchedule',
-    'painterLayersPerColor',
     'opticalMixModel',
     'errorMetric',
     'solver',
-    'beamWidth',
-    'beamDepth',
-    'fistaIterations',
-    'l1RegularizationLambda',
     'maxLines',
     'maxChordRepeats',
     'threadThicknessMm',
@@ -355,8 +191,6 @@ export function getVisibleControls(config: WeaverConfig): Set<WeaverControlId> {
     'shape',
     'diameterMm',
     'widthMm',
-    'heightMm',
-    'polygonSides',
     'pinCount',
     'pinDiameterMm',
     'drillBitMm',

@@ -1,4 +1,4 @@
-//! Camada 2 (`weaver-solvers`): Solvers Greedy, Beam Search, Global NNLS/FISTA,
+//! Camada 2 (`weaver-solvers`): Solvers Greedy, Beam Search, Refinamento de Caminho,
 //! 5 Estratégias de Carretel e SSIM Incremental.
 //!
 //! Regra de Dependência da Clean Architecture: depende exclusivamente de `weaver-domain`.
@@ -17,8 +17,8 @@ pub use solver_runner::{
     SolverBackend, SolverPhase, SolverProgress, SolverSession, SolverStatus, WeaveStepRecord,
 };
 pub use solvers::{
-    BeamMove, BeamSearchConfig, BeamSearchSolver, BeamStepRecord, FistaStepRecord,
-    GlobalFistaConfig, GlobalFistaSolver, GreedyChordCandidate, GreedyConfig, GreedySolver,
+    BeamMove, BeamSearchConfig, BeamSearchSolver, BeamStepRecord,
+    GreedyChordCandidate, GreedyConfig, GreedySolver,
     GreedyStepRecord, PathRefiner, RefineConfig,
 };
 pub use spool_scheduler::{SpoolScheduler, SpoolSwitchStrategy};

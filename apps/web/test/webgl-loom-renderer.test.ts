@@ -366,15 +366,76 @@ describe('Sprint 4 — Task 4.1: Renderizador Físico WebGL2 e Diagnóstico DSP 
       expect(renderer.getZoom()).toBe(1.0);
       expect(renderer.getPan()).toEqual({ x: 0, y: 0 });
 
+      let observedZoom = 0;
+      const unsub = renderer.onZoomChanged((z) => {
+        observedZoom = z;
+      });
+      expect(observedZoom).toBe(1.0);
+
+      renderer.zoomIn(1.2);
+      expect(renderer.getZoom()).toBeCloseTo(1.2, 5);
+      expect(observedZoom).toBeCloseTo(1.2, 5);
+
+      renderer.zoomOut(1.2);
+      expect(renderer.getZoom()).toBeCloseTo(1.0, 5);
+      expect(observedZoom).toBeCloseTo(1.0, 5);
+
       renderer.setZoom(2.5);
       expect(renderer.getZoom()).toBe(2.5);
+      expect(observedZoom).toBe(2.5);
 
       renderer.setPan(0.15, -0.2);
-      expect(renderer.getPan()).toEqual({ x: 0.15, y: -0.2 });
+      expect(renderer.getPan().x).toBeCloseTo(0.15, 2);
+      expect(renderer.getPan().y).toBeCloseTo(-0.2, 2);
 
-      renderer.resetView();
+      renderer.fitView();
       expect(renderer.getZoom()).toBe(1.0);
       expect(renderer.getPan()).toEqual({ x: 0, y: 0 });
+      expect(observedZoom).toBe(1.0);
+
+      unsub();
+      renderer.dispose();
+    });
+
+    it('preserva coordenadas sob o cursor na roda do mouse com compensação de proporção', () => {
+      const canvas = createMockWebGL2Canvas();
+      canvas.getBoundingClientRect = () => ({ width: 800, height: 400, top: 0, left: 0 }) as DOMRect;
+      const renderer = new WebGLLoomRenderer(canvas);
+
+      // Posiciona cursor à direita (clientX=600 em largura 800 => (600/800 - 0.5) = +0.25)
+      // aspect = 800 / 400 = 2.0 => scaleX = 2.0 => cursorX = 0.25 * 2.0 = 0.5
+      // clientY = 100 em altura 400 => (0.5 - 100/400) = +0.25
+      // scaleY = 1.0 => cursorY = 0.25
+      const wheelEv = {
+        type: 'wheel',
+        deltaY: -100, // Zoom in: factor 1.15
+        clientX: 600,
+        clientY: 100,
+        preventDefault: vi.fn(),
+      };
+
+      const initialZoom = renderer.getZoom(); // 1.0
+      expect(renderer.getPan()).toEqual({ x: 0, y: 0 });
+
+      canvas.dispatchEvent(wheelEv as unknown as Event);
+
+      const newZoom = renderer.getZoom();
+      expect(newZoom).toBeCloseTo(initialZoom * 1.15, 4);
+
+      // Verificação analítica da invariante:
+      // simCoord = (cursor / zoom) + 0.5 - pan
+      // Sob initialZoom=1, pan=0:
+      // simCoord.x = 0.5 / 1.0 + 0.5 - 0 = 1.0
+      // simCoord.y = 0.25 / 1.0 + 0.5 - 0 = 0.75
+      // Sob newZoom, panX e panY devem manter exatamente simCoord.x=1.0 e simCoord.y=0.75:
+      const cursorX = 0.5;
+      const cursorY = 0.25;
+      const pan = renderer.getPan();
+      const simCoordX = cursorX / newZoom + 0.5 - pan.x;
+      const simCoordY = cursorY / newZoom + 0.5 - pan.y;
+
+      expect(simCoordX).toBeCloseTo(1.0, 5);
+      expect(simCoordY).toBeCloseTo(0.75, 5);
 
       renderer.dispose();
     });

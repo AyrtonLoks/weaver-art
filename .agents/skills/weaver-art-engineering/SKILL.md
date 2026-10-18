@@ -284,7 +284,7 @@ Ao utilizar ou estender a Camada 2 para preparar imagens de tecelagem:
 
 ### 20. Motor de Solvers e Métricas (Camada 2 - `weaver-solvers`)
 
-Ao implementar ou estender solvers gulosos, Beam Search ou FISTA na Camada 2:
+Ao implementar ou estender solvers gulosos ou Beam Search na Camada 2:
 
 1. **Instanciação do Pipeline de Otimização**:
 
@@ -307,13 +307,13 @@ Ao implementar ou estender solvers gulosos, Beam Search ou FISTA na Camada 2:
 
 ### 21. Instanciação e Execução dos Solvers com `SolverSession` (Camada 2 - `weaver-solvers`)
 
-Para executar qualquer um dos 3 solvers de forma padronizada via lotes:
+Para executar os motores oficiais de String Art via lotes:
 
-1. **Iterative Greedy (`GreedySolver`)**:
+1. **Iterative Greedy (`GreedySolver` - Motor Oficial)**:
 
    ```rust
    let config = GreedyConfig {
-       max_steps: 4000,
+       max_steps: 6000,
        max_chord_repeats: 2,
        length_exponent_gamma: 1.0,
        start_pin: 0,
@@ -336,19 +336,8 @@ Para executar qualquer um dos 3 solvers de forma padronizada via lotes:
    let mut session = SolverSession::new_beam_search(config, canvas, matrix, evaluator, scheduler, spools, alpha_eff);
    ```
 
-3. **Global NNLS/FISTA com Roteador Euleriano (`GlobalFistaSolver`)**:
-
-   ```rust
-   let config = GlobalFistaConfig {
-       max_steps: 3000,
-       max_chord_repeats: 2,
-       fista_iterations: 60,
-       l1_regularization_lambda: 0.05,
-       painter_layers_per_color: 3,
-       start_pin: 0,
-   };
-   let mut session = SolverSession::new_global_fista(config, canvas, matrix, evaluator, scheduler, spools, alpha_eff);
-   ```
+3. **Passe de Refinamento Contínuo**:
+   - `with_refinement(RefineConfig { passes: n, ..Default::default() })` ativa o passe de otimização contínua de nós intermediários $(a \to p \to b)$ preservando o fio único. O solver experimental FISTA foi permanentemente descontinuado.
 
 4. **Loop Incremental em Lotes (`step_batch`)**:
    ```rust
@@ -358,18 +347,12 @@ Para executar qualquer um dos 3 solvers de forma padronizada via lotes:
    }
    ```
 
-### 22. Roteamento Euleriano e Sub-camadas de Pintor
+### 22. Camadas Sequenciais Físicas para Cores
 
-Ao quantizar e encadear soluções contínuas de String Art:
+Em tecelagens multicor (preset `VRELLIS_COLOR`), o escalonador adota estritamente camadas sequenciais (`layered`):
 
-1. **Quantização pelos Maiores Restos**:
-   - Converta os pesos $w_k \in \mathbb{R}_+^M$ escalando pelo orçamento de linhas $\sum c_k = K$.
-   - Aplique piso inteiro $\lfloor w'_k \rfloor$ e distribua o saldo remanescente ordenando os restos fracionários, respeitando o teto `max_chord_repeats`.
-2. **Roteamento Euleriano com Nearest-Neighbor Stitching**:
-   - A partir de $p$, priorize cordas ativas incidentes.
-   - Se $p$ não tiver cordas ativas restantes, localize o pino ativo mais próximo por distância perimétrica circular $\min(|p - q|, N - |p - q|)$ e insira uma ponte contínua.
-3. **Sub-camadas de Pintor (_Painter's Algorithm_)**:
-   - Em tecelagens multicor, divida a sequência de cada carretel em $L$ fatias iguais (`painter_layers_per_color`, ex: 3) e intercale-as sequencialmente (Camada 1: C $\to$ M $\to$ Y $\to$ K; Camada 2: C $\to$ M $\to$ Y $\to$ K; Camada 3: C $\to$ M $\to$ Y $\to$ K). Isso preserva a profundidade cromática e impede que a cor final cubra integralmente as cores anteriores.
+- Ordem física obrigatória: Amarelo (18%) $\to$ Magenta (22%) $\to$ Ciano (22%) $\to$ Preto por último (38%).
+- Rollover dinâmico: se uma cor atinge saturação de ganho antes da sua cota, o saldo de passos é automaticamente transferido para o preto final.
 
 ### 23. Regras de Testes de Integração Inter-Crates e Dependências Cargo
 

@@ -16,14 +16,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build --workspace @weaver-art/core
-      - run: npm run build --workspace @weaver-art/wasm
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
       - run: npm run build
 
-  wasm:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +33,8 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - run: cargo check --workspace
+      - run: cargo test --workspace
       - run: npm ci
       - run: npm run build:wasm
-      - run: git diff --exit-code packages/wasm/src/generated
       - run: npm test

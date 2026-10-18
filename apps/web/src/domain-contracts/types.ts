@@ -5,7 +5,7 @@
  */
 
 /** Supported geometric shapes for physical string-art looms. */
-export type LoomShapeType = 'CIRCULAR' | 'ELLIPTICAL' | 'RECTANGULAR' | 'REGULAR_POLYGON';
+export type LoomShapeType = 'CIRCULAR' | 'SQUARE';
 
 /** Physical manufacturing and geometric specification of a string-art loom. */
 export interface LoomPhysicalSpec {
@@ -14,7 +14,6 @@ export interface LoomPhysicalSpec {
   diameterMm: number;
   widthMm: number;
   heightMm: number;
-  polygonSides: number;
   pinDiameterMm: number;
   threadThicknessMm: number;
   drillBitMm: number;
@@ -22,7 +21,7 @@ export interface LoomPhysicalSpec {
 }
 
 /** Color palette modes defining chromatic behavior and thread spool composition. */
-export type ColorPaletteMode = 'MONOCHROME' | 'CMYK_SUBTRACTIVE' | 'RGB_OCCLUSIVE' | 'USER_CUSTOM';
+export type ColorPaletteMode = 'MONOCHROME' | 'CMYK_SUBTRACTIVE' | 'VRELLIS_5_COLOR';
 
 /** Optical thread blending and physical transmittance models. */
 export type OpticalMixModelType = 'LINEAR_SUBTRACTIVE' | 'PORTER_DUFF_OCCLUSION' | 'BEER_LAMBERT';
@@ -31,7 +30,7 @@ export type OpticalMixModelType = 'LINEAR_SUBTRACTIVE' | 'PORTER_DUFF_OCCLUSION'
 export type ColorErrorMetricType = 'LINEAR_RGB' | 'REDMEAN_WEIGHTED' | 'CIELAB_DELTA_E2000';
 
 /** String-art optimization algorithms. */
-export type SolverAlgorithmType = 'ITERATIVE_GREEDY' | 'BEAM_SEARCH' | 'GLOBAL_NNLS_FISTA';
+export type SolverAlgorithmType = 'ITERATIVE_GREEDY' | 'BEAM_SEARCH';
 
 /** Multi-spool switching strategies for physical weaving. */
 export type SpoolSwitchStrategyType =
@@ -87,8 +86,7 @@ export interface EpochSchedule {
 }
 
 /** Identifier for predefined algorithmic and physical weaving preset profiles. */
-export type WeaverPresetProfileId =
-  'VRELLIS_CLASSIC_MONO' | 'PORTRAIT_HIGH_SHARPNESS_EPOCHS' | 'CMYK_DYNAMIC_HYSTERESIS' | 'GLOBAL_RADON_FISTA';
+export type WeaverPresetProfileId = 'VRELLIS_CLASSIC_MONO' | 'VRELLIS_COLOR';
 
 /** Complete reactive configuration state encompassing physics, solver, and DSP options. */
 export interface WeaverConfig extends LoomPhysicalSpec {
@@ -109,16 +107,12 @@ export interface WeaverConfig extends LoomPhysicalSpec {
   spoolStrategy: SpoolSwitchStrategyType;
   switchPenaltyLambda: number;
   minRunLength: number;
-  epochSchedule: EpochSchedule;
-  painterLayersPerColor: number;
+  epochSchedule?: EpochSchedule;
+  painterLayersPerColor?: number;
 
-  // Beam Search Parameters
-  beamWidth: number;
-  beamDepth: number;
-
-  // Global FISTA Parameters
-  fistaIterations: number;
-  l1RegularizationLambda: number;
+  // Beam Search Parameters (optional)
+  beamWidth?: number;
+  beamDepth?: number;
 
   // DSP & Feature Enhancement
   rasterizer: RasterizerType;

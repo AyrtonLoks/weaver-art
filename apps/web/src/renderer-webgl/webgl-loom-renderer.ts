@@ -68,19 +68,14 @@ export const DEFAULT_PALETTES: Record<ColorPaletteMode, [number, number, number,
     [0.95, 0.85, 0.02, 1.0], // Amarelo
     [0.82, 0.04, 0.45, 1.0], // Magenta
     [0.02, 0.58, 0.85, 1.0], // Ciano
-    [0.02, 0.02, 0.02, 1.0], // Preto (K)
+    [0.02, 0.02, 0.02, 1.0], // Preto
   ],
-  RGB_OCCLUSIVE: [
-    [0.85, 0.05, 0.05, 1.0],
-    [0.05, 0.75, 0.1, 1.0],
-    [0.05, 0.15, 0.85, 1.0],
-    [0.02, 0.02, 0.02, 1.0],
-  ],
-  USER_CUSTOM: [
-    [0.85, 0.1, 0.1, 1.0],
-    [0.1, 0.7, 0.2, 1.0],
-    [0.1, 0.3, 0.9, 1.0],
-    [0.02, 0.02, 0.02, 1.0],
+  VRELLIS_5_COLOR: [
+    [0.95, 0.77, 0.0, 1.0], // Amarelo
+    [0.76, 0.09, 0.48, 1.0], // Magenta
+    [0.11, 0.25, 0.73, 1.0], // Azul
+    [0.12, 0.54, 0.24, 1.0], // Verde
+    [0.02, 0.02, 0.02, 1.0], // Preto
   ],
 };
 
@@ -336,12 +331,44 @@ export class WebGLLoomRenderer {
 
   // ----------------------------------------------------------- Zoom & Pan API
 
+  private zoomListeners = new Set<(zoom: number) => void>();
+
+  public onZoomChanged(callback: (zoom: number) => void): () => void {
+    this.zoomListeners.add(callback);
+    callback(this.zoom);
+    return () => {
+      this.zoomListeners.delete(callback);
+    };
+  }
+
+  private notifyZoomChanged(): void {
+    for (const listener of this.zoomListeners) {
+      listener(this.zoom);
+    }
+  }
+
+  public zoomIn(factor = 1.2): void {
+    this.setZoom(this.zoom * factor);
+  }
+
+  public zoomOut(factor = 1.2): void {
+    this.setZoom(this.zoom / factor);
+  }
+
+  public fitView(): void {
+    this.resetView();
+  }
+
   public getZoom(): number {
     return this.zoom;
   }
 
   public setZoom(zoom: number): void {
     this.zoom = Math.max(0.5, Math.min(25.0, zoom));
+    const panMax = Math.max(0.0, 1.0 - 1.0 / this.zoom) + 0.5;
+    this.panX = Math.max(-panMax, Math.min(panMax, this.panX));
+    this.panY = Math.max(-panMax, Math.min(panMax, this.panY));
+    this.notifyZoomChanged();
     this.renderScreenPass();
   }
 
@@ -350,8 +377,9 @@ export class WebGLLoomRenderer {
   }
 
   public setPan(x: number, y: number): void {
-    this.panX = Math.max(-2.0, Math.min(2.0, x));
-    this.panY = Math.max(-2.0, Math.min(2.0, y));
+    const panMax = Math.max(0.0, 1.0 - 1.0 / this.zoom) + 0.5;
+    this.panX = Math.max(-panMax, Math.min(panMax, x));
+    this.panY = Math.max(-panMax, Math.min(panMax, y));
     this.renderScreenPass();
   }
 
@@ -359,6 +387,7 @@ export class WebGLLoomRenderer {
     this.zoom = 1.0;
     this.panX = 0.0;
     this.panY = 0.0;
+    this.notifyZoomChanged();
     this.renderScreenPass();
   }
 
@@ -848,17 +877,23 @@ export class WebGLLoomRenderer {
 
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault();
-      const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
-      const newZoom = Math.max(0.8, Math.min(20.0, this.zoom * zoomFactor));
+      const zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
+      const newZoom = Math.max(0.5, Math.min(25.0, this.zoom * zoomFactor));
 
       const rect = el.getBoundingClientRect();
-      const cursorX = (e.clientX - rect.left) / rect.width - 0.5;
-      const cursorY = 0.5 - (e.clientY - rect.top) / rect.height; // Eixo Y WebGL para cima
+      const aspect = rect.width / Math.max(1, rect.height);
+      const scaleX = aspect > 1.0 ? aspect : 1.0;
+      const scaleY = aspect < 1.0 ? 1.0 / aspect : 1.0;
 
-      this.panX += cursorX * (1 / this.zoom - 1 / newZoom);
-      this.panY += cursorY * (1 / this.zoom - 1 / newZoom);
+      const cursorX = ((e.clientX - rect.left) / rect.width - 0.5) * scaleX;
+      const cursorY = (0.5 - (e.clientY - rect.top) / rect.height) * scaleY; // Eixo Y WebGL para cima
+
+      const panMax = Math.max(0.0, 1.0 - 1.0 / newZoom) + 0.5;
+      this.panX = Math.max(-panMax, Math.min(panMax, this.panX + cursorX * (1 / newZoom - 1 / this.zoom)));
+      this.panY = Math.max(-panMax, Math.min(panMax, this.panY + cursorY * (1 / newZoom - 1 / this.zoom)));
       this.zoom = newZoom;
 
+      this.notifyZoomChanged();
       this.renderScreenPass();
     };
 
@@ -881,12 +916,17 @@ export class WebGLLoomRenderer {
     const onPointerMove = (e: PointerEvent): void => {
       if (!isDragging) return;
       const rect = el.getBoundingClientRect();
-      const dx = (e.clientX - startX) / (rect.width * this.zoom);
-      const dy = (e.clientY - startY) / (rect.height * this.zoom);
+      const aspect = rect.width / Math.max(1, rect.height);
+      const scaleX = aspect > 1.0 ? aspect : 1.0;
+      const scaleY = aspect < 1.0 ? 1.0 / aspect : 1.0;
 
-      this.panX = startPanX + dx;
+      const dx = ((e.clientX - startX) / (rect.width * this.zoom)) * scaleX;
+      const dy = ((e.clientY - startY) / (rect.height * this.zoom)) * scaleY;
+
+      const panMax = Math.max(0.0, 1.0 - 1.0 / this.zoom) + 0.5;
+      this.panX = Math.max(-panMax, Math.min(panMax, startPanX + dx));
       // No WebGL o eixo Y cresce para cima, portanto subtrai-se dy (ou soma-se no Canvas2D)
-      this.panY = this.gl ? startPanY - dy : startPanY + dy;
+      this.panY = Math.max(-panMax, Math.min(panMax, this.gl ? startPanY - dy : startPanY + dy));
       this.renderScreenPass();
     };
 

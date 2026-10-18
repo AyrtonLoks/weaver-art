@@ -14,7 +14,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
 - **Competição Cromática e Ordem de Camadas**:
   - O fio preto ($K=[0,0,0]$) tem ganho matemático MSE 3× maior sobre fundo branco que fios coloridos. **Nunca deixe fios coloridos competirem livremente contra o preto sem cotas ou camadas**, caso contrário ocorrerá exclusão total de cores (fome de azul/verde).
   - A única estratégia multicor permitida é **Camadas Sequenciais (`layered`)**. Estratégias intercaladas (`interleaved-balanced`, `free`) são proibidas por gerarem milhares de trocas de carretel. A ordem física obrigatória é: cores luminosas primeiro (Amarelo $\rightarrow$ Magenta/Ciano $\rightarrow$ Azul/Verde) e **Preto por último** (para definir sombras e contornos sem apagar as cores de baixo).
-  - Sempre forneça cotas ponderadas com maior peso no preto final (ex: 40% preto no CMYK, 30% no Vrellis 5 cores) e **rollover dinâmico** de saldo para o preto caso cores anteriores atinjam limite de ganho.
+  - Sempre forneça cotas ponderadas com maior peso no preto final (ex: 38% a 40% preto no CMYK) e **rollover dinâmico** de saldo para o preto caso cores anteriores atinjam limite de ganho.
 - **Atingimento de Metas de Linhas e Repetições**:
   - Um tear circular com 200 pinos possui apenas ~16.500 pares de pinos possíveis, dos quais apenas ~7.500 cruzam a figura.
   - Para metas altas ($\ge 5.000$ cordas, ex: 10.000 cordas), configure `maxChordRepeats >= 2` ou `3`. Se `maxChordRepeats = 1`, o motor ficará sem cordas úteis com ganho positivo e parará prematuramente.
@@ -96,7 +96,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     - Utilizar `ctx.createImageData(w, h)` combinado com `idata.data.set(buffer)` para carregar pixels nos canvases, evitando incompatibilidades de tipo entre `new ImageData(...)` e `SharedArrayBuffer` / `ArrayBufferLike`.
     - Ao instanciar `Blob([data])` a partir de `Uint8Array`, garantir que a memória seja um `ArrayBuffer` convencional (efetuando cópia/slice quando necessário) para prevenir rejeições de tipagem estrita TS2322.
 - **Multiformato Geométrico do Tear**:
-  - Suporte formal aos 4 formatos fundamentais: `CIRCULAR`, `ELLIPTICAL`, `RECTANGULAR`, `REGULAR_POLYGON` (além de `custom` CSV). Formatos curvos não circulares ou poligonais devem mapear para listas ordenadas de pinos perimétricos compatíveis com `CustomLoomConfig`.
+  - Suporte formal e simplificado aos 2 formatos fundamentais: `CIRCULAR` (Petros Vrellis padrão, diâmetro mm e pinos) e `SQUARE` (quadrado com dimensão de lado mm e contagem total de pinos múltipla de 4 distribuída uniformemente nas 4 bordas). Formatos secundários e legados (elíptico, polígonos arbitrários e CSV manual no estúdio) foram expurgados para focar na fidelidade e estabilidade do tear.
 - **Geometria de Precisão, Furação Mecânica e Tangentes Reais (Camada 1 - `weaver-domain`)**:
   - Toda representação de tear no ecossistema Rust deve derivar de `LoomPhysicalSpec` e implementar parametrização estrita por comprimento de arco $s \in [0, P)$ em `LoomContour` (`CircularContour`, `EllipticalContour` com quadratura Simpson e refinamento Newton-Raphson, `PolygonContour` com interpolação CCW e normais bissetrizes).
   - Pinos perimétricos devem disponibilizar acesso $O(1)$ indexado para posições `(x, y)` e vetores normais unitários externos `(nx, ny)`.
@@ -124,9 +124,9 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     - `XiaolinWuAntialiased`: Amostragem perpendicular sub-pixel com conservação de energia e descarte estrito de pesos nulos ($w = 0$) para manter a esparsidade da matriz.
     - `LoomGridMapping`: Mapeamento centrado $((W-1)/2, (H-1)/2)$ com margem de 1 pixel contra clipping de antialiasing nas bordas da moldura.
 - **Motor de Presets Reativos e Visibilidade Contextual (ADR-005)**:
-  - Os 4 perfis fundamentais de preset (`VRELLIS_CLASSIC_MONO`, `PORTRAIT_HIGH_SHARPNESS_EPOCHS`, `CMYK_DYNAMIC_HYSTERESIS`, `GLOBAL_RADON_FISTA`) devem permanecer sincronizados entre os contratos formais (`preset-registry.ts`) e a interface.
+  - Os 2 perfis fundamentais de preset de Petros Vrellis (`VRELLIS_CLASSIC_MONO` e `VRELLIS_COLOR`) devem permanecer sincronizados entre os contratos formais (`preset-registry.ts`) e a interface. Presets legados (`PORTRAIT_HIGH_SHARPNESS_EPOCHS`, `CMYK_DYNAMIC_HYSTERESIS`, `GLOBAL_RADON_FISTA`) foram permanentemente expurgados.
   - O estado de modificação do usuário deve utilizar rastreamento genérico e estrito `isDirty` (`resetParam<K extends keyof WeaverConfig>`, `resetAllDirty`).
-  - Controles e sliders na UI devem ser filtrados via predicados `isControlVisible(id, config)` e `getVisibleControls(config)` para ocultar opções irrelevantes ao modo cromático, forma do tear ou algoritmo solver ativo.
+  - Controles e sliders na UI devem ser filtrados via predicados `isControlVisible(id, config)` e `getVisibleControls(config)` para ocultar opções irrelevantes ao modo cromático ou forma do tear.
 - **Pipeline de DSP e Pré-processamento de Imagem (Camada 2 - `weaver-dsp`)**:
   - **Zero Dependências Pesadas C/OpenCV**: `weaver-dsp` deve permanecer em Rust puro, dependendo exclusivamente de `weaver-domain`, garantindo compilação transparente para `wasm32-unknown-unknown`.
   - **Buffers Unificados**: Utilizar `ImageBuffer<T>`, `GrayImage` (luminância fotométrica em $[0.0, 1.0]$), `Rgba8Image` e mapeamento sem cópia para `LinearRgbColor` e `LabColor`.
@@ -176,7 +176,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     - Tela e referência desfocadas por gaussiana ($\sigma$ = resolução/250 px, visão à distância); SSIM padrão (janela gaussiana 1,5) e RMSE em luma sRGB; ΔE\*76 médio em CIELAB — tudo apenas dentro do disco do tear. Recalculadas a cada 250 passos e ao final.
 - **Motores de Otimização e Solvers (Camada 2 - `weaver-solvers` / Task 2.4)**:
   - **Solver 1: Algoritmo Guloso Iterativo (`solvers/greedy.rs`)**:
-    - Varre todos os pinos candidatos $p_{\text{prox}}$ a partir de $p_{\text{atual}}$ lendo as fatias contíguas da `SparseChordMatrixCSR`.
+    - Motor de produção oficial do Weaver Art. Varre todos os pinos candidatos $p_{\text{prox}}$ a partir de $p_{\text{atual}}$ lendo as fatias contíguas da `SparseChordMatrixCSR`.
     - Normalização de Score: $\text{Score}(L, k) = \frac{\Delta E(L, k)}{|L|^\gamma} - \text{PenalidadeTroca}(k)$, onde $|L|$ é a integral de cobertura sub-pixel; para quando nenhuma corda reduz o erro.
     - Desempate estritamente determinístico (RNF-02): maior score; em empate, menor `to_pin`; em novo empate, menor `spool_id`.
     - Respeito a `max_chord_repeats` e fila FIFO de histórico Tabu recente.
@@ -186,11 +186,8 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     - Parametrizado por largura de feixe $B \in [2, 16]$ e profundidade de lookahead $d \in [2, 4]$.
     - Proibição de clonagem por candidato: pool estático fixo de exatamente $2 \times B$ estados `CanvasStateSoA` (`pool_a` e `pool_b`) pré-alocado na inicialização.
     - Avaliação diferencial read-only na CSR para todos os candidatos; mutação de pixels via `copy_from` e `apply_chord` restrita exclusivamente aos $B$ sobreviventes de cada nível.
-  - **Solver 3: Otimização Global Contínua NNLS/FISTA + Roteamento Euleriano (`solvers/global_fista.rs`)**:
-    - Formulação Matrix-Free $\min_{w \ge 0} \frac{1}{2} \|A w - b\|_2^2 + \lambda_1 \|w\|_1$: operadores direto $A w$ e adjunto $A^T r$ varrem diretamente a `SparseChordMatrixCSR` sem alocar matrizes densas. Raio espectral $L = \|A^T A\|_2$ estimado via método das potências.
-    - Quantização discreta de pesos contínuos pelo método dos maiores restos com limite `max_chord_repeats`.
-    - Roteador Contínuo Euleriano: algoritmo de Hierholzer combinado com Nearest-Neighbor Stitching para saltos em componentes conexas, garantindo sequência contínua ininterrupta de pinos $(p_0, p_1, \dots, p_K)$.
-    - Sub-camadas de Pintor (_Painter's Algorithm_): divisão dos passos de cada carretel em $L$ sub-camadas intercaladas periodicamente para evitar que a última cor sobre-escureça as camadas inferiores.
+  - **Expurgo do Solver Global NNLS/FISTA**:
+    - O solver contínuo FISTA foi permanentemente removido do motor. A relaxação contínua $\ell_1$ com quantização a posteriori não modela a física não-linear de transmitância $T = \prod (1 - \alpha c_i)$ nem a restrição de caminho contínuo de Petros Vrellis, gerando artefatos e descontinuidades. O motor guloso exato é a fundação oficial.
   - **Interface Unificada de Execução (`solver_runner.rs`)**:
     - Máquina de estados `SolverSession` com `step_batch(&mut self, batch_size: usize) -> SolverProgress`, permitindo processamento em lotes e interrupções atômicas `PAUSE`, `RESUME` e `ABORT`.
 - **Manufatura Física, Gabaritos Paginados 1:1, CSV Mecânico e G-Code CNC (Camada 2 - `weaver-cam` / Sprint 3 Task 3.1)**:
@@ -305,7 +302,7 @@ Weaver Art reproduz computacionalmente as obras de arte de fios (_string art_ ou
     2. **`public/_headers` (raiz e `apps/web/public`)**: Regras estáticas para Cloudflare Pages e Netlify para `/*`.
     3. **`public/coi-serviceworker.js`**: Service Worker leve carregado condicionalmente em `index.html` apenas quando `window.crossOriginIsolated === false` (viabilizando execução transparente no GitHub Pages).
 - **Pipeline de Build Unificado e Autocura de Wasm em Dev (Task 4.4)**:
-  - O script `"build"` raiz orquestra a sequência estrita: compilação do Wasm em Rust (`scripts/build-wasm.mjs`), compilação TypeScript dos workspaces (`core`, `wasm`, `cli`), empacotamento Vite de `apps/web/` e sincronização do resultado para o diretório raiz `dist/` (`scripts/sync-dist.mjs`).
+  - O script `"build"` raiz orquestra a sequência estrita: compilação do Wasm em Rust (`scripts/build-wasm.mjs`), compilação TypeScript de `@weaver-art/core`, empacotamento Vite de `apps/web/` e sincronização do resultado para o diretório raiz `dist/` (`scripts/sync-dist.mjs`).
   - O script `"dev"` deve invocar `scripts/ensure-wasm.mjs` para garantir que o binário `.wasm` esteja presente ou compilado antes do boot do Vite, prevenindo exceções de inicialização em novos clones do projeto.
 - **Loop de Telemetria Atômica a 60 Hz e BOM via `weaver-cam` (Task 4.4)**:
   - Durante a execução do solver, a interface gráfica deve atualizar métricas de convergência exclusivamente a 60 Hz via `requestAnimationFrame`, lendo diretamente o `ControlBlock` atômico do `SharedArrayBuffer` sem alocações temporárias na heap da main thread.
@@ -332,7 +329,7 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
 2. **Proibição de Código Prematuro sem Diagnóstico:**
    - Nunca proponha ou aplique "chutes" em constantes mágicas. Toda alteração em equações deve ser justificada matematicamente com base em `docs/ALGORITHM.md`.
 3. **Expurgo Estrito de Legado:**
-   - É terminantemente proibido duplicar controles no DOM ou manter código morto "por segurança". A pasta legada `packages/` não faz parte da arquitetura ativa; toda a lógica reside em `crates/*` (Rust) e `apps/web/src/*` (TypeScript).
+   - É terminantemente proibido duplicar controles no DOM ou manter código morto "por segurança". Os pacotes legados `packages/cli` e `packages/wasm` foram excluídos; stubs inoperantes em `packages/core` e arquivos mortos como `core-helpers.ts` foram removidos. O motor computacional reside em `crates/*` (Rust), com ponte em `crates/weaver-wasm-adapter` e visualização em `apps/web/src/*`.
 
 ---
 
@@ -344,7 +341,7 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
   - Em **TODOS** os módulos (`weaver-domain`, `WebGLLoomRenderer`, `BlueprintCanvas` e `PlayerView`), o **Pino 0 (`index = 0`) DEVE iniciar no topo (12 horas, ângulo $-\frac{\pi}{2}\text{ rad}$ ou $-90^\circ$)** e avançar no **sentido horário (CW)**.
   - Nunca inicie o contorno circular em $0\text{ rad}$ (3 horas) no Rust, pois isso rotaciona a obra em $90^\circ$ em relação à tela.
 - **Convenção do Eixo Vertical ($Y$):**
-  - Na imagem alvo (`weaver-dsp`) e no Canvas 2D (`core-helpers.ts`), a origem $(0,0)$ fica no **canto superior esquerdo** ($Y$ cresce para baixo).
+  - Na imagem alvo (`weaver-dsp`) e no Canvas 2D, a origem $(0,0)$ fica no **canto superior esquerdo** ($Y$ cresce para baixo).
   - No **WebGL2 (`webgl-loom-renderer.ts`)**, o framebuffer possui origem no **canto inferior esquerdo** ($Y$ cresce para cima). Portanto, ao enviar os vértices das cordas (`seg.y0`, `seg.y1`) para o WebGL2, **DEVE-SE** converter a coordenada vertical fazendo `y_webgl = extentMm - seg.y`, e no arraste do mouse (`pointermove`) o deslocamento `panY` no WebGL deve subtrair `dy`.
 
 ### Invariante 2: Integridade de Dimensões de Buffers de Imagem
@@ -360,14 +357,14 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
 
 ### Invariante 4: Sincronização de Fonte Única da Verdade (Estúdio $\leftrightarrow$ BOM $\leftrightarrow$ Modo Tecelagem)
 
-- A tabela de `Estimativa de Carretéis`, os contadores de rodapé (`LINHAS`, `FIO`, `TROCAS / NÓS`) e o `Modo Tecelagem` devem ler **exatamente a mesma sequência de passos e a mesma paleta de cores ativa** (`MONOCHROME`, `CMYK_SUBTRACTIVE`, `RGB_OCCLUSIVE` ou `USER_CUSTOM`).
+- A tabela de `Estimativa de Carretéis`, os contadores de rodapé (`LINHAS`, `FIO`, `TROCAS / NÓS`) e o `Modo Tecelagem` devem ler **exatamente a mesma sequência de passos e a mesma paleta de cores ativa** (`MONOCHROME` ou `CMYK_SUBTRACTIVE`).
 
 ---
 
 ## 3. Lista Negra de Anti-Padrões (PROIBIDO IMPLEMENTAR)
 
 1. **PROIBIDO converter o alvo para escala de cinza quando `paletteMode !== 'MONOCHROME'`:** Em modos coloridos, o CLAHE e ajustes tonais atuam apenas na luminância, preservando 100% da cromaticidade RGB.
-2. **PROIBIDO permitir que fios coloridos (C, M, Y) atuem em pixels acromáticos/pretos:** Sem separação UCR/GCR, o carretel Amarelo tenta reduzir a distância euclidiana RGB em roupas pretas ou óculos escuros, criando bordas amarelas artificiais na periferia do aro.
+2. **PROIBIDO permitir que fios coloridos (Y, M, B, G) atuem em pixels acromáticos/pretos sem ordem física:** A ordem física obrigatória é sempre luminosas primeiro e preto por último (`layered`), impedindo desvios cromáticos espúrios em áreas escuras.
 3. **PROIBIDO penalizar excessivamente o fundo branco (> 0.5x):** Toda corda que desenha os olhos e óculos no centro precisa atravessar o fundo claro nas laterais da cabeça. Uma penalidade severa no fundo branco bloqueia o centro do retrato e aborta o solver prematuramente.
 4. **PROIBIDO alocar memória na Heap ou recalcular mapas inteiros dentro do _hot loop_:** Nunca execute cópias de `250.000` pixels a cada passo individual do solver.
 
@@ -378,5 +375,6 @@ Antes de planejar ou modificar qualquer linha de código, você **DEVE** ler e o
 Antes de dar qualquer tarefa por concluída, execute e valide:
 
 1. `cargo test --workspace` (Todos os testes unitários e de integração em Rust devem passar).
-2. `npm run build:wasm` (O pacote WebAssembly em `apps/web/src/core-bridge/pkg` deve ser atualizado sempre que arquivos `.rs` forem tocados).
-3. `npm --prefix apps/web run typecheck` (`tsc --noEmit` deve passar com zero erros).
+2. `npm run typecheck` (Verificação estrita de tipagem TypeScript nos workspaces).
+3. `npx vitest run` (Suíte completa de testes de frontend e contratos).
+4. `npm run build` (Compilação Wasm + `@weaver-art/core` + bundle Vite sem erros).
