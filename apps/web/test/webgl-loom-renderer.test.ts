@@ -472,7 +472,7 @@ describe('Sprint 4 — Task 4.1: Renderizador Físico WebGL2 e Diagnóstico DSP 
       // Aba 2: Mapa W(x,y)
       manager.setActiveStage('importance');
       expect(manager.getActiveStage()).toBe('importance');
-      expect(manager.isBrushModeActive()).toBe(true);
+      expect(manager.isBrushModeActive()).toBe(false);
 
       // Aba 3: Bordas
       manager.setActiveStage('edges');
@@ -491,7 +491,7 @@ describe('Sprint 4 — Task 4.1: Renderizador Físico WebGL2 e Diagnóstico DSP 
     it('permite pintura interativa no modo + Reforçar Nitidez e - Reduzir Peso', () => {
       const { manager, targetCanvas } = setupStudioManager();
       manager.updateTargetData(new Uint8ClampedArray(64 * 64 * 4), 64, 64);
-      manager.setActiveStage('importance');
+      manager.setBrushMode(true);
 
       expect(manager.getBrushMode()).toBe('boost');
 

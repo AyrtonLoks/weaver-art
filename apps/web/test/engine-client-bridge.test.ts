@@ -39,7 +39,7 @@ class MockWorker {
             new MessageEvent('message', {
               data: {
                 type: 'IMAGE_PREPARED',
-                summaryJson: JSON.stringify({ preparedWidth: 500, preparedHeight: 500 }),
+                summaryJson: msg.configJson ?? JSON.stringify({ preparedWidth: 500, preparedHeight: 500 }),
                 preparedRgba: new ArrayBuffer(16),
                 importanceRgba: new ArrayBuffer(16),
                 edgesRgba: new ArrayBuffer(16),
@@ -50,16 +50,19 @@ class MockWorker {
           );
           break;
 
-        case 'APPLY_BRUSH':
+        case 'APPLY_BRUSH': {
+          const buf = new ArrayBuffer(16);
+          new Uint8Array(buf)[0] = msg.brushWeights.length & 0xff;
           this.onmessage(
             new MessageEvent('message', {
               data: {
                 type: 'BRUSH_APPLIED',
-                importanceRgba: new ArrayBuffer(16),
+                importanceRgba: buf,
               },
             }),
           );
           break;
+        }
 
         case 'INIT_SOLVER':
           this.onmessage(
@@ -290,5 +293,186 @@ describe('WeaverEngineClient & Wasm Bridge Architecture (Sprint 3 / Task 3.3)', 
 
     client.dispose();
     expect(mockWorker.terminated).toBe(true);
+  });
+
+  it('handles multiple loadAndPrepareImage calls in strict FIFO order (T1)', async () => {
+    const client = new WeaverEngineClient();
+    const mockWorker = new MockWorker();
+    await client.init(mockWorker as unknown as Worker);
+
+    const dummyRgba = new Uint8Array(16);
+    const cfgA = JSON.stringify({ tag: 'requestA' });
+    const cfgB = JSON.stringify({ tag: 'requestB' });
+
+    // Disparar A e B sem await
+    const promiseA = client.loadAndPrepareImage(dummyRgba, 2, 2, cfgA);
+    const promiseB = client.loadAndPrepareImage(dummyRgba, 2, 2, cfgB);
+
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+
+    expect(resA.summaryJson).toBe(cfgA);
+    expect(resB.summaryJson).toBe(cfgB);
+
+    client.dispose();
+  });
+
+  it('routes ERROR messages to the correct pending queue by op (T1)', async () => {
+    const client = new WeaverEngineClient();
+    const mockWorker = new MockWorker();
+    await client.init(mockWorker as unknown as Worker);
+
+    const dummyRgba = new Uint8Array(16);
+    const cfgA = JSON.stringify({ tag: 'requestA' });
+    const cfgB = JSON.stringify({ tag: 'requestB' });
+
+    // Customiza o próximo postMessage de LOAD_AND_PREPARE_IMAGE para emitir erro no 1º e sucesso no 2º
+    let callCount = 0;
+    const originalPost = mockWorker.postMessage.bind(mockWorker);
+    mockWorker.postMessage = (msg: ToSolverWorkerMessage): void => {
+      mockWorker.postedMessages.push(msg);
+      if (msg.type === 'LOAD_AND_PREPARE_IMAGE') {
+        callCount++;
+        const currentCount = callCount;
+        setTimeout(() => {
+          if (!mockWorker.onmessage || mockWorker.terminated) return;
+          if (currentCount === 1) {
+            mockWorker.onmessage(
+              new MessageEvent('message', {
+                data: {
+                  type: 'ERROR',
+                  message: 'Falha no prepare A',
+                  op: 'prepare',
+                },
+              }),
+            );
+          } else {
+            mockWorker.onmessage(
+              new MessageEvent('message', {
+                data: {
+                  type: 'IMAGE_PREPARED',
+                  summaryJson: msg.configJson,
+                  preparedRgba: new ArrayBuffer(16),
+                  importanceRgba: new ArrayBuffer(16),
+                  edgesRgba: new ArrayBuffer(16),
+                  radonRgba: new ArrayBuffer(16),
+                  dimensions: [500, 500, 500, 500, 500, 500, 180, 180],
+                },
+              }),
+            );
+          }
+        }, 5);
+      } else {
+        originalPost(msg);
+      }
+    };
+
+    const promiseA = client.loadAndPrepareImage(dummyRgba, 2, 2, cfgA);
+    const promiseB = client.loadAndPrepareImage(dummyRgba, 2, 2, cfgB);
+
+    await expect(promiseA).rejects.toThrow('Falha no prepare A');
+    const resB = await promiseB;
+    expect(resB.summaryJson).toBe(cfgB);
+
+    client.dispose();
+  });
+
+  it('handles applyImportanceBrush in FIFO order (T1)', async () => {
+    const client = new WeaverEngineClient();
+    const mockWorker = new MockWorker();
+    await client.init(mockWorker as unknown as Worker);
+
+    const weightsA = new Float32Array(10);
+    const weightsB = new Float32Array(20);
+
+    const promiseA = client.applyImportanceBrush(weightsA);
+    const promiseB = client.applyImportanceBrush(weightsB);
+
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+    expect(new Uint8Array(resA)[0]).toBe(10);
+    expect(new Uint8Array(resB)[0]).toBe(20);
+
+    client.dispose();
+  });
+
+  it('rejects all pending FIFO queues on dispose() (T1)', async () => {
+    const client = new WeaverEngineClient();
+    // Worker que responde apenas a INIT e deixa as operações pendentes
+    const silentWorker = {
+      onmessage: null as ((e: MessageEvent<FromSolverWorkerMessage>) => void) | null,
+      onerror: null,
+      postMessage: vi.fn((msg: ToSolverWorkerMessage) => {
+        if (msg.type === 'INIT') {
+          setTimeout(() => {
+            silentWorker.onmessage?.(
+              new MessageEvent('message', {
+                data: { type: 'READY', isShared: false, capacitySteps: 1000 },
+              }),
+            );
+          }, 0);
+        }
+      }),
+      terminate: vi.fn(),
+    };
+    await client.init(silentWorker as unknown as Worker);
+
+    const dummyRgba = new Uint8Array(16);
+    const prepPromise = client.loadAndPrepareImage(dummyRgba, 2, 2, '{}');
+    const brushPromise = client.applyImportanceBrush(new Float32Array(5));
+    const initSolverPromise = client.initSolver('{}');
+    const smartFramePromise = client.computeSmartFraming(dummyRgba, 2, 2);
+
+    client.dispose();
+
+    await expect(prepPromise).rejects.toThrow('Engine descartado');
+    await expect(brushPromise).rejects.toThrow('Engine descartado');
+    await expect(initSolverPromise).rejects.toThrow('Engine descartado');
+    await expect(smartFramePromise).rejects.toThrow('Engine descartado');
+  });
+
+  it('rejects all pending FIFO queues on fatal worker ERROR message (T1)', async () => {
+    const client = new WeaverEngineClient();
+    const mockWorker = new MockWorker();
+    await client.init(mockWorker as unknown as Worker);
+
+    const dummyRgba = new Uint8Array(16);
+    const prepPromise1 = client.loadAndPrepareImage(dummyRgba, 2, 2, '{}');
+    const prepPromise2 = client.loadAndPrepareImage(dummyRgba, 2, 2, '{}');
+    const brushPromise = client.applyImportanceBrush(new Float32Array(5));
+
+    // Simula mensagem de erro fatal vinda do worker
+    mockWorker.onmessage?.(
+      new MessageEvent('message', {
+        data: {
+          type: 'ERROR',
+          message: 'Wasm out of memory trap',
+          fatal: true,
+          op: 'prepare',
+        },
+      }),
+    );
+
+    await expect(prepPromise1).rejects.toThrow('Wasm out of memory trap');
+    await expect(prepPromise2).rejects.toThrow('Wasm out of memory trap');
+    await expect(brushPromise).rejects.toThrow('Wasm out of memory trap');
+
+    client.dispose();
+  });
+
+  it('rejects all pending FIFO queues on worker.onerror event (T1)', async () => {
+    const client = new WeaverEngineClient();
+    const mockWorker = new MockWorker();
+    await client.init(mockWorker as unknown as Worker);
+
+    const dummyRgba = new Uint8Array(16);
+    const prepPromise = client.loadAndPrepareImage(dummyRgba, 2, 2, '{}');
+    const initSolverPromise = client.initSolver('{}');
+
+    // Simula evento de erro inesperado no worker
+    mockWorker.onerror?.({ message: 'Script evaluation error' } as unknown as ErrorEvent);
+
+    await expect(prepPromise).rejects.toThrow('Worker error: Script evaluation error');
+    await expect(initSolverPromise).rejects.toThrow('Worker error: Script evaluation error');
+
+    client.dispose();
   });
 });

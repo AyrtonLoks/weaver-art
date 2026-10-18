@@ -16,7 +16,7 @@ import {
   type WeavingStepRecord,
   type SolverStatusFlagValue,
 } from '../domain-contracts/types.js';
-import type { CamExportType, FromSolverWorkerMessage, ToSolverWorkerMessage } from './solver.worker.js';
+import type { CamExportType, FromSolverWorkerMessage, ToSolverWorkerMessage, WorkerOp } from './solver.worker.js';
 
 export interface EngineClientOptions {
   capacitySteps?: number;
@@ -52,6 +52,8 @@ export interface SmartFramingResult {
   faceCount?: number;
 }
 
+type Pending<T> = { resolve: (v: T) => void; reject: (e: unknown) => void };
+
 /**
  * High-performance client that bridges the UI thread to the background Wasm solver worker.
  */
@@ -64,18 +66,16 @@ export class WeaverEngineClient {
   private onProgressCallbacks: Set<(progress: ProgressNotification) => void> = new Set();
   private onDoneCallbacks: Set<(done: ProgressNotification) => void> = new Set();
   private onPausedCallbacks: Set<(step: number) => void> = new Set();
-  private onErrorCallbacks: Set<(err: string) => void> = new Set();
+  private onErrorCallbacks: Set<(err: string, op?: WorkerOp) => void> = new Set();
 
   private pendingCamExports: Map<
     string,
     { resolve: (res: string | Uint8Array) => void; reject: (err: unknown) => void }
   > = new Map();
-  private pendingImagePrepare: { resolve: (res: PreparedImageResult) => void; reject: (err: unknown) => void } | null =
-    null;
-  private pendingSolverInit: { resolve: () => void; reject: (err: unknown) => void } | null = null;
-  private pendingBrushApply: { resolve: (buf: ArrayBuffer) => void; reject: (err: unknown) => void } | null = null;
-  private pendingSmartFrame: { resolve: (res: SmartFramingResult) => void; reject: (err: unknown) => void } | null =
-    null;
+  private pendingImagePrepare: Pending<PreparedImageResult>[] = [];
+  private pendingSolverInit: Pending<void>[] = [];
+  private pendingBrushApply: Pending<ArrayBuffer>[] = [];
+  private pendingSmartFrame: Pending<SmartFramingResult>[] = [];
 
   constructor(options?: EngineClientOptions) {
     this.memory = new SharedWorkspaceMemory(options?.capacitySteps, {
@@ -123,33 +123,30 @@ export class WeaverEngineClient {
               resolve();
               break;
 
-            case 'IMAGE_PREPARED':
-              if (this.pendingImagePrepare) {
-                this.pendingImagePrepare.resolve({
-                  summaryJson: msg.summaryJson,
-                  preparedRgba: msg.preparedRgba,
-                  importanceRgba: msg.importanceRgba,
-                  edgesRgba: msg.edgesRgba,
-                  radonRgba: msg.radonRgba,
-                  dimensions: msg.dimensions,
-                });
-                this.pendingImagePrepare = null;
-              }
+            case 'IMAGE_PREPARED': {
+              const pending = this.pendingImagePrepare.shift();
+              pending?.resolve({
+                summaryJson: msg.summaryJson,
+                preparedRgba: msg.preparedRgba,
+                importanceRgba: msg.importanceRgba,
+                edgesRgba: msg.edgesRgba,
+                radonRgba: msg.radonRgba,
+                dimensions: msg.dimensions,
+              });
               break;
+            }
 
-            case 'BRUSH_APPLIED':
-              if (this.pendingBrushApply) {
-                this.pendingBrushApply.resolve(msg.importanceRgba);
-                this.pendingBrushApply = null;
-              }
+            case 'BRUSH_APPLIED': {
+              const pending = this.pendingBrushApply.shift();
+              pending?.resolve(msg.importanceRgba);
               break;
+            }
 
-            case 'SOLVER_INITIALIZED':
-              if (this.pendingSolverInit) {
-                this.pendingSolverInit.resolve();
-                this.pendingSolverInit = null;
-              }
+            case 'SOLVER_INITIALIZED': {
+              const pending = this.pendingSolverInit.shift();
+              pending?.resolve();
               break;
+            }
 
             case 'PROGRESS':
               for (const cb of this.onProgressCallbacks) {
@@ -190,49 +187,85 @@ export class WeaverEngineClient {
               break;
             }
 
-            case 'SMART_FRAME_RESULT':
-              if (this.pendingSmartFrame) {
+            case 'SMART_FRAME_RESULT': {
+              const pending = this.pendingSmartFrame.shift();
+              if (pending) {
                 try {
                   const parsed = JSON.parse(msg.resultJson) as SmartFramingResult;
-                  this.pendingSmartFrame.resolve(parsed);
+                  pending.resolve(parsed);
                 } catch (err) {
-                  this.pendingSmartFrame.reject(err);
+                  pending.reject(err);
                 }
-                this.pendingSmartFrame = null;
               }
               break;
+            }
 
-            case 'ERROR':
-              if (this.pendingImagePrepare) {
-                this.pendingImagePrepare.reject(new Error(msg.message));
-                this.pendingImagePrepare = null;
-              }
-              if (this.pendingSolverInit) {
-                this.pendingSolverInit.reject(new Error(msg.message));
-                this.pendingSolverInit = null;
-              }
-              if (this.pendingSmartFrame) {
-                this.pendingSmartFrame.reject(new Error(msg.message));
-                this.pendingSmartFrame = null;
+            case 'ERROR': {
+              const err = new Error(msg.message);
+              switch (msg.op) {
+                case 'prepare':
+                  this.pendingImagePrepare.shift()?.reject(err);
+                  break;
+                case 'brush':
+                  this.pendingBrushApply.shift()?.reject(err);
+                  break;
+                case 'initSolver':
+                  this.pendingSolverInit.shift()?.reject(err);
+                  break;
+                case 'smartFrame':
+                  this.pendingSmartFrame.shift()?.reject(err);
+                  break;
+                case 'cam':
+                  if (msg.exportId) {
+                    this.pendingCamExports.get(msg.exportId)?.reject(err);
+                    this.pendingCamExports.delete(msg.exportId);
+                  }
+                  break;
+                default:
+                  if (!msg.op) {
+                    this.pendingImagePrepare.shift()?.reject(err);
+                    this.pendingBrushApply.shift()?.reject(err);
+                    this.pendingSolverInit.shift()?.reject(err);
+                    this.pendingSmartFrame.shift()?.reject(err);
+                  }
+                  break;
               }
               for (const cb of this.onErrorCallbacks) {
-                cb(msg.message);
+                cb(msg.message, msg.op);
               }
               if (msg.fatal) {
                 clearTimeout(timeout);
+                for (const pending of this.pendingCamExports.values()) {
+                  pending.reject(err);
+                }
+                this.pendingCamExports.clear();
+                while (this.pendingImagePrepare.length > 0) this.pendingImagePrepare.shift()?.reject(err);
+                while (this.pendingBrushApply.length > 0) this.pendingBrushApply.shift()?.reject(err);
+                while (this.pendingSolverInit.length > 0) this.pendingSolverInit.shift()?.reject(err);
+                while (this.pendingSmartFrame.length > 0) this.pendingSmartFrame.shift()?.reject(err);
                 reject(new Error(msg.message));
               }
               break;
+            }
           }
         };
 
         this.worker.onerror = (err) => {
           clearTimeout(timeout);
           const message = err.message || 'Erro desconhecido no Web Worker';
+          const errorObj = new Error(`Worker error: ${message}`);
           for (const cb of this.onErrorCallbacks) {
             cb(message);
           }
-          reject(new Error(`Worker error: ${message}`));
+          for (const pending of this.pendingCamExports.values()) {
+            pending.reject(errorObj);
+          }
+          this.pendingCamExports.clear();
+          while (this.pendingImagePrepare.length > 0) this.pendingImagePrepare.shift()?.reject(errorObj);
+          while (this.pendingBrushApply.length > 0) this.pendingBrushApply.shift()?.reject(errorObj);
+          while (this.pendingSolverInit.length > 0) this.pendingSolverInit.shift()?.reject(errorObj);
+          while (this.pendingSmartFrame.length > 0) this.pendingSmartFrame.shift()?.reject(errorObj);
+          reject(errorObj);
         };
 
         // Dispara mensagem inicial de conexão
@@ -284,7 +317,7 @@ export class WeaverEngineClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingImagePrepare = { resolve, reject };
+      this.pendingImagePrepare.push({ resolve, reject });
       const msg: ToSolverWorkerMessage = {
         type: 'LOAD_AND_PREPARE_IMAGE',
         rawRgba: rawBuffer,
@@ -305,7 +338,7 @@ export class WeaverEngineClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingBrushApply = { resolve, reject };
+      this.pendingBrushApply.push({ resolve, reject });
       const msg: ToSolverWorkerMessage = {
         type: 'APPLY_BRUSH',
         brushWeights,
@@ -342,7 +375,7 @@ export class WeaverEngineClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingSmartFrame = { resolve, reject };
+      this.pendingSmartFrame.push({ resolve, reject });
       const msg: ToSolverWorkerMessage = {
         type: 'SMART_FRAME',
         rawRgba: rawBuffer,
@@ -366,7 +399,7 @@ export class WeaverEngineClient {
 
     const configJson = typeof config === 'string' ? config : JSON.stringify(config);
     return new Promise((resolve, reject) => {
-      this.pendingSolverInit = { resolve, reject };
+      this.pendingSolverInit.push({ resolve, reject });
       const msg: ToSolverWorkerMessage = {
         type: 'INIT_SOLVER',
         configJson,
@@ -455,7 +488,7 @@ export class WeaverEngineClient {
     return () => this.onPausedCallbacks.delete(cb);
   }
 
-  public onError(cb: (err: string) => void): () => void {
+  public onError(cb: (err: string, op?: WorkerOp) => void): () => void {
     this.onErrorCallbacks.add(cb);
     return () => this.onErrorCallbacks.delete(cb);
   }
@@ -470,6 +503,14 @@ export class WeaverEngineClient {
     this.onDoneCallbacks.clear();
     this.onPausedCallbacks.clear();
     this.onErrorCallbacks.clear();
+    const disposeErr = new Error('Engine descartado');
+    for (const pending of this.pendingCamExports.values()) {
+      pending.reject(disposeErr);
+    }
     this.pendingCamExports.clear();
+    while (this.pendingImagePrepare.length > 0) this.pendingImagePrepare.shift()?.reject(disposeErr);
+    while (this.pendingBrushApply.length > 0) this.pendingBrushApply.shift()?.reject(disposeErr);
+    while (this.pendingSolverInit.length > 0) this.pendingSolverInit.shift()?.reject(disposeErr);
+    while (this.pendingSmartFrame.length > 0) this.pendingSmartFrame.shift()?.reject(disposeErr);
   }
 }

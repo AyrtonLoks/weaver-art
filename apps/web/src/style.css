@@ -304,6 +304,30 @@ figure canvas {
   touch-action: none;
 }
 
+.thumb {
+  position: relative;
+}
+
+.brush-cursor {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+#btnBrushMode.mode-boost {
+  color: var(--accent, #4cd964);
+}
+
+#btnBrushMode.mode-reduce {
+  color: #ff9500;
+}
+
+#simCaption.stale {
+  color: var(--accent);
+}
+
 body[data-loom-shape='CIRCULAR'] figure canvas,
 body[data-loom-shape='circle'] figure canvas {
   border-radius: 50%;

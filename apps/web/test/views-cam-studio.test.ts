@@ -22,6 +22,12 @@ function createMockElement<T extends HTMLElement>(
         for (const fn of list) fn({ type: 'click' });
       }
     },
+    trigger(event: string, data: unknown = {}) {
+      const list = listeners[event];
+      if (list) {
+        for (const fn of list) fn(data);
+      }
+    },
     style: {},
     classList: {
       classes: new Set<string>(),
@@ -317,6 +323,122 @@ describe('Task 0.4 — Refatoração em 3 Vistas e CAM Blueprint', () => {
       // Limpa pincel
       studio.clearManualBrush();
       expect(mask?.[0]).toBe(0);
+    });
+
+    it('gerencia transição de modos e interação de pan vs pincel (T4 e T5)', () => {
+      const targetCanvas = createMockCanvas();
+      (
+        targetCanvas as unknown as {
+          getBoundingClientRect: () => { left: number; top: number; width: number; height: number };
+        }
+      ).getBoundingClientRect = () => ({
+        left: 0,
+        top: 0,
+        width: 200,
+        height: 200,
+      });
+
+      const tabPrepared = createMockElement<HTMLButtonElement>('button', {}, { stage: 'prepared' });
+      const tabImportance = createMockElement<HTMLButtonElement>('button', {}, { stage: 'importance' });
+      const stageTabs = [tabPrepared, tabImportance] as unknown as NodeListOf<HTMLButtonElement>;
+
+      const zoomInput = createMockElement<HTMLInputElement>('input');
+      zoomInput.value = '1.0';
+      const panXInput = createMockElement<HTMLInputElement>('input');
+      panXInput.value = '0';
+      const panYInput = createMockElement<HTMLInputElement>('input');
+      panYInput.value = '0';
+      const rotationInput = createMockElement<HTMLInputElement>('input');
+      rotationInput.value = '0';
+
+      const btnToggleBrush = createMockElement<HTMLButtonElement>('button');
+      const btnBrushMode = createMockElement<HTMLButtonElement>('button');
+      const btnClearBrush = createMockElement<HTMLButtonElement>('button');
+      const targetCaption = createMockElement<HTMLElement>('figcaption');
+
+      const framingEl: StudioFramingElements = {
+        targetCanvas,
+        zoomInput,
+        panXInput,
+        panYInput,
+        rotationInput,
+        btnSmartFrame: createMockElement('button'),
+        btnResetCrop: createMockElement('button'),
+        btnToggleBrush,
+        btnBrushMode,
+        btnClearBrush,
+        stageTabs,
+        targetCaption,
+      };
+
+      const studio = new StudioViewManager(framingEl);
+
+      // 1. Abrir W (aba importance) não ativa o pincel automaticamente
+      studio.setActiveStage('importance');
+      expect(studio.getActiveStage()).toBe('importance');
+      expect(studio.isBrushModeActive()).toBe(false);
+
+      // 2. Ligar o pincel ativa a aba importance e habilita o botão de modo
+      const brushCursorMock = createMockElement<HTMLDivElement>('div');
+      brushCursorMock.className = 'brush-cursor';
+      brushCursorMock.hidden = true;
+      const container = createMockElement<HTMLElement>('div');
+      (container as unknown as { querySelector: () => typeof brushCursorMock }).querySelector = () => brushCursorMock;
+      (targetCanvas as unknown as { parentElement: typeof container }).parentElement = container;
+
+      studio.setActiveStage('prepared');
+      studio.setBrushMode(true);
+      expect(studio.isBrushModeActive()).toBe(true);
+      expect(studio.getActiveStage()).toBe('importance');
+      expect(btnBrushMode.disabled).toBe(false);
+      expect(btnBrushMode.textContent).toContain('+ Reforçar');
+
+      const trigger = (targetCanvas as unknown as { trigger: (e: string, d: unknown) => void }).trigger;
+      trigger('pointerenter', { clientX: 100, clientY: 100 });
+      expect(brushCursorMock.hidden).toBe(false);
+
+      // 3. Sair de W para prepared desliga o pincel e oculta o cursor automaticamente
+      studio.setActiveStage('prepared');
+      expect(studio.isBrushModeActive()).toBe(false);
+      expect(btnBrushMode.disabled).toBe(true);
+      expect(brushCursorMock.hidden).toBe(true);
+
+      // 4. Arraste faz pan após sair de W (fator 200 / zoom)
+      // Com zoom 1.0, dx = 50 em largura 200 => deltaPanX = (50 / 200) * (200 / 1.0) = 50%
+      trigger('pointerdown', { clientX: 100, clientY: 100, pointerId: 1 });
+      trigger('pointermove', { clientX: 150, clientY: 100, pointerId: 1 });
+      trigger('pointerup', { pointerId: 1 });
+      expect(panXInput.value).toBe('50');
+
+      // 5. Fator de zoom: zoom 2.0 com dx = 50 => deltaPanX = (50 / 200) * (200 / 2.0) = 25%
+      panXInput.value = '0';
+      zoomInput.value = '2.0';
+      trigger('pointerdown', { clientX: 100, clientY: 100, pointerId: 1 });
+      trigger('pointermove', { clientX: 150, clientY: 100, pointerId: 1 });
+      trigger('pointerup', { pointerId: 1 });
+      expect(panXInput.value).toBe('25');
+
+      // 6. Coordenadas do pincel com máscara 500x500 e canvas 200x200
+      studio.setDiagnosticBuffers({
+        dimensions: [500, 500, 500, 500, 500, 500, 180, 180],
+      });
+      studio.setBrushMode(true); // leva para importance com brushActive=true
+      expect(studio.hasBrushStrokes()).toBe(false);
+
+      // Clica no centro (100, 100) do canvas (largura 200, altura 200) => u=0.5, v=0.5 => máscara (250, 250)
+      trigger('pointerdown', { clientX: 100, clientY: 100, pointerId: 1 });
+      trigger('pointerup', { pointerId: 1 });
+
+      const mask = studio.getManualBrushMask();
+      expect(mask).not.toBeNull();
+      expect(mask?.length).toBe(500 * 500);
+      expect(mask![250 * 500 + 250]).toBeGreaterThan(0);
+      expect(studio.hasBrushStrokes()).toBe(true);
+
+      // 7. onFramingInvalidated limpa o pincel se houver traços
+      studio.onFramingInvalidated();
+      expect(studio.hasBrushStrokes()).toBe(false);
+      expect(mask![250 * 500 + 250]).toBe(0);
     });
   });
 

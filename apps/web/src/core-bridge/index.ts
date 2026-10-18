@@ -9,6 +9,7 @@ export type {
   ToSolverWorkerMessage,
   FromSolverWorkerMessage,
   CamExportType,
+  WorkerOp,
   ToSolverWorkerMessage as ToWorker,
   FromSolverWorkerMessage as FromWorker,
 } from './solver.worker.js';

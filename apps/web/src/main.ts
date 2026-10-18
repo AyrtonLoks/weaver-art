@@ -13,7 +13,8 @@ import {
   type WeaveStep,
   type ThreadSummary,
 } from '@weaver-art/core';
-import { WeaverEngineClient } from './core-bridge/index.js';
+import { WeaverEngineClient, type WorkerOp } from './core-bridge/index.js';
+import { clampToInput, finiteOr, readValidNumber, setInputValue } from './ui-utils/inputs.js';
 import type {
   ColorPaletteMode,
   LoomConfig,
@@ -42,6 +43,7 @@ let image: ImageData | null = null;
 let sourceImageCanvas: HTMLCanvasElement | null = null;
 let imageName = 'weave';
 let result: WeaveResult | null = null;
+let resultIsStale = false;
 let running = false;
 let isWasmRunning = false;
 let animFrameId: number | null = null;
@@ -244,18 +246,13 @@ const studioManager = new StudioViewManager(
     stageTabs: document.querySelectorAll<HTMLButtonElement>('.stage-pill'),
     targetCaption: document.getElementById('targetCaption') as HTMLElement | undefined,
   },
-  () => {
-    presetStore.setParam('framing', {
-      zoom: Number(fields.cropZoom.value) || 1.0,
-      panXPercent: Number(fields.cropPanX.value) || 0,
-      panYPercent: Number(fields.cropPanY.value) || 0,
-      rotationDeg: Number(cropRotationInput.value) || 0,
-      autoFaceTargetRatio: 0,
-    });
-    updateOutputs();
-    updateTargetPreview(false);
-  },
+  commitFraming,
 );
+
+studioManager.setBrushCommittedHandler(() => markResultStale());
+studioManager.setStageChangeHandler((stage) => {
+  if (stage === 'prepared') renderInstantClientFramingPreview();
+});
 
 const loomRenderer = new WebGLLoomRenderer(simCanvas, {
   extentMm: Number(fields.diameter.value) || 600,
@@ -281,14 +278,42 @@ const distanceView = new DistanceViewController(
   () => loomRenderer.getZoom(),
 );
 
-/** Repassa os buffers de diagnóstico do DSP ao estúdio e à comparação da vista à distância. */
-function applyDiagnostics(res: DiagnosticBuffersPayload): void {
+/** Lê os sliders de enquadramento e grava no store (fonte única de verdade). */
+function commitFraming(): void {
+  presetStore.setParam('framing', {
+    zoom: finiteOr(fields.cropZoom.value, 1.0),
+    panXPercent: finiteOr(fields.cropPanX.value, 0),
+    panYPercent: finiteOr(fields.cropPanY.value, 0),
+    rotationDeg: finiteOr(cropRotationInput.value, 0),
+    autoFaceTargetRatio: 0,
+  });
+  updateOutputs();
+  studioManager.onFramingInvalidated();
+  markResultStale();
+  updateTargetPreview();
+}
+
+function markResultStale(): void {
+  if (!result || running || resultIsStale) return;
+  resultIsStale = true;
+  distanceView.setStale(true);
+  distanceView.setMode('threads');
+}
+
+function clearResultStale(): void {
+  resultIsStale = false;
+  distanceView.setStale(false);
+}
+
+/** Repassa os buffers de diagnóstico do DSP ao estúdio e à comparação da vista à distância (se congelada). */
+function applyDiagnostics(res: DiagnosticBuffersPayload, opts: { freezeReference?: boolean } = {}): void {
   studioManager.setDiagnosticBuffers(res);
+  if (!opts.freezeReference) return;
   const dims = res.dimensions;
   if (res.preparedRgba && dims && dims.length >= 2) {
     const rgba =
       res.preparedRgba instanceof Uint8ClampedArray ? res.preparedRgba : new Uint8ClampedArray(res.preparedRgba);
-    distanceView.setReference(rgba, dims[0], dims[1]);
+    distanceView.setReference(rgba.slice(), dims[0], dims[1]);
   }
 }
 
@@ -363,7 +388,8 @@ engineClient
         await finishWasmRun(false);
       }
     });
-    engineClient.onError((err) => {
+    engineClient.onError((err: string, op?: WorkerOp) => {
+      const wasRunning = isWasmRunning;
       if (isWasmRunning) {
         if (animFrameId !== null) {
           cancelAnimationFrame(animFrameId);
@@ -372,7 +398,9 @@ engineClient
         isWasmRunning = false;
         setRunning(false);
       }
-      showError(new Error(err));
+      if (wasRunning || (op !== 'prepare' && op !== 'brush')) {
+        showError(new Error(err));
+      }
     });
   })
   .catch((err) => {
@@ -478,6 +506,18 @@ export function getCurrentLoomConfig(): LoomConfig {
   };
 }
 
+let loomPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleLoomPreview(): void {
+  if (loomPreviewTimer) clearTimeout(loomPreviewTimer);
+  loomPreviewTimer = setTimeout(updateLoomPreview, 120);
+}
+
+function onGeometryChanged(): void {
+  scheduleLoomPreview();
+  markResultStale();
+  updateTargetPreview();
+}
+
 function updateLoomPreview(): void {
   try {
     const cfg = getCurrentLoomConfig();
@@ -495,7 +535,7 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   if (preset.value !== cfg.presetProfileId) {
     preset.value = cfg.presetProfileId;
   }
-  loomShape.value = cfg.shape;
+  setInputValue(loomShape, cfg.shape);
   document.body.dataset.loomShape = cfg.shape;
 
   controlDiameterMm.hidden = cfg.shape !== 'CIRCULAR';
@@ -503,23 +543,26 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
   controlWidthMm.hidden = cfg.shape !== 'RECTANGULAR' && cfg.shape !== 'ELLIPTICAL';
   controlCustomPegs.hidden = loomShape.value !== 'custom';
 
-  fields.pegs.value = String(cfg.pinCount);
-  fields.diameter.value = cfg.diameterMm.toFixed(1);
-  fields.pegDiameter.value = String(cfg.pinDiameterMm);
-  fields.threadWidth.value = String(cfg.threadThicknessMm);
+  setInputValue(fields.pegs, cfg.pinCount);
+  setInputValue(fields.diameter, cfg.diameterMm);
+  setInputValue(fields.pegDiameter, cfg.pinDiameterMm);
+  setInputValue(fields.threadWidth, cfg.threadThicknessMm);
+  if (cfg.widthMm !== undefined) setInputValue(rectWidthInput, cfg.widthMm);
+  if (cfg.heightMm !== undefined) setInputValue(rectHeightInput, cfg.heightMm);
+  if (cfg.polygonSides !== undefined) setInputValue(polygonSidesInput, cfg.polygonSides);
   loomRenderer.setThreadThickness(cfg.threadThicknessMm);
 
-  rasterizerSelect.value = cfg.rasterizer;
-  paletteModeSelect.value = cfg.paletteMode;
+  setInputValue(rasterizerSelect, cfg.rasterizer);
+  setInputValue(paletteModeSelect, cfg.paletteMode);
   loomRenderer.setPalette(cfg.paletteMode);
   controlUserCustomPalette.hidden = cfg.paletteMode !== 'USER_CUSTOM';
-  opticalMixModelSelect.value = cfg.opticalMixModel;
-  errorMetricSelect.value = cfg.errorMetric;
+  setInputValue(opticalMixModelSelect, cfg.opticalMixModel);
+  setInputValue(errorMetricSelect, cfg.errorMetric);
 
-  solverSelect.value = cfg.solver;
-  colorStrategy.value = cfg.spoolStrategy;
-  fields.lines.value = String(cfg.maxLines);
-  fields.repeats.value = String(cfg.maxChordRepeats);
+  setInputValue(solverSelect, cfg.solver);
+  setInputValue(colorStrategy, cfg.spoolStrategy);
+  setInputValue(fields.lines, cfg.maxLines);
+  setInputValue(fields.repeats, cfg.maxChordRepeats);
 
   controlSpoolStrategy.hidden = cfg.paletteMode === 'MONOCHROME';
   controlBeamWidth.hidden = cfg.solver !== 'BEAM_SEARCH';
@@ -529,35 +572,35 @@ function syncUIWithConfig(cfg: Readonly<WeaverConfig>, isDirty: boolean): void {
     cfg.paletteMode === 'MONOCHROME' ||
     (cfg.spoolStrategy !== 'MIN_RUN_LENGTH' && cfg.spoolStrategy !== 'HYSTERESIS_PENALTY');
 
-  beamWidthInput.value = String(cfg.beamWidth);
-  beamDepthInput.value = String(cfg.beamDepth);
-  fistaIterationsInput.value = String(cfg.fistaIterations);
-  l1RegularizationLambdaInput.value = String(cfg.l1RegularizationLambda);
-  switchPenaltyLambdaInput.value = String(cfg.switchPenaltyLambda);
-  minRunLengthInput.value = String(cfg.minRunLength);
+  setInputValue(beamWidthInput, cfg.beamWidth);
+  setInputValue(beamDepthInput, cfg.beamDepth);
+  setInputValue(fistaIterationsInput, cfg.fistaIterations);
+  setInputValue(l1RegularizationLambdaInput, cfg.l1RegularizationLambda);
+  setInputValue(switchPenaltyLambdaInput, cfg.switchPenaltyLambda);
+  setInputValue(minRunLengthInput, cfg.minRunLength);
 
   fields.clahe.checked = cfg.claheClipLimit > 0;
   const claheControlsEl = document.getElementById('clahe-controls');
   if (claheControlsEl) claheControlsEl.hidden = !fields.clahe.checked;
-  fields.claheClip.value = String(cfg.claheClipLimit > 0 ? cfg.claheClipLimit : 2.0);
-  faceImportanceWeightInput.value = String(cfg.faceImportanceWeight);
-  if (featureEmphasisInput) featureEmphasisInput.value = String(cfg.featureEmphasisWeight);
-  if (skinLiftInput) skinLiftInput.value = String(cfg.skinLift);
-  edgeDetectorSelect.value = cfg.edgeDetector;
+  setInputValue(fields.claheClip, cfg.claheClipLimit > 0 ? cfg.claheClipLimit : 2.0);
+  setInputValue(faceImportanceWeightInput, cfg.faceImportanceWeight);
+  if (featureEmphasisInput) setInputValue(featureEmphasisInput, cfg.featureEmphasisWeight);
+  if (skinLiftInput) setInputValue(skinLiftInput, cfg.skinLift);
+  setInputValue(edgeDetectorSelect, cfg.edgeDetector);
   controlEdgeBlendWeight.hidden = cfg.edgeDetector === 'NONE';
-  edgeBlendWeightInput.value = String(cfg.edgeBlendWeight);
-  morphologyOpSelect.value = cfg.morphologyOp;
+  setInputValue(edgeBlendWeightInput, cfg.edgeBlendWeight);
+  setInputValue(morphologyOpSelect, cfg.morphologyOp);
 
-  fields.cropZoom.value = cfg.framing.zoom.toFixed(2);
-  fields.cropPanX.value = String(cfg.framing.panXPercent);
-  fields.cropPanY.value = String(cfg.framing.panYPercent);
-  cropRotationInput.value = String(cfg.framing.rotationDeg);
+  setInputValue(fields.cropZoom, cfg.framing.zoom.toFixed(2));
+  setInputValue(fields.cropPanX, cfg.framing.panXPercent);
+  setInputValue(fields.cropPanY, cfg.framing.panYPercent);
+  setInputValue(cropRotationInput, cfg.framing.rotationDeg);
 
   btnResetPresetDefaults.hidden = !isDirty;
 
   updateOutputs();
   checkRepeatsHint();
-  updateLoomPreview();
+  scheduleLoomPreview();
 }
 
 presetStore.subscribe((cfg, isDirty) => {
@@ -582,11 +625,13 @@ preset.addEventListener('change', () => {
       presetStore.loadPreset('PORTRAIT_HIGH_SHARPNESS_EPOCHS');
     }
   });
+  markResultStale();
   updateTargetPreview();
 });
 
 btnResetPresetDefaults.addEventListener('click', () => {
   keepImageFraming(() => presetStore.resetAllDirty());
+  markResultStale();
   updateTargetPreview();
 });
 
@@ -600,7 +645,7 @@ loomShape.addEventListener('change', () => {
   if (s === 'CIRCULAR' || s === 'REGULAR_POLYGON' || s === 'RECTANGULAR' || s === 'ELLIPTICAL') {
     presetStore.setParam('shape', s);
   }
-  updateLoomPreview();
+  onGeometryChanged();
 });
 
 paletteModeSelect.addEventListener('change', () => {
@@ -609,6 +654,7 @@ paletteModeSelect.addEventListener('change', () => {
   loomRenderer.setPalette(mode);
   controlUserCustomPalette.hidden = mode !== 'USER_CUSTOM';
   controlSpoolStrategy.hidden = mode === 'MONOCHROME';
+  markResultStale();
   updateTargetPreview();
 });
 
@@ -630,12 +676,14 @@ edgeDetectorSelect.addEventListener('change', () => {
   const ed = edgeDetectorSelect.value as WeaverConfig['edgeDetector'];
   presetStore.setParam('edgeDetector', ed);
   controlEdgeBlendWeight.hidden = ed === 'NONE';
+  markResultStale();
   updateTargetPreview();
 });
 
 morphologyOpSelect.addEventListener('change', () => {
   const mop = morphologyOpSelect.value as WeaverConfig['morphologyOp'];
   presetStore.setParam('morphologyOp', mop);
+  markResultStale();
   updateTargetPreview();
 });
 
@@ -651,26 +699,41 @@ errorMetricSelect.addEventListener('change', () => {
   presetStore.setParam('errorMetric', errorMetricSelect.value as WeaverConfig['errorMetric']);
 });
 
-for (const el of [
-  fields.pegs,
-  fields.diameter,
-  fields.pegDiameter,
-  fields.threadWidth,
-  rectWidthInput,
-  rectHeightInput,
-  rectPegsXInput,
-  rectPegsYInput,
-  polygonSidesInput,
-  polyPegsInput,
-]) {
+const GEOMETRY_BINDINGS: Array<[HTMLInputElement, keyof WeaverConfig, (v: number) => number]> = [
+  [fields.pegs, 'pinCount', Math.round],
+  [fields.diameter, 'diameterMm', (v) => v],
+  [fields.pegDiameter, 'pinDiameterMm', (v) => v],
+  [fields.threadWidth, 'threadThicknessMm', (v) => v],
+  [rectWidthInput, 'widthMm', (v) => v],
+  [rectHeightInput, 'heightMm', (v) => v],
+  [polygonSidesInput, 'polygonSides', Math.round],
+];
+for (const [el, key, norm] of GEOMETRY_BINDINGS) {
   el.addEventListener('input', () => {
-    presetStore.setParam('pinCount', Number(fields.pegs.value) || 200);
-    presetStore.setParam('diameterMm', Number(fields.diameter.value) || 600);
-    presetStore.setParam('pinDiameterMm', Number(fields.pegDiameter.value) || 2.0);
-    presetStore.setParam('threadThicknessMm', Number(fields.threadWidth.value) || 0.18);
-    loomRenderer.setThreadThickness(Number(fields.threadWidth.value) || 0.18);
-    updateLoomPreview();
-    updateTargetPreview();
+    const v = readValidNumber(el);
+    if (v === null) return;
+    presetStore.setParam(key, norm(v) as never);
+    if (key === 'threadThicknessMm') loomRenderer.setThreadThickness(v);
+    onGeometryChanged();
+  });
+  el.addEventListener('change', () => {
+    const v = norm(clampToInput(el, presetStore.getConfig()[key] as number));
+    el.value = String(v);
+    presetStore.setParam(key, v as never);
+    onGeometryChanged();
+  });
+}
+for (const el of [rectPegsXInput, rectPegsYInput, polyPegsInput]) {
+  el.addEventListener('input', () => {
+    const v = readValidNumber(el);
+    if (v === null) return;
+    onGeometryChanged();
+  });
+  el.addEventListener('change', () => {
+    const fallback = Number(el.defaultValue) || (el === polyPegsInput ? 240 : 50);
+    const v = Math.round(clampToInput(el, fallback));
+    el.value = String(v);
+    onGeometryChanged();
   });
 }
 
@@ -692,19 +755,23 @@ minRunLengthInput.addEventListener('input', () =>
 edgeBlendWeightInput.addEventListener('input', () => {
   presetStore.setParam('edgeBlendWeight', Number(edgeBlendWeightInput.value));
   $('edgeBlendWeight-out').textContent = Number(edgeBlendWeightInput.value).toFixed(2);
+  markResultStale();
   updateTargetPreview();
 });
 faceImportanceWeightInput.addEventListener('input', () => {
   presetStore.setParam('faceImportanceWeight', Number(faceImportanceWeightInput.value));
   $('faceImportanceWeight-out').textContent = Number(faceImportanceWeightInput.value).toFixed(1);
+  markResultStale();
   updateTargetPreview();
 });
 featureEmphasisInput?.addEventListener('input', () => {
   presetStore.setParam('featureEmphasisWeight', Number(featureEmphasisInput.value));
+  markResultStale();
   updateTargetPreview();
 });
 skinLiftInput?.addEventListener('input', () => {
   presetStore.setParam('skinLift', Number(skinLiftInput.value));
+  markResultStale();
   updateTargetPreview();
 });
 
@@ -718,7 +785,7 @@ customPegsFile.addEventListener('change', async () => {
     customPegsList = parsed;
     customPegsSummary.textContent = `✔ ${parsed.length} pinos carregados (${f.name})`;
     customPegsSummary.style.color = 'var(--accent-2)';
-    updateLoomPreview();
+    onGeometryChanged();
   } catch (err) {
     showError(err);
   }
@@ -784,11 +851,18 @@ function computeActiveCrop(): { x: number; y: number; size: number } | undefined
 
 function buildRuntimeWasmConfig(): Record<string, unknown> {
   const cfg = presetStore.getConfig();
+  const loomCfg = getCurrentLoomConfig();
+  const rawShape = loomShape.value;
+  const shape = rawShape === 'custom' ? 'CIRCULAR' : rawShape;
   const edgeDetector = (edgeDetectorSelect.value || cfg.edgeDetector) as WeaverConfig['edgeDetector'];
   return {
     ...cfg,
-    pinCount: Number(fields.pegs.value) || cfg.pinCount,
-    diameterMm: Number(fields.diameter.value) || cfg.diameterMm,
+    shape,
+    pinCount: loomPegCount(loomCfg),
+    diameterMm: finiteOr(fields.diameter.value, cfg.diameterMm),
+    widthMm: finiteOr(rectWidthInput.value, cfg.widthMm ?? 600),
+    heightMm: finiteOr(rectHeightInput.value, cfg.heightMm ?? 400),
+    polygonSides: Math.round(finiteOr(polygonSidesInput.value, cfg.polygonSides ?? 6)),
     pinDiameterMm: Number(fields.pegDiameter.value) || cfg.pinDiameterMm,
     threadThicknessMm: Number(fields.threadWidth.value) || cfg.threadThicknessMm,
     maxLines: Number(fields.lines.value) || cfg.maxLines,
@@ -816,13 +890,17 @@ function buildRuntimeWasmConfig(): Record<string, unknown> {
   };
 }
 
-/** Converte o valor de um input numérico, aceitando 0 (ao contrário de Number(x) || padrão). */
-function finiteOr(raw: string, fallback: number): number {
-  const v = Number(raw);
-  return raw.trim() !== '' && Number.isFinite(v) ? v : fallback;
+async function reapplyBrushIfAny(): Promise<void> {
+  if (!engineClient.isReady() || !studioManager.hasBrushStrokes()) return;
+  const mask = studioManager.getManualBrushMask();
+  if (!mask) return;
+  const imp = await engineClient.applyImportanceBrush(mask.slice());
+  studioManager.updateImportanceBuffer(imp);
 }
 
 let dspDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let dspInFlight = false;
+let dspDirty = false;
 
 function renderInstantClientFramingPreview(): void {
   if (!sourceImageCanvas) return;
@@ -876,18 +954,34 @@ function updateTargetPreview(_force?: boolean): void {
   }
 
   if (dspDebounceTimer) clearTimeout(dspDebounceTimer);
-  dspDebounceTimer = setTimeout(() => {
-    if (!image || !engineClient.isReady()) return;
-    const runtimeCfg = buildRuntimeWasmConfig();
-    engineClient
-      .loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, JSON.stringify(runtimeCfg))
-      .then((res) => {
-        applyDiagnostics(res);
-      })
-      .catch((err) => {
-        console.warn('Wasm DSP preview erro:', err);
-      });
-  }, 200);
+  dspDebounceTimer = setTimeout(requestDspPreview, 150);
+}
+
+function requestDspPreview(): void {
+  if (!image || !engineClient.isReady() || running || isWasmRunning) return;
+  if (dspInFlight) {
+    dspDirty = true;
+    return;
+  }
+  dspInFlight = true;
+  const cfgJson = JSON.stringify(buildRuntimeWasmConfig());
+  engineClient
+    .loadAndPrepareImage(image.data.slice().buffer, image.width, image.height, cfgJson)
+    .then(async (res) => {
+      if (running || isWasmRunning) return;
+      studioManager.setDiagnosticBuffers(res);
+      await reapplyBrushIfAny();
+    })
+    .catch((err) => {
+      console.warn('Wasm DSP preview erro:', err);
+    })
+    .finally(() => {
+      dspInFlight = false;
+      if (dspDirty && !running && !isWasmRunning) {
+        dspDirty = false;
+        requestDspPreview();
+      }
+    });
 }
 
 /**
@@ -961,19 +1055,20 @@ function readOptions(): WeaveOptions {
   );
 }
 
-for (const id of ['contrast', 'brightness', 'gamma', 'cropZoom', 'cropPanX', 'cropPanY', 'claheClip'] as const) {
+for (const el of [fields.cropZoom, fields.cropPanX, fields.cropPanY, cropRotationInput]) {
+  el.addEventListener('input', commitFraming);
+}
+for (const id of ['contrast', 'brightness', 'gamma', 'claheClip'] as const) {
   fields[id].addEventListener('input', () => {
     updateOutputs();
+    markResultStale();
     updateTargetPreview();
   });
 }
-cropRotationInput.addEventListener('input', () => {
-  updateOutputs();
-  updateTargetPreview();
-});
 
 fields.clahe.addEventListener('change', () => {
   $('clahe-controls').hidden = !fields.clahe.checked;
+  markResultStale();
   updateTargetPreview();
 });
 fields.lines.addEventListener('input', () => {
@@ -1032,6 +1127,20 @@ async function loadFile(file: File): Promise<void> {
   dropLabel.innerHTML = `<strong>${escapeHtml(file.name)}</strong><br /><small>${bitmap.width}×${bitmap.height}px · clique para trocar</small>`;
   drop.style.backgroundImage = `url(${URL.createObjectURL(file)})`;
   drop.classList.add('has-image');
+
+  result = null;
+  resultIsStale = false;
+  loomRenderer.reset();
+  loomRenderer.renderFrame?.();
+  distanceView.clearReference();
+  distanceView.setStale(false);
+  distanceView.setMode('threads');
+  studioManager.resetBrushMask();
+  studioManager.setActiveStage('prepared');
+  exportButtons.forEach((b) => (b.disabled = true));
+  spoolBreakdown.hidden = true;
+  bar.style.width = '0%';
+
   runBtn.disabled = running;
   smartFrameFaceIndex = 0;
   if (btnSmartFrame.dataset.label) btnSmartFrame.textContent = btnSmartFrame.dataset.label;
@@ -1214,6 +1323,7 @@ async function finishWasmRun(isCompleted: boolean): Promise<void> {
   }
   isWasmRunning = false;
   setRunning(false);
+  updateTargetPreview();
   loomRenderer.renderFrame();
   if (isCompleted) {
     // Obra pronta: mostrar como ela será vista na parede, ao lado da foto.
@@ -1340,6 +1450,8 @@ runBtn.addEventListener('click', async () => {
     return;
   }
   currentMaxLines = options.maxLines;
+  if (dspDebounceTimer) clearTimeout(dspDebounceTimer);
+  clearResultStale();
   result = null;
   loomRenderer.reset();
   loomRenderer.setLoom(options.loom);
@@ -1360,7 +1472,8 @@ runBtn.addEventListener('click', async () => {
       image.height,
       runtimeCfgJson,
     );
-    applyDiagnostics(prepRes);
+    applyDiagnostics(prepRes, { freezeReference: true });
+    await reapplyBrushIfAny();
     await engineClient.initSolver(runtimeCfgJson);
     engineClient.startSolver(50);
     start60HzTelemetryLoop();
